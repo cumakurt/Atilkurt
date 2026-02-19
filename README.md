@@ -47,7 +47,7 @@ AtilKurt is designed to help security professionals, penetration testers, and sy
 
 ---
 
-## 🚀 Features
+##  Features
 
 ### Core Features
 
