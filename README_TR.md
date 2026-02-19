@@ -48,7 +48,7 @@ AtilKurt, güvenlik uzmanları, sızma testi uzmanları ve sistem yöneticilerin
 
 ---
 
-## 🚀 Özellikler
+##  Özellikler
 
 ### Temel Özellikler
 
