@@ -1,0 +1,18 @@
+# AtilKurt - Docker Compose example
+# Usage: copy .env.example to .env and set values, then: docker-compose run --rm atilkurt
+
+version: '3.8'
+services:
+  atilkurt:
+    build: .
+    image: atilkurt:latest
+    environment:
+      ATILKURT_DOMAIN: ${ATILKURT_DOMAIN}
+      ATILKURT_USER: ${ATILKURT_USER}
+      ATILKURT_PASS: ${ATILKURT_PASS}
+      ATILKURT_DC_IP: ${ATILKURT_DC_IP}
+      ATILKURT_OUTPUT: /output/report.html
+    volumes:
+      - ./output:/output
+    # Optional: use host network if DC is on same host (Linux)
+    # network_mode: host
