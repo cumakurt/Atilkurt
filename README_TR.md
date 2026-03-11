@@ -48,7 +48,7 @@ AtilKurt, güvenlik uzmanları, sızma testi uzmanları ve sistem yöneticilerin
 
 ---
 
-##  Özellikler
+## 🚀 Özellikler
 
 ### Temel Özellikler
 
@@ -66,6 +66,12 @@ Her risk Low, Medium, High veya Critical seviyesinde değerlendirilir. Bu, önce
 
 #### ✅ İnteraktif HTML Rapor
 Bootstrap ve Chart.js ile modern, interaktif HTML raporlar oluşturulur. Raporlar görsel grafikler, filtreleme ve arama özellikleri içerir, analiz sonuçlarını anlamayı kolaylaştırır.
+
+#### ✅ Gelişmiş Yönetici Özeti (Dashboard)
+Dashboard, yönetim odaklı bir paragraf, temel metrikler (domain skoru, toplam/kritik/yüksek/orta/düşük risk sayıları) ve **Tüm Analizler Özeti** tablosunu içeren bir **Yönetici Özeti** sunar. Tablo, her analiz kategorisini (kullanıcı riskleri, bilgisayar riskleri, Kerberoasting, DCSync, GPP, LAPS vb.) bulgu sayısı ve durum (OK / Bulgular) ile listeler; tüm analizler tek yerde özetlenir.
+
+#### ✅ Tek Dosya (Taşınabilir) Rapor
+`--single-file-report` ile çalıştırıldığında CSS ve JavaScript (Bootstrap, Chart.js, Lucide ikonları vb.) HTML dosyasına gömülür. Rapor tamamen bağımsızdır: tek `.html` dosyasını başka bir klasöre veya makineye kopyalayıp `vendor/` klasörü veya internet olmadan tarayıcıda açabilirsiniz.
 
 #### ✅ Compliance Raporlama (Her Zaman Aktif)
 Gelişmiş LDAP tabanlı analiz kullanarak CIS Benchmark, NIST Cybersecurity Framework, ISO 27001 ve GDPR için otomatik olarak compliance raporları oluşturur. Her kontrol için gerçek zamanlı LDAP sorguları yaparak compliance durumunu kontrol eder, LDAP sorgu referansları, etkilenen nesneler ve düzeltme önerileri ile detaylı bulgular sağlar.
@@ -802,6 +808,9 @@ python3 AtilKurt.py \
 - `--json-export`: JSON formatında export dosya yolu (tam analiz verisi)
 - `--kerberoasting-export`: Kerberoasting hedeflerini JSON formatında export (şifre kırma araçları için)
 
+#### Rapor Parametreleri
+- `--single-file-report`: Tüm CSS/JS'i HTML içine gömerek raporu tek, taşınabilir dosya yapar (raporu kopyalarken `vendor/` klasörü gerekmez)
+
 #### Analiz Parametreleri
 - `--check-user USERNAME`: Belirli kullanıcının Domain Admin olup olamayacağını kontrol et
 
@@ -864,6 +873,17 @@ python3 AtilKurt.py \
     --output report.html \
     --json-export data.json
 ```
+
+#### Tek Dosya Rapor ile (taşınabilir)
+```bash
+python3 AtilKurt.py \
+    -d corp.local \
+    -u admin \
+    -p SecurePass123 \
+    --dc-ip 10.0.0.1 \
+    --single-file-report
+```
+Üretilen HTML dosyası tek başına çalışır; istediğiniz yere kopyalayıp `vendor/` klasörü olmadan açabilirsiniz.
 
 #### Özel Saatlik Ücret ile Risk Yönetimi
 ```bash
@@ -957,6 +977,9 @@ HTML raporu şu bölümleri içerir:
 ### Dashboard / Kontrol Paneli
 Genel güvenlik skoru, risk sayıları, grafikler, KPI'lar ve CISO dashboard.
 
+- **Yönetici Özeti:** Değerlendirmeyi, toplam riskleri ve önem derecesini (kritik/yüksek) özetleyen yönetim odaklı paragraf. Temel metrik çubuğu domain skoru ve risk sayılarını gösterir.
+- **Tüm Analizler Özeti:** Her analiz kategorisini (kullanıcı risk analizi, Kerberoasting hedefleri, DCSync hakları, LAPS, GPP şifreleri vb.) bulgu sayısı ve durum (OK / Bulgular) ile listeyen tablo. Tüm analizlere tek yerden tam görünürlük sağlar.
+
 ### Risk Kategorileri
 1. **Tüm Riskler:** Tüm tespit edilen riskler
 2. **Kritik Riskler:** Critical seviyesindeki riskler
@@ -991,6 +1014,9 @@ Genel güvenlik skoru, risk sayıları, grafikler, KPI'lar ve CISO dashboard.
 - **CIS Benchmark Referansları:** Endüstri standartları
 - **MITRE ATT&CK Mapping:** Saldırı teknikleri
 - **Sömürü Araçları:** Hangi araçlar kullanılabilir
+
+### Tek Dosya (Taşınabilir) Rapor
+`--single-file-report` ile çalıştırdığınızda üretilen HTML, Bootstrap, Chart.js, Font Awesome ve Lucide varlıklarını dosya içine gömülü olarak içerir. Yalnızca `.html` dosyasını başka bir dizine veya makineye kopyalayıp `vendor/` klasörü veya internet olmadan tarayıcıda açabilirsiniz. Ağdan izole ortamlar veya raporu e-posta ile paylaşmak için kullanışlıdır.
 
 ### Rapor Alt Bilgisi
 HTML raporunun en altında **Geliştirici Bilgileri** (isim, e-posta, LinkedIn, GitHub) yer alır; atıf ve destek için kullanılır.

@@ -47,7 +47,7 @@ AtilKurt is designed to help security professionals, penetration testers, and sy
 
 ---
 
-##  Features
+## 🚀 Features
 
 ### Core Features
 
@@ -65,6 +65,12 @@ Each risk is assessed at Low, Medium, High, or Critical level. This enables prio
 
 #### ✅ Interactive HTML Report
 Modern, interactive HTML reports are generated using Bootstrap and Chart.js. Reports include visual charts, filtering and search features, making it easier to understand analysis results.
+
+#### ✅ Enhanced Executive Summary (Dashboard)
+The dashboard includes an **Executive Summary** with a management-oriented paragraph, key metrics (domain score, total/critical/high/medium/low risks), and a **Complete Analysis Summary** table listing every analysis category (user risks, computer risks, Kerberoasting, DCSync, GPP, LAPS, etc.) with count and status (OK / Findings). All analyses are summarized in one place for both quick overview and full visibility.
+
+#### ✅ Single-File (Portable) Report
+With `--single-file-report`, CSS and JavaScript (Bootstrap, Chart.js, Lucide icons, etc.) are embedded into the HTML file. The report is fully self-contained: you can copy the single `.html` file to any folder or machine and open it without needing a `vendor/` folder or network access.
 
 #### ✅ Compliance Reporting (Always Enabled)
 Automatically generates compliance reports for CIS Benchmark, NIST Cybersecurity Framework, ISO 27001, and GDPR using advanced LDAP-based analysis. Performs real-time LDAP queries to check compliance status for each control, providing detailed findings with LDAP query references, affected objects, and remediation recommendations.
@@ -568,6 +574,9 @@ python3 AtilKurt.py \
 - `--json-export`: JSON export file path (complete analysis data)
 - `--kerberoasting-export`: Export Kerberoasting targets in JSON format (for password cracking tools)
 
+#### Report Parameters
+- `--single-file-report`: Embed all CSS/JS into the HTML so the report is a single, portable file (no `vendor/` folder required when copying the report)
+
 #### Analysis Parameters
 - `--check-user USERNAME`: Check if specific user can become Domain Admin
 
@@ -630,6 +639,17 @@ python3 AtilKurt.py \
     --output report.html \
     --json-export data.json
 ```
+
+#### With Single-File Report (portable)
+```bash
+python3 AtilKurt.py \
+    -d corp.local \
+    -u admin \
+    -p SecurePass123 \
+    --dc-ip 10.0.0.1 \
+    --single-file-report
+```
+The generated HTML file is self-contained; copy it anywhere and open it without a `vendor/` folder.
 
 #### With Custom Hourly Rate for Risk Management
 ```bash
@@ -723,6 +743,9 @@ HTML report includes the following sections:
 ### Dashboard
 Overall security score, risk counts, charts, KPIs, and CISO dashboard.
 
+- **Executive Summary:** A management-oriented paragraph summarizing the assessment, total risks, and severity (critical/high). Key metrics bar shows domain score and risk counts.
+- **Complete Analysis Summary:** A table listing all analysis categories (e.g. User risk analysis, Kerberoasting targets, DCSync rights, LAPS, GPP passwords) with the number of findings and status (OK / Findings). Provides full visibility of every analysis in one place.
+
 ### Risk Categories
 1. **All Risks:** All detected risks
 2. **Critical Risks:** Critical level risks
@@ -757,6 +780,9 @@ Overall security score, risk counts, charts, KPIs, and CISO dashboard.
 - **CIS Benchmark References:** Industry standards
 - **MITRE ATT&CK Mapping:** Attack techniques
 - **Exploitation Tools:** Which tools can be used
+
+### Single-File (Portable) Report
+When you run with `--single-file-report`, the generated HTML embeds Bootstrap, Chart.js, Font Awesome, and Lucide assets inline. You can copy only the `.html` file to another directory or machine and open it in a browser without a `vendor/` folder or internet. Useful for air-gapped environments or sharing reports via email.
 
 ### Report Footer
 The HTML report includes **Developer Information** at the bottom (name, email, LinkedIn, GitHub) for attribution and support.
