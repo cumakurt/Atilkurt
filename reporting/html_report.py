@@ -78,7 +78,7 @@ class HTMLReportGenerator(
                  legacy_os_data=None, acl_security_data=None, compliance_data=None,
                  risk_management_data=None, domain=None, dc_ip=None,
                  kerberoasting_targets=None, asrep_targets=None,
-                 analysis_summary_counts=None):
+                 analysis_summary_counts=None, inline_assets: bool = False):
         """
         Generate HTML report.
 
@@ -106,14 +106,16 @@ class HTMLReportGenerator(
             users, computers, groups, gpos, risks, misconfig_findings,
             domain_score, executive_summary, legacy_os_data, acl_security_data,
             compliance_data, risk_management_data, domain, dc_ip,
-            kerberoasting_targets, asrep_targets, analysis_summary_counts
+            kerberoasting_targets, asrep_targets, analysis_summary_counts, inline_assets
         )
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
         # Copy vendor assets next to report so the report works offline (file://)
-        self._copy_vendor_to_output(output_file)
+        # Skipped when assets are fully inlined into the HTML.
+        if not inline_assets:
+            self._copy_vendor_to_output(output_file)
         
         logger.info(f"HTML report generated: {output_file}")
 
@@ -122,7 +124,8 @@ class HTMLReportGenerator(
                        legacy_os_data=None, acl_security_data=None,
                        compliance_data=None, risk_management_data=None,
                        domain=None, dc_ip=None, kerberoasting_targets=None,
-                       asrep_targets=None, analysis_summary_counts=None):
+                       asrep_targets=None, analysis_summary_counts=None,
+                       inline_assets: bool = False):
         """Generate complete HTML content."""
         import base64
         
@@ -188,6 +191,31 @@ class HTMLReportGenerator(
             domain, dc_ip, kerberoasting_targets, asrep_targets
         )
         
+        # Optional: inline vendor CSS/JS so the HTML file is completely self-contained
+        inline_css = None
+        inline_js = None
+        if inline_assets:
+            vendor_dir = os.path.join(os.path.dirname(__file__), "vendor")
+            css_parts = []
+            js_parts = []
+            try:
+                # CSS assets
+                for name in ("bootstrap.min.css", "fontawesome.min.css", "google-fonts.css"):
+                    path = os.path.join(vendor_dir, name)
+                    if os.path.exists(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            css_parts.append(f.read())
+                # JS assets (order matters: bootstrap, chart, lucide)
+                for name in ("bootstrap.bundle.min.js", "chart.umd.min.js", "lucide.min.js"):
+                    path = os.path.join(vendor_dir, name)
+                    if os.path.exists(path):
+                        with open(path, "r", encoding="utf-8") as f:
+                            js_parts.append(f.read())
+            except Exception as e:
+                logger.warning("Could not inline vendor assets into HTML report: %s", e)
+            inline_css = "\n\n".join(css_parts) if css_parts else None
+            inline_js = "\n\n".join(js_parts) if js_parts else None
+        
         report_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         html = build_saas_report(
             logo_base64 or '',
@@ -196,6 +224,9 @@ class HTMLReportGenerator(
             ciso_data,
             risk_sections,
             charts_data,
-            DEVELOPER_INFO
+            DEVELOPER_INFO,
+            inline_assets=inline_assets,
+            inline_css=inline_css,
+            inline_js=inline_js,
         )
         return html
