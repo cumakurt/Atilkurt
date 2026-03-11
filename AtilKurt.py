@@ -65,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Domain Controller IP address')
     parser.add_argument('--output', default='report.html',
                         help='Output HTML report file')
+    parser.add_argument('--single-file-report', action='store_true',
+                        help='Embed CSS/JS into the HTML so the report file is fully self-contained')
     parser.add_argument('--json-export',
                         help='Optional JSON export file path')
     parser.add_argument('--ssl', action='store_true',
@@ -515,6 +517,7 @@ def generate_reports(
         kerberoasting_targets=analysis['kerberoasting_targets'],
         asrep_targets=analysis['asrep_targets'],
         analysis_summary_counts=analysis_summary_counts,
+        inline_assets=args.single_file_report,
     )
     print(f"[+] HTML report generated: {output_file}")
 
