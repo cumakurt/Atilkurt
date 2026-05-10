@@ -41,6 +41,62 @@ class RiskScorer:
         'acl_write_dacl': 85,
         'acl_write_owner': 85,
         'acl_generic_write': 60,
+        'acl_write_property': 55,
+        'acl_dcsync': 95,
+        'acl_force_change_password': 75,
+        'acl_write_service_principal_name': 70,
+        'acl_write_user_account_control': 70,
+        'acl_write_member': 70,
+        'acl_ds_replication_get_changes': 85,
+        'acl_ds_replication_get_changes_all': 95,
+        'acl_ds_replication_get_changes_in_filtered_set': 85,
+        'acl_all_extended_rights': 85,
+        'dcsync_rights': 95,
+        'shadow_admin': 85,
+        'acl_inheritance_risk': 45,
+        'acl_privilege_escalation_path': 90,
+        'kerberoasting_target': 75,
+        'asrep_roasting_target': 80,
+        'disabled_user_account': 10,
+        'locked_user_account': 20,
+        'service_account_password_never_expires': 55,
+        'recently_created_account': 25,
+        'recently_modified_group_membership': 45,
+        'inactive_computer': 35,
+        'never_used_computer': 25,
+        'legacy_operating_system': 50,
+        'service_account_high_privilege': 75,
+        'service_account_without_msa': 35,
+        'gpo_modification_rights': 80,
+        'gpo_linked_to_privileged_ou': 70,
+        'password_policy_weak': 65,
+        'trust_relationship_risk': 65,
+        'gpp_password_found': 95,
+        'laps_not_configured': 55,
+        'laps_access_analysis': 60,
+        'zerologon_vulnerable': 95,
+        'printnightmare_vulnerable': 85,
+        'petitpotam_vulnerable': 80,
+        'shadow_credentials': 85,
+        'nopac_vulnerable': 90,
+        'ldap_signing_disabled': 80,
+        'ntlm_restriction_weak': 65,
+        'smb_signing_disabled': 60,
+        'certificate_services_detected': 15,
+        'certificate_esc1': 90,
+        'certificate_esc2': 85,
+        'certificate_esc3': 80,
+        'certificate_esc4': 80,
+        'certificate_esc5': 70,
+        'certificate_esc6': 85,
+        'certificate_esc7': 75,
+        'certificate_esc8': 85,
+        'certificate_esc9': 80,
+        'certificate_esc10': 80,
+        'certificate_esc11': 85,
+        'certificate_esc13': 70,
+        'certificate_esc14': 65,
+        'certificate_certifried': 90,
         'rbcd_delegation': 85,
         'sid_history_present': 70,
         'foreign_security_principal': 35,
@@ -58,6 +114,41 @@ class RiskScorer:
         'adminsdholder_analysis': 25,
         'fine_grained_password_policy': 20,
         'key_credential_link_present': 65,
+        'machine_account_quota_high': 65,
+        'krbtgt_password_age': 85,
+        'krbtgt_weak_encryption': 80,
+        'stale_inactive_account': 45,
+        'stale_ancient_password': 40,
+        'stale_description_credential': 75,
+        'stale_computer_account': 35,
+        'stale_orphan_sid': 45,
+        'golden_gmsa_root_key': 80,
+        'golden_gmsa_excessive_readers': 80,
+        'gmsa_misconfiguration': 70,
+        'gmsa_legacy_service_account': 45,
+        'password_spray_risk': 60,
+        'password_spray_no_lockout': 85,
+        'backup_operator_risk': 80,
+        'sensitive_operator_risk': 70,
+        'coercion_spoolsample': 80,
+        'coercion_dfscoerce': 75,
+        'coercion_webclient': 70,
+        'lateral_movement_unrestricted': 80,
+        'lateral_movement_tier_violation': 90,
+        'lateral_movement_rdp_exposure': 60,
+        'honeypot_candidate': 10,
+        'honeypot_recommendation': 5,
+        'audit_policy_insufficient': 45,
+        'audit_sacl_missing': 40,
+        'replication_suspicious_change': 70,
+        'replication_tombstone_risk': 35,
+    }
+
+    SEVERITY_FALLBACK_SCORES = {
+        'critical': 90,
+        'high': 70,
+        'medium': 40,
+        'low': 15,
     }
     
     # Object type multipliers
@@ -108,6 +199,7 @@ class RiskScorer:
         
         # Count risk types for prevalence calculation
         self._count_risk_types(risks)
+        self.object_risk_map.clear()
         
         # Score each risk
         scored_risks = []
@@ -143,7 +235,9 @@ class RiskScorer:
         Formula: Base Score × Object Type Multiplier × Prevalence Multiplier
         """
         risk_type = risk.get('type', 'unknown')
-        base_score = self.BASE_RISK_SCORES.get(risk_type, 50)  # Default 50 if unknown
+        base_score = self.BASE_RISK_SCORES.get(risk_type)
+        if base_score is None:
+            base_score = self._get_fallback_base_score(risk)
         
         # Determine object type and multiplier
         object_type_multiplier = self._get_object_type_multiplier(risk, user_map, group_map, computer_map)
@@ -176,6 +270,13 @@ class RiskScorer:
             self.object_risk_map[affected_object].append(risk)
         
         return risk
+
+    def _get_fallback_base_score(self, risk):
+        """Use incoming severity as the fallback for risk types without a fixed score."""
+        severity = risk.get('severity_level') or risk.get('severity') or ''
+        if not isinstance(severity, str):
+            severity = str(severity)
+        return self.SEVERITY_FALLBACK_SCORES.get(severity.lower(), 50)
     
     def _get_object_type_multiplier(self, risk, user_map, group_map, computer_map):
         """Determine object type multiplier based on risk context."""

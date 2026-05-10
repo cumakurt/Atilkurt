@@ -32,14 +32,40 @@ class RiskManager:
         'unconstrained_delegation': 2.0,
         'too_many_domain_admins': 4.0,
         'weak_password_policy': 2.0,
+        'password_policy_weak': 2.0,
         'account_lockout_disabled': 1.0,
         'eol_operating_system': 8.0,
+        'legacy_operating_system': 6.0,
+        'inactive_computer': 1.0,
+        'never_used_computer': 1.0,
         'laps_not_configured': 4.0,
+        'laps_access_analysis': 3.0,
         'gpp_passwords': 2.0,
+        'gpp_password_found': 2.0,
         'dcsync_rights': 1.0,
         'trust_sid_filtering_disabled': 2.0,
+        'trust_relationship_risk': 3.0,
         'privilege_escalation_path': 4.0,
-        'shadow_admin': 2.0
+        'shadow_admin': 2.0,
+        'kerberoasting_target': 1.0,
+        'asrep_roasting_target': 1.0,
+        'service_account_high_privilege': 2.0,
+        'service_account_without_msa': 4.0,
+        'service_account_password_never_expires': 0.5,
+        'gpo_modification_rights': 3.0,
+        'gpo_linked_to_privileged_ou': 3.0,
+        'ldap_signing_disabled': 4.0,
+        'ntlm_restriction_weak': 3.0,
+        'smb_signing_disabled': 3.0,
+        'krbtgt_password_age': 2.0,
+        'krbtgt_weak_encryption': 2.0,
+        'machine_account_quota_high': 1.0,
+        'password_spray_risk': 2.0,
+        'password_spray_no_lockout': 2.0,
+        'backup_operator_risk': 2.0,
+        'sensitive_operator_risk': 2.0,
+        'audit_policy_insufficient': 4.0,
+        'audit_sacl_missing': 4.0,
     }
     
     # Default hourly rate (can be customized)
@@ -120,9 +146,9 @@ class RiskManager:
         """
         risk_type = risk.get('type', '')
         cost_estimates = custom_costs or self.REMEDIATION_COST_ESTIMATES
-        
+
         # Get base hours for this risk type
-        base_hours = cost_estimates.get(risk_type, 2.0)
+        base_hours = self._get_base_remediation_hours(risk_type, cost_estimates)
         
         # Adjust based on severity
         severity = risk.get('severity', 'medium').lower()
@@ -153,6 +179,33 @@ class RiskManager:
             'total_cost': round(total_cost, 2),
             'currency': 'USD'
         }
+
+    def _get_base_remediation_hours(self, risk_type: str, cost_estimates: Dict[str, float]) -> float:
+        """Return exact or category-based remediation effort in hours."""
+        if risk_type in cost_estimates:
+            return cost_estimates[risk_type]
+
+        category_defaults = (
+            ('acl_', 3.0),
+            ('certificate_esc', 6.0),
+            ('certificate_certifried', 6.0),
+            ('certificate_services', 1.0),
+            ('coercion_', 4.0),
+            ('golden_gmsa_', 6.0),
+            ('gmsa_', 4.0),
+            ('lateral_movement_', 6.0),
+            ('replication_', 3.0),
+            ('stale_', 1.0),
+            ('zerologon_', 8.0),
+            ('printnightmare_', 6.0),
+            ('petitpotam_', 4.0),
+            ('nopac_', 6.0),
+        )
+        for prefix, hours in category_defaults:
+            if risk_type.startswith(prefix):
+                return hours
+
+        return 2.0
     
     def calculate_roi(self, risk: Dict[str, Any], business_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """

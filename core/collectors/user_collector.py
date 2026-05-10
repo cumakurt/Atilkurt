@@ -85,6 +85,7 @@ class UserCollector:
                 
                 user = {
                     'sAMAccountName': entry.get('sAMAccountName'),
+                    'objectSid': entry.get('objectSid'),
                     'displayName': entry.get('displayName'),
                     'memberOf': entry.get('memberOf', []),
                     'lastLogonTimestamp': self._convert_timestamp(entry.get('lastLogonTimestamp')),

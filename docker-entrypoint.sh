@@ -4,6 +4,9 @@
 set -e
 
 if [ -n "$ATILKURT_DOMAIN" ] && [ -n "$ATILKURT_USER" ] && [ -n "$ATILKURT_DC_IP" ]; then
+    if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+        set --
+    fi
     OUTPUT="${ATILKURT_OUTPUT:-/output/report.html}"
     # Password is passed via ATILKURT_PASS env var (read by AtilKurt.py directly).
     # The --password CLI flag is deprecated; the app will pick up ATILKURT_PASS

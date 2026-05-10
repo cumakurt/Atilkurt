@@ -45,6 +45,7 @@ class ComputerCollector:
             search_filter = '(&(objectClass=computer)(objectCategory=computer))'
             attributes = [
                 'name',
+                'objectSid',
                 'operatingSystem',
                 'operatingSystemVersion',
                 'lastLogonTimestamp',
@@ -81,6 +82,7 @@ class ComputerCollector:
                 
                 computer = {
                     'name': entry.get('name'),
+                    'objectSid': entry.get('objectSid'),
                     'dNSHostName': entry.get('dNSHostName'),
                     'operatingSystem': entry.get('operatingSystem'),
                     'operatingSystemVersion': entry.get('operatingSystemVersion'),

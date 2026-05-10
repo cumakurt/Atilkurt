@@ -4,6 +4,7 @@ Run from project root: python -m pytest tests/test_report_accordion.py -v
 """
 
 import os
+import re
 import tempfile
 import unittest
 
@@ -70,3 +71,19 @@ class TestReportAccordionRendering(unittest.TestCase):
         self.assertIn("accordion-button", html, "Report should contain Bootstrap accordion buttons")
         self.assertIn("Impact", html, "Report should contain Impact section from risk card")
         self.assertIn("Mitigation", html, "Report should contain Mitigation section from risk card")
+
+        asset_tags = re.findall(r'<(?:script|link|img)[^>]+(?:src|href)="([^"]+)"', html)
+        external_asset_tags = [
+            url for url in asset_tags
+            if not url.startswith(("data:", "#", "mailto:"))
+        ]
+        css_urls = re.findall(r'url\(([^)]+)\)', html)
+        unresolved_css_urls = [
+            url.strip('"\'')
+            for url in css_urls
+            if not url.strip('"\'').startswith(("data:", "#"))
+        ]
+
+        self.assertEqual([], external_asset_tags, "Report assets should be embedded in the HTML")
+        self.assertEqual([], unresolved_css_urls, "CSS url() assets should be embedded in the HTML")
+        self.assertIn("data:font/woff2", html, "Bundled fonts should be embedded as data URIs")

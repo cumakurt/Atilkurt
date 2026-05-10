@@ -21,9 +21,8 @@ ANCIENT_PASSWORD_DAYS = 365
 STALE_COMPUTER_DAYS = 180
 
 # Patterns that suggest credentials in description/info fields.
-# Intentional: Turkish keywords (sifre, parola) for multilingual credential detection.
 _CREDENTIAL_PATTERNS = re.compile(
-    r'(?:password|passwd|pass|şifre|parola|pwd)\s*[:=]\s*\S+',
+    r'(?:password|passwd|pass|pwd)\s*[:=]\s*\S+',
     re.IGNORECASE,
 )
 

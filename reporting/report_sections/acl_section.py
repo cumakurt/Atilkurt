@@ -24,6 +24,9 @@ class ACLSectionMixin:
         
         path_cards = []
         for risk in escalation_risks:
+            def _esc(value):
+                return html_stdlib.escape(str(value)) if value is not None else ''
+
             # Extract user from different risk formats
             escalation_path = risk.get('escalation_path', {})
             user = escalation_path.get('user', risk.get('affected_object', risk.get('source_user', 'Unknown')))
@@ -33,16 +36,22 @@ class ACLSectionMixin:
                 if self._is_user_already_admin_in_report(user, users, groups):
                     continue
             
+            esc_user = _esc(user)
+            esc_title = _esc(risk.get('title', 'Privilege Escalation Path'))
+            esc_description = _esc(risk.get('description', 'No description.'))
+            esc_impact = _esc(risk.get('impact', 'No impact description.'))
+            esc_mitigation = _esc(risk.get('mitigation', 'No mitigation provided.'))
+
             path_html = f"""
             <div class="card risk-card risk-high">
                 <div class="card-body">
-                    <h5 class="card-title">{risk.get('title', 'Privilege Escalation Path')}</h5>
-                    <p class="text-muted"><strong>User</strong>:</strong> {user}</p>
-                    <p class="card-text">{risk.get('description', 'No description.')}</p>
+                    <h5 class="card-title">{esc_title}</h5>
+                    <p class="text-muted"><strong>User</strong>:</strong> {esc_user}</p>
+                    <p class="card-text">{esc_description}</p>
                     
                     <div class="attack-path mt-3">
                         <strong>Escalation Path</strong>:<br>
-                        <span class="path-step">{user}</span>
+                        <span class="path-step">{esc_user}</span>
                         <span class="arrow">→</span>
             """
             
@@ -50,7 +59,7 @@ class ACLSectionMixin:
             direct_groups = escalation_path.get('direct_groups', [])
             for group_dn in direct_groups:
                 group_name = group_dn.split('CN=')[1].split(',')[0] if 'CN=' in group_dn else group_dn
-                path_html += f'<span class="path-step">{group_name}</span> <span class="arrow">→</span> '
+                path_html += f'<span class="path-step">{_esc(group_name)}</span> <span class="arrow">→</span> '
             
             path_html += '<span class="path-step" style="background-color: #dc3545;">Privileged Access</span>'
             
@@ -58,8 +67,8 @@ class ACLSectionMixin:
                     </div>
                     
                     <div class="mt-3">
-                        <p><strong>Impact</strong>:</strong> """ + risk.get('impact', 'No impact description.') + """</p>
-                        <p><strong>Mitigation</strong>:</strong> """ + risk.get('mitigation', 'No mitigation provided.') + """</p>
+                        <p><strong>Impact</strong>:</strong> """ + esc_impact + """</p>
+                        <p><strong>Mitigation</strong>:</strong> """ + esc_mitigation + """</p>
                     </div>
                 </div>
             </div>
@@ -104,27 +113,36 @@ class ACLSectionMixin:
         
         findings_cards = []
         for finding in misconfig_findings:
+            def _esc(value):
+                return html_stdlib.escape(str(value)) if value is not None else ''
+
             sev = finding.get('severity', 'medium')
             severity = getattr(sev, 'value', sev) if sev else 'medium'
             severity = str(severity).lower() if severity else 'medium'
             severity_badge_color = self._get_severity_badge_class(severity)
+            esc_title = _esc(finding.get('title', 'Unknown Finding'))
+            esc_category = _esc(finding.get('category', 'General'))
+            esc_description = _esc(finding.get('description', 'No description.'))
+            esc_recommendation = _esc(finding.get('recommendation', 'No recommendation provided.'))
+            esc_cis = _esc(finding.get('cis_reference', 'N/A'))
+            esc_ms = _esc(finding.get('microsoft_reference', 'N/A'))
             
             finding_card = f"""
             <div class="card risk-card risk-{severity}">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start mb-2">
-                        <h5 class="card-title">{finding.get('title', 'Unknown Finding')}</h5>
+                        <h5 class="card-title">{esc_title}</h5>
                         <span class="badge bg-{severity_badge_color} badge-severity">{severity.upper()}</span>
                     </div>
-                    <p class="text-muted"><strong>Category:</strong> {finding.get('category', 'General')}</p>
-                    <p class="card-text">{finding.get('description', 'No description.')}</p>
+                    <p class="text-muted"><strong>Category:</strong> {esc_category}</p>
+                    <p class="card-text">{esc_description}</p>
                     
                     <div class="mt-3">
-                        <p><strong>Recommendation:</strong> {finding.get('recommendation', 'No recommendation provided.')}</p>
+                        <p><strong>Recommendation:</strong> {esc_recommendation}</p>
                         <div class="mt-2">
                             <small class="text-muted">
-                                <strong>CIS Reference:</strong> {finding.get('cis_reference', 'N/A')}<br>
-                                <strong>Microsoft Reference:</strong> {finding.get('microsoft_reference', 'N/A')}
+                                <strong>CIS Reference:</strong> {esc_cis}<br>
+                                <strong>Microsoft Reference:</strong> {esc_ms}
                             </small>
                         </div>
                     </div>

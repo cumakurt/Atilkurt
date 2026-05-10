@@ -7,10 +7,6 @@
 
 **AtilKurt** is a professional security analysis tool that detects security vulnerabilities in Active Directory environments using read-only LDAP queries.
 
-[🇹🇷 Türkçe için tıklayın / Click for Turkish](README_TR.md)
-
----
-
 ## 📋 Table of Contents
 
 - [About](#about)
@@ -806,7 +802,6 @@ AtilKurt/
 ├── requirements.txt
 ├── pyproject.toml
 ├── README.md
-├── README_TR.md
 ├── LICENSE
 ├── .env.example                # Copy to .env and set credentials (not committed)
 ├── core/                       # Core modules

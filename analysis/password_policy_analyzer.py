@@ -4,6 +4,7 @@ Analyzes domain password policy and account lockout policy
 """
 
 import logging
+from datetime import timedelta
 from typing import List, Dict, Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
@@ -417,12 +418,14 @@ class PasswordPolicyAnalyzer:
         try:
             if timespan is None:
                 return 0
+            if isinstance(timespan, timedelta):
+                return int(abs(timespan.total_seconds()) / 86400)
             if isinstance(timespan, str):
                 timespan = int(timespan)
             if timespan == 0:
                 return 0
-            # Convert to days: timespan / (100ns * 1000 * 1000 * 1000 * 60 * 60 * 24)
-            days = timespan / 864000000000
+            # AD stores password age as negative 100-nanosecond intervals.
+            days = abs(timespan) / 864000000000
             return int(days)
         except (ValueError, TypeError, ZeroDivisionError):
             return 0

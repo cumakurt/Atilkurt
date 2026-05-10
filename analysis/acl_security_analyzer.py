@@ -704,6 +704,17 @@ class ACLSecurityAnalyzer:
             return ''
         
         try:
+            if isinstance(binary_sid, list) and binary_sid:
+                binary_sid = binary_sid[0]
+            if isinstance(binary_sid, str):
+                if binary_sid.startswith("S-"):
+                    return binary_sid
+                try:
+                    binary_sid = bytes.fromhex(binary_sid)
+                except ValueError:
+                    binary_sid = binary_sid.encode("latin-1")
+            if isinstance(binary_sid, bytearray):
+                binary_sid = bytes(binary_sid)
             # Use our SecurityDescriptorParser's SID parsing method
             parser = SecurityDescriptorParser(b'')
             sid = parser._parse_sid_from_bytes(binary_sid)

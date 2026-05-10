@@ -10,6 +10,12 @@ import html as html_stdlib
 class RiskSectionsMixin:
     """Mixin for risk list rendering, risk grouping, severity helpers, exploitability, and kerberoasting section."""
 
+    def _html_escape(self, value):
+        """Escape a value for safe HTML output."""
+        if value is None:
+            return ""
+        return html_stdlib.escape(str(value))
+
     def _generate_exploitability_badge(self, risk):
         """Generate exploitability badge for risk card."""
         exploitability = risk.get('exploitability')
@@ -37,10 +43,10 @@ class RiskSectionsMixin:
         if not exploitability:
             return ""
         
-        tools = exploitability.get('exploitation_tools', [])
-        public_exploits = exploitability.get('public_exploits', [])
-        metasploit_modules = exploitability.get('metasploit_modules', [])
-        poc = exploitability.get('proof_of_concept', '')
+        tools = [self._html_escape(tool) for tool in exploitability.get('exploitation_tools', [])]
+        public_exploits = [self._html_escape(exploit) for exploit in exploitability.get('public_exploits', [])]
+        metasploit_modules = [self._html_escape(module) for module in exploitability.get('metasploit_modules', [])]
+        poc = self._html_escape(exploitability.get('proof_of_concept', ''))
         
         html = f"""
         <div class="mt-3 p-3 report-stat-box rounded">
@@ -97,7 +103,7 @@ class RiskSectionsMixin:
             """
         
         risk_cards = []
-        for risk in kerberoasting_risks:
+        for idx, risk in enumerate(kerberoasting_risks):
             sev = risk.get('severity', 'high')
             severity = getattr(sev, 'value', sev) if sev else 'high'
             severity = str(severity).lower() if severity else 'high'
@@ -106,51 +112,65 @@ class RiskSectionsMixin:
             
             # Get export format info
             export_format = risk.get('export_format', {})
-            spns = risk.get('spns', [])
+            spns = [self._html_escape(spn) for spn in risk.get('spns', [])]
             is_privileged = risk.get('is_privileged', False)
+            accordion_id = f"kerberoast_{idx}_{abs(hash(risk.get('affected_object', 'target')))}"
+            exploit_id = f"exploit_{accordion_id}"
+            details_id = f"details_{accordion_id}"
+            title = self._html_escape(risk.get('title', 'Unknown Risk'))
+            affected = self._html_escape(risk.get('affected_object', 'Unknown'))
+            description = self._html_escape(risk.get('description', 'No description.'))
+            privileged_groups = [self._html_escape(group) for group in risk.get("privileged_groups", [])]
+            impact = self._html_escape(risk.get('impact', 'No impact description.'))
+            attack_scenario = self._html_escape(risk.get('attack_scenario', 'No attack scenario.'))
+            mitigation = self._html_escape(risk.get('mitigation', 'No mitigation provided.'))
+            mitre_attack = self._html_escape(risk.get("mitre_attack", "N/A"))
+            impacket_command = self._html_escape(export_format.get("impacket_command", ""))
+            rubeus_command = self._html_escape(export_format.get("rubeus_command", ""))
+            cme_command = self._html_escape(export_format.get("cme_command", ""))
             
             risk_card = f"""
             <div class="card risk-card {severity_class} mb-3">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start mb-2">
-                        <h5 class="card-title">{risk.get('title', 'Unknown Risk')}</h5>
+                        <h5 class="card-title">{title}</h5>
                         <span class="badge bg-{severity_badge_color}">{severity.upper()}</span>
                     </div>
-                    <p class="text-muted"><strong>Target Account:</strong> {risk.get('affected_object', 'Unknown')}</p>
-                    <p class="card-text">{risk.get('description', 'No description.')}</p>
+                    <p class="text-muted"><strong>Target Account:</strong> {affected}</p>
+                    <p class="card-text">{description}</p>
                     
                     {f'<p class="mt-2"><strong>Privileged Account:</strong> <span class="badge bg-danger">YES</span></p>' if is_privileged else ''}
-                    {f'<p class="mt-2"><strong>Privileged Groups:</strong> {", ".join(risk.get("privileged_groups", []))}</p>' if risk.get('privileged_groups') else ''}
+                    {f'<p class="mt-2"><strong>Privileged Groups:</strong> {", ".join(privileged_groups)}</p>' if privileged_groups else ''}
                     
                     {f'<div class="mt-3"><strong>Service Principal Names:</strong><ul class="mt-2">{"".join([f"<li><code>{spn}</code></li>" for spn in spns])}</ul></div>' if spns else ''}
                     
-                    <div class="accordion report-accordion mt-3" id="kerberoast{hash(risk.get('type', ''))}">
+                    <div class="accordion report-accordion mt-3" id="{accordion_id}">
                         <div class="accordion-item">
                             <h2 class="accordion-header">
-                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#exploit{hash(risk.get('type', ''))}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#{exploit_id}">
                                     <i class="fas fa-terminal"></i> <span>Exploitation Commands</span>
                                 </button>
                             </h2>
-                            <div id="exploit{hash(risk.get('type', ''))}" class="accordion-collapse collapse" data-bs-parent="#kerberoast{hash(risk.get('type', ''))}">
+                            <div id="{exploit_id}" class="accordion-collapse collapse" data-bs-parent="#{accordion_id}">
                                 <div class="accordion-body matrix-theme">
-                                    {f'<p><strong>Impacket:</strong></p><pre class="p-2 rounded"><code>{export_format.get("impacket_command", "N/A")}</code></pre>' if export_format.get('impacket_command') else ''}
-                                    {f'<p class="mt-2"><strong>Rubeus:</strong></p><pre class="p-2 rounded"><code>{export_format.get("rubeus_command", "N/A")}</code></pre>' if export_format.get('rubeus_command') else ''}
-                                    {f'<p class="mt-2"><strong>CrackMapExec:</strong></p><pre class="p-2 rounded"><code>{export_format.get("cme_command", "N/A")}</code></pre>' if export_format.get('cme_command') else ''}
+                                    {f'<p><strong>Impacket:</strong></p><pre class="p-2 rounded"><code>{impacket_command}</code></pre>' if impacket_command else ''}
+                                    {f'<p class="mt-2"><strong>Rubeus:</strong></p><pre class="p-2 rounded"><code>{rubeus_command}</code></pre>' if rubeus_command else ''}
+                                    {f'<p class="mt-2"><strong>CrackMapExec:</strong></p><pre class="p-2 rounded"><code>{cme_command}</code></pre>' if cme_command else ''}
                                 </div>
                             </div>
                         </div>
                         <div class="accordion-item">
                             <h2 class="accordion-header">
-                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#details{hash(risk.get('type', ''))}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#{details_id}">
                                     <i class="fas fa-info-circle"></i> <span>Details</span>
                                 </button>
                             </h2>
-                            <div id="details{hash(risk.get('type', ''))}" class="accordion-collapse collapse" data-bs-parent="#kerberoast{hash(risk.get('type', ''))}">
+                            <div id="{details_id}" class="accordion-collapse collapse" data-bs-parent="#{accordion_id}">
                                 <div class="accordion-body matrix-theme">
-                                    <p><strong>Impact:</strong> {risk.get('impact', 'No impact description.')}</p>
-                                    <p><strong>Attack Scenario:</strong> {risk.get('attack_scenario', 'No attack scenario.')}</p>
-                                    <p><strong>Mitigation:</strong> {risk.get('mitigation', 'No mitigation provided.')}</p>
-                                    {f'<p class="mt-2"><small><strong>MITRE ATT&CK:</strong> {risk.get("mitre_attack", "N/A")}</small></p>' if risk.get('mitre_attack') else ''}
+                                    <p><strong>Impact:</strong> {impact}</p>
+                                    <p><strong>Attack Scenario:</strong> {attack_scenario}</p>
+                                    <p><strong>Mitigation:</strong> {mitigation}</p>
+                                    {f'<p class="mt-2"><small><strong>MITRE ATT&CK:</strong> {mitre_attack}</small></p>' if risk.get('mitre_attack') else ''}
                                 </div>
                             </div>
                         </div>

@@ -9,7 +9,10 @@ is delegated to mixin classes in the report_sections/ package.
 import html as html_stdlib
 import json
 import logging
+import base64
+import mimetypes
 import os
+import re
 import shutil
 from datetime import datetime
 
@@ -78,7 +81,7 @@ class HTMLReportGenerator(
                  legacy_os_data=None, acl_security_data=None, compliance_data=None,
                  risk_management_data=None, domain=None, dc_ip=None,
                  kerberoasting_targets=None, asrep_targets=None,
-                 analysis_summary_counts=None, inline_assets: bool = False):
+                 analysis_summary_counts=None, inline_assets: bool = True):
         """
         Generate HTML report.
 
@@ -125,10 +128,8 @@ class HTMLReportGenerator(
                        compliance_data=None, risk_management_data=None,
                        domain=None, dc_ip=None, kerberoasting_targets=None,
                        asrep_targets=None, analysis_summary_counts=None,
-                       inline_assets: bool = False):
+                       inline_assets: bool = True):
         """Generate complete HTML content."""
-        import base64
-        
         # Load logo if exists
         logo_base64 = None
         logo_paths = [
@@ -191,7 +192,7 @@ class HTMLReportGenerator(
             domain, dc_ip, kerberoasting_targets, asrep_targets
         )
         
-        # Optional: inline vendor CSS/JS so the HTML file is completely self-contained
+        # Inline vendor CSS/JS so the HTML file is completely self-contained.
         inline_css = None
         inline_js = None
         if inline_assets:
@@ -204,7 +205,7 @@ class HTMLReportGenerator(
                     path = os.path.join(vendor_dir, name)
                     if os.path.exists(path):
                         with open(path, "r", encoding="utf-8") as f:
-                            css_parts.append(f.read())
+                            css_parts.append(self._inline_css_asset_urls(f.read(), path, vendor_dir))
                 # JS assets (order matters: bootstrap, chart, lucide)
                 for name in ("bootstrap.bundle.min.js", "chart.umd.min.js", "lucide.min.js"):
                     path = os.path.join(vendor_dir, name)
@@ -230,3 +231,81 @@ class HTMLReportGenerator(
             inline_js=inline_js,
         )
         return html
+
+    def _inline_css_asset_urls(self, css: str, css_path: str, vendor_dir: str) -> str:
+        """Replace local or vendored CSS url(...) references with data URIs."""
+        css_dir = os.path.dirname(css_path)
+
+        def replace_url(match):
+            raw_url = match.group(1).strip().strip("\"'")
+            if not raw_url or raw_url.startswith(("data:", "#")):
+                return match.group(0)
+
+            asset_path = self._resolve_css_asset_path(raw_url, css_dir, vendor_dir)
+            if not asset_path:
+                logger.debug("Could not inline CSS asset URL: %s", raw_url)
+                return f'url("{self._empty_data_uri_for_url(raw_url)}")'
+
+            data_uri = self._file_to_data_uri(asset_path)
+            if not data_uri:
+                return match.group(0)
+            return f'url("{data_uri}")'
+
+        return re.sub(r"url\(([^)]+)\)", replace_url, css)
+
+    def _resolve_css_asset_path(self, raw_url: str, css_dir: str, vendor_dir: str) -> str:
+        """Resolve relative and vendored font URLs used by bundled CSS."""
+        url_without_fragment = raw_url.split("#", 1)[0].split("?", 1)[0]
+        basename = os.path.basename(url_without_fragment)
+        candidates = []
+
+        if re.match(r"^https?://", raw_url):
+            candidates.extend([
+                os.path.join(vendor_dir, "fonts", basename),
+                os.path.join(vendor_dir, "webfonts", basename),
+            ])
+        else:
+            candidates.extend([
+                os.path.normpath(os.path.join(css_dir, url_without_fragment)),
+                os.path.normpath(os.path.join(vendor_dir, url_without_fragment.lstrip("/"))),
+                os.path.join(vendor_dir, "fonts", basename),
+                os.path.join(vendor_dir, "webfonts", basename),
+            ])
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return ""
+
+    def _file_to_data_uri(self, path: str) -> str:
+        """Read a local asset and return a data URI."""
+        try:
+            mime_type, _ = mimetypes.guess_type(path)
+            if path.endswith(".woff2"):
+                mime_type = "font/woff2"
+            elif path.endswith(".woff"):
+                mime_type = "font/woff"
+            elif path.endswith(".ttf"):
+                mime_type = "font/ttf"
+            if not mime_type:
+                mime_type = "application/octet-stream"
+            with open(path, "rb") as f:
+                encoded = base64.b64encode(f.read()).decode("ascii")
+            return f"data:{mime_type};base64,{encoded}"
+        except OSError as e:
+            logger.debug("Could not inline asset %s: %s", path, e)
+            return ""
+
+    def _empty_data_uri_for_url(self, raw_url: str) -> str:
+        """Return an inert data URI for optional CSS fallback assets that are not bundled."""
+        url_path = raw_url.split("#", 1)[0].split("?", 1)[0]
+        mime_type, _ = mimetypes.guess_type(url_path)
+        if url_path.endswith(".woff2"):
+            mime_type = "font/woff2"
+        elif url_path.endswith(".woff"):
+            mime_type = "font/woff"
+        elif url_path.endswith(".ttf"):
+            mime_type = "font/ttf"
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        return f"data:{mime_type};base64,"

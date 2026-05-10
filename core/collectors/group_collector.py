@@ -97,6 +97,7 @@ class GroupCollector:
                 group = {
                     'name': group_name,
                     'sAMAccountName': entry.get('sAMAccountName'),
+                    'objectSid': entry.get('objectSid'),
                     'member': members or [],
                     'memberOf': member_of or [],
                     'description': entry.get('description'),

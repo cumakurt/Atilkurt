@@ -3,6 +3,7 @@ Mixin for directory objects section (users, groups, computers tables).
 """
 
 from datetime import datetime
+import html as html_stdlib
 import json
 
 
@@ -1262,7 +1263,7 @@ class DirectorySectionMixin:
                                 <table class="table table-sm table-borderless mb-0">
                                     <tr>
                                         <td width="40%"><strong><i class="fas fa-tag"></i> Group Name:</strong></td>
-                                        <td>${{groupName}}</td>
+                                        <td>${{escapeHtml(groupName)}}</td>
                                     </tr>
                                     <tr>
                                         <td><strong><i class="fas fa-users"></i> Member Count:</strong></td>
@@ -1276,7 +1277,7 @@ class DirectorySectionMixin:
                                         <td><strong><i class="fas fa-exclamation-triangle"></i> Risk Count:</strong></td>
                                         <td><span class="badge bg-${{groupRisks.length > 0 ? 'warning' : 'success'}}">${{groupRisks.length}}</span></td>
                                     </tr>
-                                    ${{group.description ? `<tr><td><strong><i class="fas fa-align-left"></i> Description:</strong></td><td>${{group.description}}</td></tr>` : ''}}
+                                    ${{group.description ? `<tr><td><strong><i class="fas fa-align-left"></i> Description:</strong></td><td>${{escapeHtml(group.description)}}</td></tr>` : ''}}
                                 </table>
                             </div>
                         </div>
@@ -1772,8 +1773,11 @@ class DirectorySectionMixin:
         """Generate table rows for users."""
         rows = []
         for user_data in users_data:
-            username = user_data['sAMAccountName']
-            groups_display = ', '.join(user_data['groups'][:3])
+            raw_username = user_data['sAMAccountName']
+            username = html_stdlib.escape(str(raw_username))
+            display_name = html_stdlib.escape(str(user_data['displayName']))
+            user_detail_arg = html_stdlib.escape(json.dumps(raw_username), quote=True)
+            groups_display = ', '.join(html_stdlib.escape(str(group)) for group in user_data['groups'][:3])
             if user_data['group_count'] > 3:
                 groups_display += f" (+{user_data['group_count'] - 3} more)"
             
@@ -1788,7 +1792,7 @@ class DirectorySectionMixin:
             status_display = ' '.join(status_badges)
             
             # Last logon display
-            last_logon_display = user_data.get('lastLogon', 'N/A')
+            last_logon_display = html_stdlib.escape(str(user_data.get('lastLogon', 'N/A')))
             days_since_logon = user_data.get('daysSinceLastLogon')
             if days_since_logon is not None:
                 if days_since_logon >= 90:
@@ -1797,7 +1801,7 @@ class DirectorySectionMixin:
                     last_logon_display += f' <span class="badge bg-warning">{days_since_logon}d</span>'
             
             # Account age display
-            account_age_display = user_data.get('accountAge', 'N/A')
+            account_age_display = html_stdlib.escape(str(user_data.get('accountAge', 'N/A')))
             
             # Admin groups display
             admin_groups_display = []
@@ -1824,7 +1828,7 @@ class DirectorySectionMixin:
             rows.append(f"""
             <tr>
                 <td><strong>{username}</strong></td>
-                <td>{user_data['displayName']}</td>
+                <td>{display_name}</td>
                 <td>{status_display}</td>
                 <td><small>{last_logon_display}</small></td>
                 <td><small>{account_age_display}</small></td>
@@ -1836,7 +1840,7 @@ class DirectorySectionMixin:
                 <td>{critical_badge}</td>
                 <td>{privileged_badge}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="showUserDetails('{username}')">
+                    <button class="btn btn-sm btn-primary" onclick='showUserDetails({user_detail_arg})'>
                         <i class="fas fa-eye"></i> View Details
                     </button>
                 </td>
@@ -1848,13 +1852,15 @@ class DirectorySectionMixin:
         """Generate table rows for groups."""
         rows = []
         for group_data in groups_data:
-            group_name = group_data['name']
+            raw_group_name = group_data['name']
+            group_name = html_stdlib.escape(str(raw_group_name))
             members_list = group_data.get('members', [])
             member_count = group_data['member_count']
+            group_detail_arg = html_stdlib.escape(json.dumps(raw_group_name), quote=True)
             
             # Display members
             if member_count > 0 and len(members_list) > 0:
-                members_display = f"{member_count} member(s): {', '.join(members_list[:5])}"
+                members_display = f"{member_count} member(s): {', '.join(html_stdlib.escape(str(member)) for member in members_list[:5])}"
                 if member_count > 5:
                     members_display += f" (+{member_count - 5} more)"
             else:
@@ -1865,7 +1871,7 @@ class DirectorySectionMixin:
             critical_badge = f'<span class="badge bg-danger">{group_data["critical_risks"]}</span>' if group_data['critical_risks'] > 0 else '<span class="badge bg-secondary">0</span>'
             
             # Store members list in data attribute for Excel export
-            members_json = json.dumps(members_list, default=str)
+            members_json = html_stdlib.escape(json.dumps(members_list, default=str), quote=True)
             
             rows.append(f"""
             <tr data-group-members='{members_json}'>
@@ -1875,7 +1881,7 @@ class DirectorySectionMixin:
                 <td>{critical_badge}</td>
                 <td>{privileged_badge}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="showGroupDetails('{group_name}')">
+                    <button class="btn btn-sm btn-primary" onclick='showGroupDetails({group_detail_arg})'>
                         <i class="fas fa-eye"></i> View Details
                     </button>
                 </td>
@@ -1887,18 +1893,21 @@ class DirectorySectionMixin:
         """Generate table rows for computers."""
         rows = []
         for comp_data in computers_data:
-            comp_name = comp_data['name']
+            raw_comp_name = comp_data['name']
+            comp_name = html_stdlib.escape(str(raw_comp_name))
+            os_name = html_stdlib.escape(str(comp_data['operatingSystem']))
+            computer_detail_arg = html_stdlib.escape(json.dumps(raw_comp_name), quote=True)
             risk_badge = f'<span class="badge bg-warning">{comp_data["risk_count"]}</span>' if comp_data['risk_count'] > 0 else '<span class="badge bg-success">0</span>'
             critical_badge = f'<span class="badge bg-danger">{comp_data["critical_risks"]}</span>' if comp_data['critical_risks'] > 0 else '<span class="badge bg-secondary">0</span>'
             
             rows.append(f"""
             <tr>
                 <td><strong>{comp_name}</strong></td>
-                <td><small>{comp_data['operatingSystem']}</small></td>
+                <td><small>{os_name}</small></td>
                 <td>{risk_badge}</td>
                 <td>{critical_badge}</td>
                 <td>
-                    <button class="btn btn-sm btn-primary" onclick="showComputerDetails('{comp_name}')">
+                    <button class="btn btn-sm btn-primary" onclick='showComputerDetails({computer_detail_arg})'>
                         <i class="fas fa-eye"></i> View Details
                     </button>
                 </td>

@@ -9,7 +9,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from functools import lru_cache, wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,15 @@ class LDAPQueryCache:
         """
         self.cache = TimedCache(default_ttl=default_ttl)
     
-    def get_query_result(self, search_filter: str, search_base: Optional[str] = None) -> Optional[Any]:
+    def get_query_result(
+        self,
+        search_filter: str,
+        search_base: Optional[str] = None,
+        attributes: Optional[Sequence[str]] = None,
+        size_limit: int = 0,
+        page_size: Optional[int] = None,
+        enable_paging: Optional[bool] = None,
+    ) -> Optional[Any]:
         """
         Get cached LDAP query result.
         
@@ -194,11 +202,27 @@ class LDAPQueryCache:
         Returns:
             Cached result or None
         """
-        key = self._make_key(search_filter, search_base)
+        key = self._make_key(
+            search_filter,
+            search_base,
+            attributes=attributes,
+            size_limit=size_limit,
+            page_size=page_size,
+            enable_paging=enable_paging,
+        )
         return self.cache.get(key)
     
-    def set_query_result(self, search_filter: str, result: Any, 
-                        search_base: Optional[str] = None, ttl: Optional[int] = None) -> None:
+    def set_query_result(
+        self,
+        search_filter: str,
+        result: Any,
+        search_base: Optional[str] = None,
+        ttl: Optional[int] = None,
+        attributes: Optional[Sequence[str]] = None,
+        size_limit: int = 0,
+        page_size: Optional[int] = None,
+        enable_paging: Optional[bool] = None,
+    ) -> None:
         """
         Cache LDAP query result.
         
@@ -208,10 +232,25 @@ class LDAPQueryCache:
             search_base: LDAP search base
             ttl: Time-to-live in seconds
         """
-        key = self._make_key(search_filter, search_base)
+        key = self._make_key(
+            search_filter,
+            search_base,
+            attributes=attributes,
+            size_limit=size_limit,
+            page_size=page_size,
+            enable_paging=enable_paging,
+        )
         self.cache.set(key, result, ttl)
     
-    def _make_key(self, search_filter: str, search_base: Optional[str]) -> str:
+    def _make_key(
+        self,
+        search_filter: str,
+        search_base: Optional[str],
+        attributes: Optional[Sequence[str]] = None,
+        size_limit: int = 0,
+        page_size: Optional[int] = None,
+        enable_paging: Optional[bool] = None,
+    ) -> str:
         """
         Create cache key from query parameters.
         
@@ -222,9 +261,16 @@ class LDAPQueryCache:
         Returns:
             Cache key (SHA-256 hash)
         """
+        normalized_attributes = None
+        if attributes is not None:
+            normalized_attributes = sorted(str(attr) for attr in attributes)
         key_data = {
             'filter': search_filter,
-            'base': search_base or ''
+            'base': search_base or '',
+            'attributes': normalized_attributes,
+            'size_limit': int(size_limit or 0),
+            'page_size': page_size,
+            'enable_paging': enable_paging,
         }
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_str.encode()).hexdigest()

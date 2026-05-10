@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,7 +41,6 @@ from reporting.html_report import HTMLReportGenerator
 from reporting.export_formats import ExportFormats
 from reporting.compliance_reporter import ComplianceReporter
 from core.secure_password import SecurePasswordManager
-from core.parallel_ldap import ParallelLDAPExecutor
 from core.progress_persistence import ProgressPersistence, IncrementalScanner
 from risk.risk_manager import RiskManager
 
@@ -65,8 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Domain Controller IP address')
     parser.add_argument('--output', default='report.html',
                         help='Output HTML report file')
-    parser.add_argument('--single-file-report', action='store_true',
-                        help='Embed CSS/JS into the HTML so the report file is fully self-contained')
+    parser.add_argument('--single-file-report', action='store_true', default=True,
+                        help='Embed all report assets into the HTML file (default)')
     parser.add_argument('--json-export',
                         help='Optional JSON export file path')
     parser.add_argument('--ssl', action='store_true',
@@ -211,6 +211,9 @@ def resolve_password(args: argparse.Namespace) -> Tuple[str, SecurePasswordManag
 def collect_data(
     ldap_conn: LDAPConnection,
     show_progress: bool,
+    use_parallel: bool = False,
+    max_workers: int = 5,
+    stealth_settings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Collect all AD objects via LDAP.
 
@@ -218,6 +221,9 @@ def collect_data(
         Dictionary with keys: users, computers, groups, gpos.
     """
     print("[*] Collecting Active Directory data...")
+
+    if use_parallel:
+        return _collect_data_parallel(ldap_conn, show_progress, max_workers, stealth_settings)
 
     user_collector = UserCollector(ldap_conn, show_progress=show_progress)
     users = user_collector.collect()
@@ -240,6 +246,91 @@ def collect_data(
         'computers': computers,
         'groups': groups,
         'gpos': gpos,
+    }
+
+
+def _clone_ldap_connection(ldap_conn: LDAPConnection) -> LDAPConnection:
+    """Create a new LDAP connection with the same runtime settings."""
+    return LDAPConnection(
+        domain=ldap_conn.domain,
+        username=ldap_conn.username,
+        password=ldap_conn.password,
+        dc_ip=ldap_conn.dc_ip,
+        use_ssl=ldap_conn.use_ssl,
+        timeout=ldap_conn.base_timeout,
+        page_size=ldap_conn.page_size,
+        enable_paging=ldap_conn.enable_paging,
+        max_retries=ldap_conn.max_retries,
+        retry_delay=ldap_conn.retry_delay,
+        adaptive_timeout=ldap_conn.adaptive_timeout,
+        enable_cache=ldap_conn.enable_cache,
+        validate_certificate=ldap_conn.validate_certificate,
+    )
+
+
+def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: Optional[Dict[str, Any]]) -> None:
+    """Attach rate limiting to a connection's search method when requested."""
+    if not stealth_settings:
+        return
+    stealth = create_stealth_mode(**stealth_settings)
+    ldap_conn.search = stealth.stealth_wrapper(ldap_conn.search)  # type: ignore[method-assign]
+
+
+def _collect_with_new_connection(
+    base_conn: LDAPConnection,
+    collector_cls: Any,
+    show_progress: bool,
+    stealth_settings: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Run one collector with an isolated LDAP connection."""
+    conn = _clone_ldap_connection(base_conn)
+    try:
+        _apply_stealth_to_connection(conn, stealth_settings)
+        conn.connect()
+        collector = collector_cls(conn, show_progress=show_progress)
+        return collector.collect()
+    finally:
+        conn.disconnect()
+
+
+def _collect_data_parallel(
+    ldap_conn: LDAPConnection,
+    show_progress: bool,
+    max_workers: int,
+    stealth_settings: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Collect top-level AD object sets concurrently with isolated connections."""
+    collectors = {
+        "users": UserCollector,
+        "computers": ComputerCollector,
+        "groups": GroupCollector,
+        "gpos": GPOCollector,
+    }
+    worker_count = max(1, min(int(max_workers or 1), len(collectors)))
+    print(f"[*] Parallel collection enabled ({worker_count} workers)")
+
+    collected: Dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_key = {
+            executor.submit(
+                _collect_with_new_connection,
+                ldap_conn,
+                collector_cls,
+                show_progress,
+                stealth_settings,
+            ): key
+            for key, collector_cls in collectors.items()
+        }
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            collected[key] = future.result()
+            print(f"[+] Collected {len(collected[key])} {key}")
+
+    return {
+        "users": collected.get("users", []),
+        "computers": collected.get("computers", []),
+        "groups": collected.get("groups", []),
+        "gpos": collected.get("gpos", []),
     }
 
 
@@ -603,6 +694,90 @@ def check_privilege_escalation(
         print(f"[+] Probability: {result['probability']}")
 
 
+def calculate_incremental_diff(
+    persistence: ProgressPersistence,
+    domain: str,
+    current_data: Dict[str, Any],
+    current_checkpoint_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Compare current collection data with the latest compatible checkpoint."""
+    checkpoints = persistence.list_checkpoints(domain)
+    previous_checkpoint = None
+    for checkpoint in checkpoints:
+        checkpoint_id = checkpoint.get("checkpoint_id")
+        if current_checkpoint_id and checkpoint_id == current_checkpoint_id:
+            continue
+        previous_checkpoint = checkpoint
+        break
+
+    if not previous_checkpoint:
+        print("[*] Incremental scan: no previous checkpoint found")
+        return None
+
+    previous_payload = persistence.load_checkpoint(previous_checkpoint["checkpoint_id"])
+    if not previous_payload:
+        print("[*] Incremental scan: previous checkpoint could not be loaded")
+        return None
+
+    previous_data = previous_payload.get("data", previous_payload)
+    scanner = IncrementalScanner(persistence)
+    key_fields = {
+        "users": ["sAMAccountName"],
+        "computers": ["name"],
+        "groups": ["name"],
+        "gpos": ["name"],
+    }
+    diff: Dict[str, Any] = {
+        "baseline_checkpoint": previous_checkpoint["checkpoint_id"],
+        "collections": {},
+    }
+
+    for collection_name, fields in key_fields.items():
+        current_items = current_data.get(collection_name, []) or []
+        previous_items = previous_data.get(collection_name, []) or []
+        collection_diff = {
+            "new": scanner.find_new_items(current_items, previous_items, fields),
+            "changed": scanner.find_changed_items(current_items, previous_items, fields),
+            "deleted": scanner.find_deleted_items(current_items, previous_items, fields),
+        }
+        diff["collections"][collection_name] = collection_diff
+        print(
+            "[+] Incremental %s: %d new, %d changed, %d deleted"
+            % (
+                collection_name,
+                len(collection_diff["new"]),
+                len(collection_diff["changed"]),
+                len(collection_diff["deleted"]),
+            )
+        )
+
+    return diff
+
+
+def build_checkpoint_payload(
+    args: argparse.Namespace,
+    data: Dict[str, Any],
+    analysis: Dict[str, Any],
+    scoring: Dict[str, Any],
+    compliance: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a full checkpoint payload that can be resumed without recollection."""
+    return {
+        "domain": args.domain,
+        "created_at": datetime.now().isoformat(),
+        "data": data,
+        "analysis": analysis,
+        "scoring": scoring,
+        "compliance": compliance,
+        "users": data.get("users", []),
+        "computers": data.get("computers", []),
+        "groups": data.get("groups", []),
+        "gpos": data.get("gpos", []),
+        "risks": scoring.get("scored_risks", []),
+        "domain_score": scoring.get("domain_score"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -627,12 +802,15 @@ def main() -> None:
 
         # --- Stealth mode ----------------------------------------------------
         random_delay = args.random_delay if args.random_delay else (0, 0)
+        stealth_settings = {
+            "enabled": True,
+            "rate_limit": args.rate_limit,
+            "random_delay_min": random_delay[0] if len(random_delay) > 0 else 0,
+            "random_delay_max": random_delay[1] if len(random_delay) > 1 else 0,
+            "min_logging": args.stealth,
+        }
         stealth = create_stealth_mode(
-            enabled=True,
-            rate_limit=args.rate_limit,
-            random_delay_min=random_delay[0] if len(random_delay) > 0 else 0,
-            random_delay_max=random_delay[1] if len(random_delay) > 1 else 0,
-            min_logging=args.stealth,
+            **stealth_settings,
         )
         if args.stealth:
             print("[*] Stealth mode enabled (enhanced rate limiting)")
@@ -670,34 +848,64 @@ def main() -> None:
             sys.exit(1)
 
         print("[+] LDAP connection established successfully")
+        ldap_conn.search = stealth.stealth_wrapper(ldap_conn.search)  # type: ignore[method-assign]
 
-        # --- Data collection -------------------------------------------------
-        show_progress = not args.no_progress
-        data = collect_data(ldap_conn, show_progress)
+        resumed_from_checkpoint = False
+        if args.resume and persistence:
+            checkpoint_payload = persistence.load_checkpoint(args.resume)
+            if checkpoint_payload and all(k in checkpoint_payload for k in ("data", "analysis", "scoring", "compliance")):
+                data = checkpoint_payload["data"]
+                analysis = checkpoint_payload["analysis"]
+                scoring = checkpoint_payload["scoring"]
+                compliance = checkpoint_payload["compliance"]
+                resumed_from_checkpoint = True
+                print(f"[+] Loaded full checkpoint: {args.resume}")
+            else:
+                print("[*] Checkpoint does not contain a full scan state; running a fresh scan")
 
-        # --- Security analysis -----------------------------------------------
-        analysis = run_security_analysis(ldap_conn, data)
+        if not resumed_from_checkpoint:
+            # --- Data collection ---------------------------------------------
+            show_progress = not args.no_progress
+            data = collect_data(
+                ldap_conn,
+                show_progress,
+                use_parallel=args.parallel,
+                max_workers=args.max_workers,
+                stealth_settings=stealth_settings if args.parallel else None,
+            )
 
-        # --- Risk scoring ----------------------------------------------------
-        scoring = score_and_consolidate(analysis, data)
+            incremental_diff = None
+            if args.incremental and persistence:
+                incremental_diff = calculate_incremental_diff(
+                    persistence,
+                    args.domain,
+                    data,
+                    current_checkpoint_id=args.checkpoint,
+                )
 
-        # --- Compliance & risk management ------------------------------------
-        compliance = generate_compliance_and_risk(
-            ldap_conn, scoring['scored_risks'], data, args.hourly_rate
-        )
+            # --- Security analysis -------------------------------------------
+            analysis = run_security_analysis(ldap_conn, data)
+            if incremental_diff:
+                analysis["incremental_diff"] = incremental_diff
 
-        # --- Checkpoint ------------------------------------------------------
-        if args.checkpoint and persistence:
-            checkpoint_data = {
-                'domain': args.domain,
-                'users': data['users'],
-                'computers': data['computers'],
-                'groups': data['groups'],
-                'risks': scoring['scored_risks'],
-                'domain_score': scoring['domain_score'],
-            }
-            persistence.save_checkpoint(args.checkpoint, checkpoint_data)
-            print(f"[+] Checkpoint saved: {args.checkpoint}")
+            # --- Risk scoring ------------------------------------------------
+            scoring = score_and_consolidate(analysis, data)
+
+            # --- Compliance & risk management --------------------------------
+            compliance = generate_compliance_and_risk(
+                ldap_conn, scoring['scored_risks'], data, args.hourly_rate
+            )
+
+            # --- Checkpoint --------------------------------------------------
+            checkpoint_id = args.checkpoint
+            if args.incremental and persistence and not checkpoint_id:
+                checkpoint_id = persistence.create_checkpoint_id(args.domain)
+            if checkpoint_id and persistence:
+                persistence.save_checkpoint(
+                    checkpoint_id,
+                    build_checkpoint_payload(args, data, analysis, scoring, compliance),
+                )
+                print(f"[+] Checkpoint saved: {checkpoint_id}")
 
         # --- Reports & export ------------------------------------------------
         generate_reports(args, data, analysis, scoring, compliance, ldap_conn)

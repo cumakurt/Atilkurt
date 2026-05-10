@@ -10,6 +10,7 @@ from datetime import datetime
 class UserDict(TypedDict, total=False):
     """User dictionary type definition."""
     sAMAccountName: str
+    objectSid: Optional[str]
     displayName: Optional[str]
     memberOf: List[str]
     lastLogonTimestamp: Optional[datetime]
@@ -48,6 +49,7 @@ class UserDict(TypedDict, total=False):
 class ComputerDict(TypedDict, total=False):
     """Computer dictionary type definition."""
     name: str
+    objectSid: Optional[str]
     distinguishedName: str
     operatingSystem: Optional[str]
     operatingSystemVersion: Optional[str]
@@ -73,6 +75,7 @@ class GroupDict(TypedDict, total=False):
     """Group dictionary type definition."""
     name: str
     sAMAccountName: Optional[str]
+    objectSid: Optional[str]
     distinguishedName: str
     member: List[str]
     memberOf: Optional[List[str]]

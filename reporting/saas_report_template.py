@@ -419,7 +419,7 @@ def build_saas_report(
             background: var(--bg-card) !important;
             color: var(--text-primary) !important;
             border: none !important;
-            border-left: 4px solid rgba(255, 107, 0, 0.45) !important;
+            border-left: 3px solid rgba(255, 107, 0, 0.45) !important;
             border-radius: 8px !important;
             padding: 12px 16px !important;
             font-size: 0.9375rem !important;

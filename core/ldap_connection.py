@@ -250,7 +250,14 @@ class LDAPConnection:
         
         # Check cache first if enabled
         if self.enable_cache and use_cache and self.query_cache:
-            cached_result = self.query_cache.get_query_result(search_filter, search_base)
+            cached_result = self.query_cache.get_query_result(
+                search_filter,
+                search_base,
+                attributes=attributes,
+                size_limit=size_limit,
+                page_size=self.page_size,
+                enable_paging=self.enable_paging,
+            )
             if cached_result is not None:
                 logger.debug(f"Cache hit for LDAP query: {search_filter[:50]}...")
                 if progress_callback:
@@ -279,7 +286,15 @@ class LDAPConnection:
                     
                     # Cache result if enabled
                     if self.enable_cache and use_cache and self.query_cache:
-                        self.query_cache.set_query_result(search_filter, results, search_base)
+                        self.query_cache.set_query_result(
+                            search_filter,
+                            results,
+                            search_base,
+                            attributes=attributes,
+                            size_limit=size_limit,
+                            page_size=self.page_size,
+                            enable_paging=self.enable_paging,
+                        )
                     
                     return results
                 else:
@@ -301,7 +316,15 @@ class LDAPConnection:
                     
                     # Cache result if enabled
                     if self.enable_cache and use_cache and self.query_cache:
-                        self.query_cache.set_query_result(search_filter, results, search_base)
+                        self.query_cache.set_query_result(
+                            search_filter,
+                            results,
+                            search_base,
+                            attributes=attributes,
+                            size_limit=size_limit,
+                            page_size=self.page_size,
+                            enable_paging=self.enable_paging,
+                        )
                     
                     if progress_callback:
                         progress_callback(len(results), len(results))
