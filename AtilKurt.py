@@ -31,6 +31,7 @@ from analysis.registry import (
     get_consolidated_risk_lists,
     build_export_analysis_slice,
     CONSOLIDATION_RISK_KEYS,
+    get_analysis_step_keys,
 )
 from analysis.exploitability_scorer import ExploitabilityScorer
 from analysis.privilege_calculator import PrivilegeCalculator
@@ -73,8 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Enable SSL/TLS (default: disabled, will auto-detect)')
     parser.add_argument('--stealth', action='store_true',
                         help='Enable stealth mode (enhanced rate limiting)')
-    parser.add_argument('--rate-limit', type=float, default=0.5,
-                        help='Rate limit in seconds between queries (default: 0.5)')
+    parser.add_argument('--rate-limit', type=float, default=None,
+                        help='Minimum seconds between LDAP network queries '
+                             '(default: 0; stealth default: 0.5)')
     parser.add_argument('--random-delay', type=float, nargs=2,
                         metavar=('MIN', 'MAX'),
                         help='Random delay range in seconds (e.g., --random-delay 1 5)')
@@ -96,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Enable parallel LDAP queries')
     parser.add_argument('--max-workers', type=int, default=5,
                         help='Maximum parallel workers (default: 5)')
+    parser.add_argument('--analysis-profile', choices=['full', 'fast'], default='full',
+                        help='Analysis profile to run (default: full)')
+    parser.add_argument('--skip-analysis', action='append', choices=get_analysis_step_keys(),
+                        default=[],
+                        help='Skip one analysis step by key; can be used multiple times')
 
     # Progress persistence arguments
     parser.add_argument('--resume',
@@ -273,7 +280,8 @@ def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: Op
     if not stealth_settings:
         return
     stealth = create_stealth_mode(**stealth_settings)
-    ldap_conn.search = stealth.stealth_wrapper(ldap_conn.search)  # type: ignore[method-assign]
+    if stealth.enabled:
+        ldap_conn.pre_search_hook = stealth.apply_delay
 
 
 def _collect_with_new_connection(
@@ -341,6 +349,8 @@ def _collect_data_parallel(
 def run_security_analysis(
     ldap_conn: LDAPConnection,
     data: Dict[str, Any],
+    analysis_profile: str = "full",
+    skip_analyses: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Run all security analyzers and return consolidated results.
 
@@ -351,29 +361,47 @@ def run_security_analysis(
     Returns:
         Dictionary with all analysis results.
     """
-    def progress_callback(description: str, step_result: Dict[str, Any]) -> None:
+    def progress_callback(description: str, step_result: Dict[str, Any], duration: Optional[float] = None) -> None:
+        duration_suffix = f" in {duration:.1f}s" if duration is not None else ""
         counts = [len(v) for v in step_result.values() if isinstance(v, list)]
         if counts:
-            print(f"[+] {description}: {counts[0]} items")
+            print(f"[+] {description}: {counts[0]} items{duration_suffix}")
         else:
             for key, value in step_result.items():
                 if isinstance(value, dict):
                     if key == "legacy_os_results":
-                        print(f"[+] Legacy OS: {value.get('total_count', 0)} computers, {value.get('eol_count', 0)} EOL")
+                        print(
+                            f"[+] Legacy OS: {value.get('total_count', 0)} computers, "
+                            f"{value.get('eol_count', 0)} EOL{duration_suffix}"
+                        )
                         return
                     if key == "tier_data":
                         td = value
                         print(f"[+] TIER: T0={td.get('tier_0', {}).get('count', 0)}, "
-                              f"T1={td.get('tier_1', {}).get('count', 0)}, T2={td.get('tier_2', {}).get('count', 0)}")
+                              f"T1={td.get('tier_1', {}).get('count', 0)}, "
+                              f"T2={td.get('tier_2', {}).get('count', 0)}{duration_suffix}")
                         return
                     if key == "acl_security_results":
-                        print(f"[+] ACL: {len(value.get('acl_risks', []))} risks, {len(value.get('shadow_admins', []))} Shadow Admins")
+                        print(
+                            f"[+] ACL: {len(value.get('acl_risks', []))} risks, "
+                            f"{len(value.get('shadow_admins', []))} Shadow Admins{duration_suffix}"
+                        )
                         return
         if not counts:
-            print(f"[+] {description}: done")
+            print(f"[+] {description}: done{duration_suffix}")
+
+    def status_callback(description: str) -> None:
+        print(f"[*] Running {description}...")
 
     print("[*] Performing security analysis...")
-    results = run_all_analyses(ldap_conn, data, progress_callback=progress_callback)
+    results = run_all_analyses(
+        ldap_conn,
+        data,
+        progress_callback=progress_callback,
+        status_callback=status_callback,
+        profile=analysis_profile,
+        skip_keys=skip_analyses or [],
+    )
 
     # Exploitability scoring (mutates risk dicts in-place)
     print("[*] Calculating exploitability scores...")
@@ -801,10 +829,18 @@ def main() -> None:
         password, password_manager = resolve_password(args)
 
         # --- Stealth mode ----------------------------------------------------
-        random_delay = args.random_delay if args.random_delay else (0, 0)
+        random_delay = args.random_delay if args.random_delay else (0.0, 0.0)
+        rate_limit = args.rate_limit
+        if rate_limit is None:
+            rate_limit = 0.5 if args.stealth else 0.0
+        delay_enabled = bool(
+            args.stealth
+            or rate_limit > 0
+            or (len(random_delay) > 1 and random_delay[1] > 0)
+        )
         stealth_settings = {
-            "enabled": True,
-            "rate_limit": args.rate_limit,
+            "enabled": delay_enabled,
+            "rate_limit": rate_limit,
             "random_delay_min": random_delay[0] if len(random_delay) > 0 else 0,
             "random_delay_max": random_delay[1] if len(random_delay) > 1 else 0,
             "min_logging": args.stealth,
@@ -813,9 +849,11 @@ def main() -> None:
             **stealth_settings,
         )
         if args.stealth:
-            print("[*] Stealth mode enabled (enhanced rate limiting)")
+            print(f"[*] Stealth mode enabled ({rate_limit}s minimum delay between LDAP network queries)")
+        elif delay_enabled:
+            print(f"[*] Rate limiting enabled ({rate_limit}s between LDAP network queries)")
         else:
-            print(f"[*] Rate limiting enabled ({args.rate_limit}s between queries)")
+            print("[*] Rate limiting disabled")
 
         # --- Progress persistence -------------------------------------------
         persistence = None
@@ -848,7 +886,8 @@ def main() -> None:
             sys.exit(1)
 
         print("[+] LDAP connection established successfully")
-        ldap_conn.search = stealth.stealth_wrapper(ldap_conn.search)  # type: ignore[method-assign]
+        if stealth.enabled:
+            ldap_conn.pre_search_hook = stealth.apply_delay
 
         resumed_from_checkpoint = False
         if args.resume and persistence:
@@ -884,7 +923,12 @@ def main() -> None:
                 )
 
             # --- Security analysis -------------------------------------------
-            analysis = run_security_analysis(ldap_conn, data)
+            analysis = run_security_analysis(
+                ldap_conn,
+                data,
+                analysis_profile=args.analysis_profile,
+                skip_analyses=args.skip_analysis,
+            )
             if incremental_diff:
                 analysis["incremental_diff"] = incremental_diff
 

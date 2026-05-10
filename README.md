@@ -470,9 +470,9 @@ Automatically generates risk heat maps, business impact assessments, remediation
 **Why it's important:** Queries may fail due to temporary network issues or DC load. Retry mechanism automatically resolves these issues.
 
 #### Rate Limiting
-**What it does:** Always active rate limiting. Reduces load on Domain Controller and lowers detection risk.
+**What it does:** Optional rate limiting. It is disabled by default for large read-only assessments and enabled when `--stealth`, `--rate-limit`, or `--random-delay` is used.
 
-**Why it's important:** Very fast queries can overload the DC or be detected by security systems. Rate limiting ensures safe and silent analysis.
+**Why it's important:** Very fast queries can increase DC load or be detected by security systems. Rate limiting is useful for stealth assessments, while disabling it keeps large inventory scans practical.
 
 #### LDAP Query Caching
 **What it does:** Caches LDAP query results to avoid redundant queries. Reduces network traffic and improves performance.
@@ -563,7 +563,7 @@ python3 AtilKurt.py \
 
 #### Stealth and Rate Limiting
 - `--stealth`: Enable stealth mode (enhanced rate limiting)
-- `--rate-limit`: Minimum time between queries in seconds (default: 0.5, always active)
+- `--rate-limit`: Minimum time between LDAP network queries in seconds (default: 0; stealth default: 0.5)
 - `--random-delay MIN MAX`: Random delay range in seconds (e.g., --random-delay 1 5)
 
 #### Export Parameters
@@ -575,6 +575,8 @@ python3 AtilKurt.py \
 
 #### Analysis Parameters
 - `--check-user USERNAME`: Check if specific user can become Domain Admin
+- `--analysis-profile {full,fast}`: Select the analysis profile (default: full). The fast profile skips the most expensive LDAP-heavy modules.
+- `--skip-analysis KEY`: Skip a specific analysis step by key. Can be used multiple times.
 
 #### Risk Management Parameters
 - `--hourly-rate`: Hourly rate for cost calculations in USD (default: 100.0)
@@ -610,8 +612,12 @@ python3 AtilKurt.py \
     --page-size 1000 \
     --timeout 60 \
     --max-retries 3 \
-    --rate-limit 0.5
+    --parallel \
+    --max-workers 4 \
+    --analysis-profile fast
 ```
+
+For full coverage on large domains, keep `--analysis-profile full` and skip only the module that is too expensive for the current window, for example `--skip-analysis acl_security`.
 
 #### With Stealth Mode (Pentest)
 ```bash

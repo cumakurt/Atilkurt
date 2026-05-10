@@ -252,6 +252,28 @@ class TestADCSExtendedAnalyzer(unittest.TestCase):
         risks = self.analyzer.analyze()
         self.assertIsInstance(risks, list)
 
+    def test_esc13_handles_null_policy_attributes(self):
+        """Templates with null policy attributes should not raise."""
+        risks = self.analyzer._check_esc13([
+            {
+                'cn': 'NullPolicyTemplate',
+                'msPKI-Certificate-Application-Policy': None,
+                'pKIExtendedKeyUsage': None,
+            }
+        ])
+        self.assertEqual(risks, [])
+
+    def test_esc9_handles_list_enrollment_flag(self):
+        """LDAP may return numeric certificate flags as a single-item list."""
+        from analysis.ad_cs_extended_analyzer import CT_FLAG_NO_SECURITY_EXTENSION
+        risks = self.analyzer._check_esc9([
+            {
+                'cn': 'Esc9Template',
+                'msPKI-Enrollment-Flag': [str(CT_FLAG_NO_SECURITY_EXTENSION)],
+            }
+        ])
+        self.assertEqual(len(risks), 1)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  AuditPolicyAnalyzer Tests

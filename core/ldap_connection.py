@@ -3,7 +3,7 @@ LDAP Connection Module
 Read-only LDAP connection using ldap3 library
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from ldap3 import Server, Connection, ALL, Tls, NTLM, SIMPLE
 from ldap3.core.exceptions import LDAPException, LDAPOperationResult
 import ssl
@@ -83,6 +83,7 @@ class LDAPConnection:
         self.username = self._normalize_username(self.username, self.domain)
         self.connection: Optional[Connection] = None
         self.base_dn = self._get_base_dn(self.domain)
+        self.pre_search_hook: Optional[Callable[[], None]] = None
         
         # Adaptive timeout tracking
         self.estimated_result_size = 0
@@ -266,10 +267,13 @@ class LDAPConnection:
         
         # Calculate adaptive timeout if enabled
         timeout = self._calculate_timeout(size_limit)
-        
+
         last_error = None
         for attempt in range(self.max_retries):
             try:
+                if self.pre_search_hook:
+                    self.pre_search_hook()
+
                 # Use paged search for large result sets if enabled
                 # But skip paging for single object searches (size_limit=1) to avoid retry issues
                 if self.enable_paging and (size_limit == 0 or size_limit > self.page_size) and size_limit != 1:

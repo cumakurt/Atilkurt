@@ -28,6 +28,29 @@ class ADCSExtendedAnalyzer:
     def __init__(self, ldap_connection):
         self.ldap = ldap_connection
 
+    @staticmethod
+    def _as_list(value: Any) -> List[Any]:
+        """Normalize LDAP attribute values to a list."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]
+
+    @staticmethod
+    def _as_int(value: Any) -> Optional[int]:
+        """Normalize LDAP numeric attributes to int when possible."""
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def analyze(self) -> List[Dict[str, Any]]:
         risks: List[Dict[str, Any]] = []
         try:
@@ -173,33 +196,30 @@ class ADCSExtendedAnalyzer:
         risks: List[Dict[str, Any]] = []
         for tmpl in templates:
             name = tmpl.get('cn') or tmpl.get('displayName', '?')
-            enroll_flag = tmpl.get('msPKI-Enrollment-Flag')
+            enroll_flag = self._as_int(tmpl.get('msPKI-Enrollment-Flag'))
             if enroll_flag is None:
                 continue
-            try:
-                if int(enroll_flag) & CT_FLAG_NO_SECURITY_EXTENSION:
-                    risks.append({
-                        'type': RiskTypes.CERTIFICATE_ESC9,
-                        'severity': Severity.HIGH,
-                        'title': f'Template "{name}" has NO_SECURITY_EXTENSION (ESC9)',
-                        'description': (
-                            f'Certificate template "{name}" has '
-                            'CT_FLAG_NO_SECURITY_EXTENSION set. Certificates '
-                            'issued from this template will not include the '
-                            'szOID_NTDS_CA_SECURITY_EXT SID extension, enabling '
-                            'name impersonation attacks.'
-                        ),
-                        'affected_object': name,
-                        'object_type': 'configuration',
-                        'mitigation': (
-                            'Remove CT_FLAG_NO_SECURITY_EXTENSION from the '
-                            'template enrollment flags. Enable strong certificate '
-                            'mapping (KB5014754).'
-                        ),
-                        'mitre_attack': MITRETechniques.PRIVILEGE_ESCALATION,
-                    })
-            except (ValueError, TypeError):
-                continue
+            if enroll_flag & CT_FLAG_NO_SECURITY_EXTENSION:
+                risks.append({
+                    'type': RiskTypes.CERTIFICATE_ESC9,
+                    'severity': Severity.HIGH,
+                    'title': f'Template "{name}" has NO_SECURITY_EXTENSION (ESC9)',
+                    'description': (
+                        f'Certificate template "{name}" has '
+                        'CT_FLAG_NO_SECURITY_EXTENSION set. Certificates '
+                        'issued from this template will not include the '
+                        'szOID_NTDS_CA_SECURITY_EXT SID extension, enabling '
+                        'name impersonation attacks.'
+                    ),
+                    'affected_object': name,
+                    'object_type': 'configuration',
+                    'mitigation': (
+                        'Remove CT_FLAG_NO_SECURITY_EXTENSION from the '
+                        'template enrollment flags. Enable strong certificate '
+                        'mapping (KB5014754).'
+                    ),
+                    'mitre_attack': MITRETechniques.PRIVILEGE_ESCALATION,
+                })
         return risks
 
     # ── ESC11 — ICertPassage RPC relay ──────────────────────────────────────
@@ -236,17 +256,18 @@ class ADCSExtendedAnalyzer:
         risks: List[Dict[str, Any]] = []
         for tmpl in templates:
             name = tmpl.get('cn') or tmpl.get('displayName', '?')
-            app_policies = tmpl.get('msPKI-Certificate-Application-Policy', [])
-            if isinstance(app_policies, str):
-                app_policies = [app_policies]
+            app_policies = self._as_list(tmpl.get('msPKI-Certificate-Application-Policy'))
             # ESC13: template has issuance policy OIDs linked to groups
-            eku = tmpl.get('pKIExtendedKeyUsage', [])
-            if isinstance(eku, str):
-                eku = [eku]
+            eku = self._as_list(tmpl.get('pKIExtendedKeyUsage'))
             # Flag templates with custom OIDs that may link to groups
             custom_oids = [
-                oid for oid in (list(app_policies) + list(eku))
-                if oid and not oid.startswith('1.3.6.1.') and not oid.startswith('2.5.')
+                oid for oid in (app_policies + eku)
+                if (
+                    isinstance(oid, str)
+                    and oid
+                    and not oid.startswith('1.3.6.1.')
+                    and not oid.startswith('2.5.')
+                )
             ]
             if custom_oids:
                 risks.append({
@@ -287,7 +308,8 @@ class ADCSExtendedAnalyzer:
             )
             if results:
                 quota = results[0].get('ms-DS-MachineAccountQuota')
-                if quota is not None and int(quota) > 0:
+                quota_int = self._as_int(quota)
+                if quota_int is not None and quota_int > 0:
                     risks.append({
                         'type': RiskTypes.CERTIFICATE_CERTIFRIED,
                         'severity': Severity.HIGH,

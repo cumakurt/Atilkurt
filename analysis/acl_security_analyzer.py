@@ -217,7 +217,14 @@ class ACLSecurityAnalyzer:
             all_acl_findings.extend(findings)
         
         # Shadow Admin Detection
-        shadow_admins = self._detect_shadow_admins(users, groups, domain_dn, privileged_users, privileged_groups)
+        shadow_admins = self._detect_shadow_admins(
+            users,
+            groups,
+            domain_dn,
+            privileged_users,
+            privileged_groups,
+            all_acl_findings,
+        )
         
         # Privilege Escalation Path Analysis
         escalation_paths = self._analyze_privilege_escalation_paths(
@@ -249,7 +256,8 @@ class ACLSecurityAnalyzer:
         try:
             results = self.ldap.search(
                 search_filter='(objectClass=domain)',
-                attributes=['distinguishedName']
+                attributes=['distinguishedName'],
+                size_limit=1,
             )
             if results:
                 return results[0].get('distinguishedName', '')
@@ -315,24 +323,27 @@ class ACLSecurityAnalyzer:
         """Build SID -> display name map from users, groups, and well-known SIDs."""
         sid_map = dict(self.WELL_KNOWN_SIDS)
         for u in users or []:
-            raw_sid = u.get('objectSid')
-            if not raw_sid:
-                continue
-            if isinstance(raw_sid, list) and len(raw_sid) > 0:
-                raw_sid = raw_sid[0]
-            sid_str = self._binary_sid_to_string(raw_sid) if isinstance(raw_sid, bytes) else str(raw_sid)
+            sid_str = self._sid_from_object(u)
             if sid_str:
                 sid_map[sid_str] = u.get('sAMAccountName') or u.get('displayName') or sid_str
         for g in groups or []:
-            raw_sid = g.get('objectSid')
-            if not raw_sid:
-                continue
-            if isinstance(raw_sid, list) and len(raw_sid) > 0:
-                raw_sid = raw_sid[0]
-            sid_str = self._binary_sid_to_string(raw_sid) if isinstance(raw_sid, bytes) else str(raw_sid)
+            sid_str = self._sid_from_object(g)
             if sid_str:
                 sid_map[sid_str] = g.get('name') or g.get('sAMAccountName') or sid_str
         return sid_map
+
+    def _sid_from_object(self, obj: Dict[str, Any]) -> str:
+        """Return a normalized SID string from a collected object."""
+        raw_sid = obj.get('objectSid')
+        if not raw_sid:
+            return ''
+        if isinstance(raw_sid, list) and raw_sid:
+            raw_sid = raw_sid[0]
+        if isinstance(raw_sid, str) and raw_sid.startswith('S-'):
+            return raw_sid
+        if isinstance(raw_sid, (bytes, bytearray, str)):
+            return self._binary_sid_to_string(raw_sid)
+        return str(raw_sid)
     
     def _analyze_object_acl(self, obj: Dict[str, Any], user_map: Dict, group_map: Dict,
                             sid_to_display_name: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -356,7 +367,8 @@ class ACLSecurityAnalyzer:
             results = self.ldap.search(
                 search_base=obj['dn'],
                 search_filter='(objectClass=*)',
-                attributes=['nTSecurityDescriptor', 'distinguishedName', 'objectClass']
+                attributes=['nTSecurityDescriptor', 'distinguishedName', 'objectClass'],
+                size_limit=1,
             )
             
             if not results:
@@ -524,7 +536,8 @@ class ACLSecurityAnalyzer:
     
     def _detect_shadow_admins(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]],
                              domain_dn: str, privileged_users: List[Dict[str, Any]],
-                             privileged_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                             privileged_groups: List[Dict[str, Any]],
+                             acl_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Detect Shadow Admins.
         
@@ -535,65 +548,124 @@ class ACLSecurityAnalyzer:
           - Privileged users
           - High-privilege groups
         """
-        shadow_admins = []
-        
-        # Get all users who are NOT Domain/Enterprise Admins
-        non_admin_users = []
-        da_group_names = {'domain admins', 'enterprise admins'}
-        
+        del domain_dn
+
+        users_by_sid = {}
         for user in users:
-            is_da = False
-            member_of = user.get('memberOf', [])
-            if isinstance(member_of, str):
-                member_of = [member_of]
-            
-            for group_dn in member_of:
-                group_name = self._extract_name_from_dn(group_dn).lower()
-                if any(da_name in group_name for da_name in da_group_names):
-                    is_da = True
-                    break
-            
-            if not is_da:
-                non_admin_users.append(user)
-        
-        # Check each non-admin user for dangerous permissions on critical objects
-        critical_targets = [
-            {'type': 'domain', 'dn': domain_dn, 'name': 'Domain'},
-        ]
-        critical_targets.extend([
-            {'type': 'user', 'dn': u.get('distinguishedName'), 'name': u.get('sAMAccountName')}
-            for u in privileged_users[:10]  # Limit for performance
-        ])
-        critical_targets.extend([
-            {'type': 'group', 'dn': g.get('distinguishedName'), 'name': g.get('name')}
-            for g in privileged_groups[:10]  # Limit for performance
-        ])
-        
-        for user in non_admin_users:
-            dangerous_perms = []
-            
-            for target in critical_targets:
-                if not target.get('dn'):
+            sid = self._sid_from_object(user)
+            if sid:
+                users_by_sid[sid] = user
+
+        groups_by_sid = {}
+        for group in groups:
+            sid = self._sid_from_object(group)
+            if sid:
+                groups_by_sid[sid] = group
+        users_by_dn = {
+            str(user.get('distinguishedName')).lower(): user
+            for user in users
+            if user.get('distinguishedName')
+        }
+        privileged_user_sids = set()
+        for user in privileged_users:
+            sid = self._sid_from_object(user)
+            if sid:
+                privileged_user_sids.add(sid)
+
+        privileged_group_sids = set()
+        for group in privileged_groups:
+            sid = self._sid_from_object(group)
+            if sid:
+                privileged_group_sids.add(sid)
+
+        shadow_by_principal: Dict[str, Dict[str, Any]] = {}
+
+        def add_shadow_principal(
+            principal_key: str,
+            principal_name: str,
+            principal_dn: Optional[str],
+            principal_type: str,
+            permission: Dict[str, Any],
+        ) -> None:
+            record = shadow_by_principal.setdefault(principal_key, {
+                'user': principal_name,
+                'user_dn': principal_dn,
+                'principal_type': principal_type,
+                'dangerous_permissions': [],
+            })
+            record['dangerous_permissions'].append(permission)
+
+        for finding in acl_findings:
+            trustee_sid = finding.get('trustee')
+            if not trustee_sid:
+                continue
+
+            permission = {
+                'permission': finding.get('permission'),
+                'object': finding.get('affected_object'),
+                'object_type': finding.get('object_type'),
+                'object_dn': finding.get('object_dn'),
+                'inherited': finding.get('is_inherited', False),
+            }
+
+            user = users_by_sid.get(trustee_sid)
+            if user and trustee_sid not in privileged_user_sids:
+                add_shadow_principal(
+                    f"user:{trustee_sid}",
+                    user.get('sAMAccountName') or user.get('displayName') or trustee_sid,
+                    user.get('distinguishedName'),
+                    'user',
+                    permission,
+                )
+                continue
+
+            group = groups_by_sid.get(trustee_sid)
+            if not group or trustee_sid in privileged_group_sids:
+                continue
+
+            group_name = group.get('name') or group.get('sAMAccountName') or trustee_sid
+            add_shadow_principal(
+                f"group:{trustee_sid}",
+                group_name,
+                group.get('distinguishedName'),
+                'group',
+                permission,
+            )
+
+            members = group.get('member') or []
+            if isinstance(members, str):
+                members = [members]
+            for member_dn in members:
+                member = users_by_dn.get(str(member_dn).lower())
+                if not member:
                     continue
-                
-                # Check if user has dangerous permissions (simplified check)
-                # In production, would check actual ACLs
-                perms = self._check_user_permissions_on_object(user, target)
-                if perms:
-                    dangerous_perms.extend(perms)
-            
-            if dangerous_perms:
-                shadow_admin = {
-                    'user': user.get('sAMAccountName'),
-                    'user_dn': user.get('distinguishedName'),
-                    'dangerous_permissions': dangerous_perms,
-                    'why_risky': self._explain_shadow_admin_risk(dangerous_perms),
-                    'attack_scenario': self._get_shadow_admin_attack_scenario(dangerous_perms),
-                    'recommendation': self._get_shadow_admin_recommendation(dangerous_perms),
-                    'risk_level': self._calculate_shadow_admin_risk(dangerous_perms)
-                }
-                shadow_admins.append(shadow_admin)
-        
+                member_sid = self._sid_from_object(member)
+                if not member_sid or member_sid in privileged_user_sids:
+                    continue
+                inherited_permission = dict(permission)
+                inherited_permission['via_group'] = group_name
+                add_shadow_principal(
+                    f"user:{member_sid}",
+                    member.get('sAMAccountName') or member.get('displayName') or member_sid,
+                    member.get('distinguishedName'),
+                    'user',
+                    inherited_permission,
+                )
+
+        shadow_admins = []
+        for record in shadow_by_principal.values():
+            dangerous_perms = record['dangerous_permissions']
+            shadow_admins.append({
+                'user': record.get('user'),
+                'user_dn': record.get('user_dn'),
+                'principal_type': record.get('principal_type'),
+                'dangerous_permissions': dangerous_perms,
+                'why_risky': self._explain_shadow_admin_risk(dangerous_perms),
+                'attack_scenario': self._get_shadow_admin_attack_scenario(dangerous_perms),
+                'recommendation': self._get_shadow_admin_recommendation(dangerous_perms),
+                'risk_level': self._calculate_shadow_admin_risk(dangerous_perms)
+            })
+
         return shadow_admins
     
     def _check_user_permissions_on_object(self, user: Dict[str, Any], 
@@ -623,7 +695,8 @@ class ACLSecurityAnalyzer:
             results = self.ldap.search(
                 search_base=target['dn'],
                 search_filter='(objectClass=*)',
-                attributes=['nTSecurityDescriptor', 'objectClass']
+                attributes=['nTSecurityDescriptor', 'objectClass'],
+                size_limit=1,
             )
             
             if not results:
@@ -680,7 +753,8 @@ class ACLSecurityAnalyzer:
             escaped_sam = escape_filter_chars(str(sam_account))
             results = self.ldap.search(
                 search_filter=f"(sAMAccountName={escaped_sam})",
-                attributes=['objectSid']
+                attributes=['objectSid'],
+                size_limit=1,
             )
             if results and results[0].get('objectSid'):
                 # Convert binary SID to string format

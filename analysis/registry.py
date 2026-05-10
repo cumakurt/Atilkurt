@@ -4,7 +4,8 @@ Single source of truth for analysis steps and risk keys.
 Enables adding new analyzers without editing the main entry point.
 """
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # Risk keys: single source for consolidation and export
@@ -347,60 +348,175 @@ def _run_replication(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     return {"replication_risks": analyzer.analyze(data["users"], data["groups"])}
 
 
-# (description, runner) for each analysis step
-ANALYSIS_STEPS: List[Tuple[str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]] = [
-    ("User risk analysis", _run_user_risks),
-    ("Computer risk analysis", _run_computer_risks),
-    ("Legacy OS analysis", _run_legacy_os),
-    ("Group risk analysis", _run_group_risks),
-    ("Kerberos delegation analysis", _run_kerberos),
-    ("Privilege escalation analysis", _run_escalation),
-    ("ACL analysis (legacy)", _run_acl_legacy),
-    ("Comprehensive ACL security analysis", _run_acl_security),
-    ("Misconfiguration checklist", _run_misconfig),
-    ("Kerberoasting and AS-REP roasting detection", _run_kerberoasting),
-    ("Service account analysis", _run_service_accounts),
-    ("GPO abuse analysis", _run_gpo_abuse),
-    ("DCSync rights analysis", _run_dcsync),
-    ("Password policy analysis", _run_password_policy),
-    ("Trust relationship analysis", _run_trust),
-    ("AD Certificate Services analysis", _run_certificate),
-    ("GPP password extraction", _run_gpp),
-    ("LAPS analysis", _run_laps),
-    ("Vulnerability scanning", _run_vulnerability),
-    ("Domain security analysis", _run_domain_security),
-    ("Extended LDAP analysis", _run_extended_ldap),
-    ("TIER model assessment", _run_tier),
-    ("Password spray risk analysis", _run_password_spray),
-    ("Golden gMSA analysis", _run_golden_gmsa),
-    ("Honeypot/deception detection", _run_honeypot),
-    ("Stale objects analysis", _run_stale_objects),
-    ("Extended AD CS analysis (ESC5-14)", _run_adcs_extended),
-    ("Audit policy analysis", _run_audit_policy),
-    ("Backup Operators and sensitive groups", _run_backup_operator),
-    ("Coercion attack surface analysis", _run_coerce),
-    ("gMSA configuration analysis", _run_gmsa),
-    ("KRBTGT health analysis", _run_krbtgt),
-    ("Lateral movement analysis", _run_lateral_movement),
-    ("Machine account quota analysis", _run_machine_quota),
-    ("Replication metadata analysis", _run_replication),
+# (key, description, runner) for each analysis step.
+ANALYSIS_STEP_REGISTRY: List[Tuple[str, str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]] = [
+    ("user_risks", "User risk analysis", _run_user_risks),
+    ("computer_risks", "Computer risk analysis", _run_computer_risks),
+    ("legacy_os", "Legacy OS analysis", _run_legacy_os),
+    ("group_risks", "Group risk analysis", _run_group_risks),
+    ("kerberos_delegation", "Kerberos delegation analysis", _run_kerberos),
+    ("privilege_escalation", "Privilege escalation analysis", _run_escalation),
+    ("acl_legacy", "ACL analysis (legacy)", _run_acl_legacy),
+    ("acl_security", "Comprehensive ACL security analysis", _run_acl_security),
+    ("misconfiguration", "Misconfiguration checklist", _run_misconfig),
+    ("kerberoasting", "Kerberoasting and AS-REP roasting detection", _run_kerberoasting),
+    ("service_accounts", "Service account analysis", _run_service_accounts),
+    ("gpo_abuse", "GPO abuse analysis", _run_gpo_abuse),
+    ("dcsync", "DCSync rights analysis", _run_dcsync),
+    ("password_policy", "Password policy analysis", _run_password_policy),
+    ("trusts", "Trust relationship analysis", _run_trust),
+    ("certificate_services", "AD Certificate Services analysis", _run_certificate),
+    ("gpp_passwords", "GPP password extraction", _run_gpp),
+    ("laps", "LAPS analysis", _run_laps),
+    ("vulnerability_scan", "Vulnerability scanning", _run_vulnerability),
+    ("domain_security", "Domain security analysis", _run_domain_security),
+    ("extended_ldap", "Extended LDAP analysis", _run_extended_ldap),
+    ("tier_model", "TIER model assessment", _run_tier),
+    ("password_spray", "Password spray risk analysis", _run_password_spray),
+    ("golden_gmsa", "Golden gMSA analysis", _run_golden_gmsa),
+    ("honeypot", "Honeypot/deception detection", _run_honeypot),
+    ("stale_objects", "Stale objects analysis", _run_stale_objects),
+    ("adcs_extended", "Extended AD CS analysis (ESC5-14)", _run_adcs_extended),
+    ("audit_policy", "Audit policy analysis", _run_audit_policy),
+    ("backup_operators", "Backup Operators and sensitive groups", _run_backup_operator),
+    ("coercion", "Coercion attack surface analysis", _run_coerce),
+    ("gmsa", "gMSA configuration analysis", _run_gmsa),
+    ("krbtgt", "KRBTGT health analysis", _run_krbtgt),
+    ("lateral_movement", "Lateral movement analysis", _run_lateral_movement),
+    ("machine_quota", "Machine account quota analysis", _run_machine_quota),
+    ("replication_metadata", "Replication metadata analysis", _run_replication),
 ]
+
+# Backward-compatible view used by existing tests and external imports.
+ANALYSIS_STEPS: List[Tuple[str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]] = [
+    (description, runner) for _, description, runner in ANALYSIS_STEP_REGISTRY
+]
+
+ANALYSIS_STEP_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "user_risks": {"user_risks": []},
+    "computer_risks": {"computer_risks": []},
+    "legacy_os": {
+        "legacy_os_results": {"total_count": 0, "eol_count": 0, "risks": []},
+        "legacy_os_risks": [],
+    },
+    "group_risks": {"group_risks": []},
+    "kerberos_delegation": {"kerberos_risks": []},
+    "privilege_escalation": {"escalation_paths": []},
+    "acl_legacy": {"acl_risks": []},
+    "acl_security": {
+        "acl_security_results": {
+            "acl_risks": [],
+            "shadow_admins": [],
+            "privilege_escalation_paths": [],
+            "inheritance_risks": [],
+            "total_risks": 0,
+            "critical_risks": 0,
+            "high_risks": 0,
+        },
+        "comprehensive_acl_risks": [],
+        "shadow_admins": [],
+        "acl_escalation_paths": [],
+        "inheritance_risks": [],
+    },
+    "misconfiguration": {"misconfig_findings": []},
+    "kerberoasting": {"kerberoasting_targets": [], "asrep_targets": []},
+    "service_accounts": {"service_risks": []},
+    "gpo_abuse": {"gpo_abuse_risks": []},
+    "dcsync": {"dcsync_risks": []},
+    "password_policy": {"password_policy_risks": []},
+    "trusts": {"trust_risks": []},
+    "certificate_services": {"certificate_risks": []},
+    "gpp_passwords": {"gpp_risks": []},
+    "laps": {"laps_risks": []},
+    "vulnerability_scan": {
+        "zerologon_risks": [],
+        "printnightmare_risks": [],
+        "petitpotam_risks": [],
+        "shadow_cred_risks": [],
+        "nopac_risks": [],
+    },
+    "domain_security": {"domain_security_risks": []},
+    "extended_ldap": {"extended_ldap_risks": []},
+    "tier_model": {"tier_data": {}},
+    "password_spray": {"password_spray_risks": []},
+    "golden_gmsa": {"golden_gmsa_risks": []},
+    "honeypot": {"honeypot_risks": []},
+    "stale_objects": {"stale_objects_risks": []},
+    "adcs_extended": {"adcs_extended_risks": []},
+    "audit_policy": {"audit_policy_risks": []},
+    "backup_operators": {"backup_operator_risks": []},
+    "coercion": {"coercion_risks": []},
+    "gmsa": {"gmsa_risks": []},
+    "krbtgt": {"krbtgt_risks": []},
+    "lateral_movement": {"lateral_movement_risks": []},
+    "machine_quota": {"machine_quota_risks": []},
+    "replication_metadata": {"replication_risks": []},
+}
+
+FAST_PROFILE_EXCLUDED: Set[str] = {
+    "acl_security",
+    "extended_ldap",
+    "adcs_extended",
+    "coercion",
+    "replication_metadata",
+}
+
+
+def get_analysis_step_keys() -> Tuple[str, ...]:
+    """Return valid analysis step keys for CLI validation."""
+    return tuple(key for key, _, _ in ANALYSIS_STEP_REGISTRY)
+
+
+def _selected_analysis_steps(
+    profile: str,
+    skip_keys: Optional[List[str]],
+) -> List[Tuple[str, str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]]:
+    """Return analysis steps selected by profile and explicit skip keys."""
+    skip_set = set(skip_keys or [])
+    if profile == "fast":
+        skip_set.update(FAST_PROFILE_EXCLUDED)
+    return [
+        (key, description, runner)
+        for key, description, runner in ANALYSIS_STEP_REGISTRY
+        if key not in skip_set
+    ]
+
+
+def _defaults_for_skipped_steps(
+    selected_keys: Set[str],
+) -> Dict[str, Any]:
+    """Return empty result values for skipped analysis steps."""
+    defaults: Dict[str, Any] = {}
+    for key, _, _ in ANALYSIS_STEP_REGISTRY:
+        if key not in selected_keys:
+            defaults.update(ANALYSIS_STEP_DEFAULTS.get(key, {}))
+    return defaults
 
 
 def run_all_analyses(
     ldap_conn: Any,
     data: Dict[str, Any],
     *,
-    progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    progress_callback: Optional[Callable[[str, Dict[str, Any], Optional[float]], None]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+    profile: str = "full",
+    skip_keys: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Run all registered analysis steps and return merged results.
     Optionally call progress_callback(description, step_result) after each step.
     """
-    results: Dict[str, Any] = {}
-    for description, runner in ANALYSIS_STEPS:
+    selected_steps = _selected_analysis_steps(profile, skip_keys)
+    selected_keys = {key for key, _, _ in selected_steps}
+    results: Dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
+
+    for _, description, runner in selected_steps:
+        if status_callback:
+            status_callback(description)
+        start_time = time.perf_counter()
         step_result = runner(ldap_conn, data)
+        duration = time.perf_counter() - start_time
         results.update(step_result)
         if progress_callback:
-            progress_callback(description, step_result)
+            progress_callback(description, step_result, duration)
     return results
