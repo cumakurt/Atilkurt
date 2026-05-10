@@ -7,7 +7,7 @@
 
 **AtilKurt** is a professional security analysis tool that detects security vulnerabilities in Active Directory environments using read-only LDAP queries.
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [About](#about)
 - [Developer Information](#developer-information)
@@ -22,7 +22,7 @@
 
 ---
 
-## 👨‍💻 Developer Information
+## Developer Information
 
 **Developed by:** Cuma KURT  
 **Email:** cumakurt@gmail.com  
@@ -31,7 +31,7 @@
 
 ---
 
-## 📖 About
+## About
 
 AtilKurt is designed to help security professionals, penetration testers, and system administrators identify security vulnerabilities in Active Directory environments. The tool performs comprehensive read-only analysis without making any changes to the AD infrastructure.
 
@@ -43,42 +43,42 @@ AtilKurt is designed to help security professionals, penetration testers, and sy
 
 ---
 
-## 🚀 Features
+## Features
 
 ### Core Features
 
-#### ✅ Read-Only LDAP Queries
+#### Read-Only LDAP Queries
 The tool only performs read operations and makes no changes to Active Directory. This is critical for safe analysis as it prevents accidental modifications in production environments.
 
-#### ✅ Modular Architecture
+#### Modular Architecture
 The code structure is modular, easily extensible and maintainable. Each analysis type is in a separate module, making it easy to add new features and debug issues.
 
-#### ✅ Comprehensive Analysis
+#### Comprehensive Analysis
 Users, computers, groups, GPOs, and more are analyzed. This comprehensive approach ensures security vulnerabilities are not overlooked.
 
-#### ✅ Risk Scoring
+#### Risk Scoring
 Each risk is assessed at Low, Medium, High, or Critical level. This enables prioritization and focusing on the most critical issues first.
 
-#### ✅ Interactive HTML Report
+#### Interactive HTML Report
 Modern, interactive HTML reports are generated using Bootstrap and Chart.js. Reports include visual charts, filtering and search features, making it easier to understand analysis results.
 
-#### ✅ Enhanced Executive Summary (Dashboard)
+#### Enhanced Executive Summary (Dashboard)
 The dashboard includes an **Executive Summary** with a management-oriented paragraph, key metrics (domain score, total/critical/high/medium/low risks), and a **Complete Analysis Summary** table listing every analysis category (user risks, computer risks, Kerberoasting, DCSync, GPP, LAPS, etc.) with count and status (OK / Findings). All analyses are summarized in one place for both quick overview and full visibility.
 
-#### ✅ Single-File (Portable) Report
+#### Single-File (Portable) Report
 With `--single-file-report`, CSS and JavaScript (Bootstrap, Chart.js, Lucide icons, etc.) are embedded into the HTML file. The report is fully self-contained: you can copy the single `.html` file to any folder or machine and open it without needing a `vendor/` folder or network access.
 
-#### ✅ Compliance Reporting (Always Enabled)
+#### Compliance Reporting (Always Enabled)
 Automatically generates compliance reports for CIS Benchmark, NIST Cybersecurity Framework, ISO 27001, and GDPR using advanced LDAP-based analysis. Performs real-time LDAP queries to check compliance status for each control, providing detailed findings with LDAP query references, affected objects, and remediation recommendations.
 
-#### ✅ Risk Management (Always Enabled)
+#### Risk Management (Always Enabled)
 Automatically generates risk heat maps, business impact assessments, remediation cost estimations, and ROI calculations. Prioritizes risks based on business value and remediation cost.
 
 ---
 
 ### Security Analysis Features
 
-#### ✅ User Risk Analysis
+#### User Risk Analysis
 **What it does:** Detects security vulnerabilities in user accounts. For example, accounts with passwords that never expire, accounts with Kerberos preauthentication disabled, users with SPNs defined, and accounts with AdminCount flag set.
 
 **Why it's important:** Weak user accounts are the easiest way for attackers to gain access to the domain. This analysis improves security by detecting weak accounts early.
@@ -90,7 +90,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - AdminCount flag set
 - Inactive privileged accounts
 
-#### ✅ Computer Risk Analysis
+#### Computer Risk Analysis
 **What it does:** Detects security issues in computer accounts. Finds risks such as EOL (End of Life) operating systems, unconstrained delegation, and legacy systems.
 
 **Why it's important:** Old or misconfigured computers are weak points that attackers can use to infiltrate the domain. This analysis detects these risks.
@@ -101,7 +101,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Legacy systems
 - Missing security updates
 
-#### ✅ Group Risk Analysis
+#### Group Risk Analysis
 **What it does:** Detects issues in security groups. Finds risks such as too many Domain Admin members, nested admin groups, and operators group members.
 
 **Why it's important:** Having too many members in privileged groups expands the attack surface. This analysis detects unnecessary privileges.
@@ -112,7 +112,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Operators group members
 - Excessive group memberships
 
-#### ✅ Kerberos & Delegation Analysis
+#### Kerberos & Delegation Analysis
 **What it does:** Detects risks in Kerberos and delegation configurations. Finds issues such as unconstrained delegation, constrained delegation, and resource-based constrained delegation.
 
 **Why it's important:** When delegation is misconfigured, attackers can steal Kerberos tickets and gain domain admin privileges. This is a critical security vulnerability.
@@ -127,7 +127,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Use constrained or resource-based constrained delegation
 - Monitor for suspicious delegation usage
 
-#### ✅ Privilege Escalation Analysis
+#### Privilege Escalation Analysis
 **What it does:** Detects paths for normal users to become Domain Admins. Finds privilege escalation paths through group memberships, delegation, and SPNs.
 
 **Why it's important:** Attackers often start with a normal user account and escalate to Domain Admin. This analysis improves security by detecting these paths in advance.
@@ -138,7 +138,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - SPN-based escalation
 - Computer-based escalation
 
-#### ✅ ACL Analysis
+#### ACL Analysis
 **What it does:** Detects security issues in Access Control Lists. Finds risks such as Generic All, Write DACL, Write Owner, and DCSync rights.
 
 **Why it's important:** Misconfigured ACLs allow attackers to gain unauthorized access. This analysis detects these risks.
@@ -147,7 +147,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 
 ### Penetration Testing Features
 
-#### ✅ Kerberoasting Detection
+#### Kerberoasting Detection
 **What it does:** Detects accounts vulnerable to Kerberoasting and AS-REP roasting attacks. Finds users with SPNs defined and accounts with preauthentication disabled.
 
 **Why it's important:** Kerberoasting is an attack type that allows attackers to crack passwords offline. This analysis detects accounts vulnerable to this attack.
@@ -164,22 +164,22 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - CrackMapExec
 - hashcat (for password cracking)
 
-#### ✅ Attack Path Visualization
+#### Attack Path Visualization
 **What it does:** Visualizes privilege escalation paths. Shows which users can become Domain Admins through which paths.
 
 **Why it's important:** Visualization makes it easier to understand complex attack paths and enables security teams to better assess risks.
 
-#### ✅ Exploitability Scoring
+#### Exploitability Scoring
 **What it does:** Calculates exploitability score for each risk. Shows how easily attackers can exploit this risk.
 
 **Why it's important:** Risks with high exploitability scores should be addressed with priority as attackers can easily use them.
 
-#### ✅ Service Account Analysis
+#### Service Account Analysis
 **What it does:** Analyzes security risks in service accounts. Finds issues such as high-privilege service accounts and service accounts not using MSAs.
 
 **Why it's important:** Service accounts often have high privileges and are valuable targets for attackers. This analysis detects weak service accounts.
 
-#### ✅ GPO Abuse Detection
+#### GPO Abuse Detection
 **What it does:** Detects potential abuse of Group Policy Objects. Finds risks such as GPO modification rights and GPOs linked to privileged OUs.
 
 **Why it's important:** GPOs can change settings domain-wide. Misconfigured GPOs can allow attackers to take over the domain.
@@ -188,7 +188,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 
 ### Advanced Security Features
 
-#### ✅ DCSync Rights Analysis
+#### DCSync Rights Analysis
 **What it does:** Detects accounts with DCSync rights. These accounts can extract all password hashes from the domain.
 
 **Why it's important:** DCSync rights are equivalent to Domain Admin privileges. Accounts with these rights are the most valuable targets for attackers as they can extract all domain passwords.
@@ -208,7 +208,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Impacket secretsdump
 - DSInternals Get-ADReplAccount
 
-#### ✅ Password Policy Analysis
+#### Password Policy Analysis
 **What it does:** Analyzes domain password policy. Checks minimum length, maximum age, complexity requirements, account lockout settings, etc.
 
 **Why it's important:** Weak password policies make it easier for attackers to guess or crack passwords. This analysis detects weak policies and provides strengthening recommendations.
@@ -227,7 +227,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Enable account lockout with threshold of 5-10 failed attempts
 - Set password history to 12+ passwords
 
-#### ✅ Extended LDAP Analysis
+#### Extended LDAP Analysis
 **What it does:** Performs comprehensive LDAP-based security checks beyond standard analysis.
 
 **Detected Issues:**
@@ -247,7 +247,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - **AD-Integrated DNS**: DNS zones in AD
 - **AD Recycle Bin**: Deleted objects
 
-#### ✅ Trust Relationship Analysis
+#### Trust Relationship Analysis
 **What it does:** Analyzes forest trusts, external trusts, and trust configurations. Checks settings such as SID filtering and selective authentication.
 
 **Why it's important:** Misconfigured trusts can allow attackers to gain access from other domains. If SID filtering is disabled, SID history attacks are possible.
@@ -268,7 +268,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Review trust relationships regularly
 - Monitor for suspicious cross-trust authentication
 
-#### ✅ Certificate-Based Attack Detection
+#### Certificate-Based Attack Detection
 **What it does:** Analyzes Active Directory Certificate Services (AD CS) configuration. Detects certificate-based attacks such as ESC1, ESC2, ESC3, ESC4, ESC6, ESC8.
 
 **Why it's important:** Misconfigured certificate templates can allow attackers to obtain unauthorized certificates and gain domain admin privileges. This is a commonly used method in modern AD attacks.
@@ -290,7 +290,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Add specific EKUs
 - Restrict certificate enrollment
 
-#### ✅ GPP Password Extraction
+#### GPP Password Extraction
 **What it does:** Detects passwords in Group Policy Preferences (GPP) files. Finds passwords stored in files like Groups.xml, Services.xml in SYSVOL.
 
 **Why it's important:** GPP passwords are encrypted with a weak AES key that is publicly known. Anyone with access to SYSVOL can extract these passwords. This is a critical security vulnerability.
@@ -312,7 +312,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - gpp-decrypt
 - Manual decryption using known AES key
 
-#### ✅ LAPS Detection
+#### LAPS Detection
 **What it does:** Checks Local Administrator Password Solution (LAPS) configuration. Answers questions such as: Is LAPS installed? Which computers have it active? Who has access rights?
 
 **Why it's important:** Without LAPS, computers may use weak or shared local administrator passwords. This allows attackers to use the same password on other computers after compromising one computer (lateral movement).
@@ -338,7 +338,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 
 ### Vulnerability Scanning
 
-#### ✅ ZeroLogon Detection (CVE-2020-1472)
+#### ZeroLogon Detection (CVE-2020-1472)
 **What it does:** Detects Domain Controllers vulnerable to ZeroLogon security vulnerability. This vulnerability allows attackers to set an empty password for the DC computer account.
 
 **Why it's important:** ZeroLogon is a critical security vulnerability that allows attackers to completely take over the domain. Affected DCs must be patched immediately.
@@ -366,7 +366,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - CVE-2020-1472 exploit
 - Impacket secretsdump (after exploitation)
 
-#### ✅ PrintNightmare Detection (CVE-2021-1675, CVE-2021-34527)
+#### PrintNightmare Detection (CVE-2021-1675, CVE-2021-34527)
 **What it does:** Detects systems vulnerable to PrintNightmare security vulnerability in Print Spooler service. This vulnerability provides remote code execution and privilege escalation.
 
 **Why it's important:** PrintNightmare allows attackers to execute code with SYSTEM privileges through the Print Spooler service. This can be used for domain-wide privilege escalation.
@@ -387,7 +387,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - CVE-2021-1675 exploit
 - Impacket rpcdump
 
-#### ✅ PetitPotam Detection
+#### PetitPotam Detection
 **What it does:** Detects Domain Controllers vulnerable to PetitPotam attack. This attack forces DCs to authenticate to attacker-controlled systems.
 
 **Why it's important:** PetitPotam allows NTLM relay attacks and can lead to attackers gaining Domain Admin privileges. It results from misconfiguration of MS-EFSRPC and MS-DFSNM protocols.
@@ -408,7 +408,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 - Impacket ntlmrelayx
 - Responder
 
-#### ✅ Shadow Credentials Detection
+#### Shadow Credentials Detection
 **What it does:** Detects accounts with Key Credentials added. This allows attackers to perform PKINIT authentication without knowing the password.
 
 **Why it's important:** Shadow Credentials allow attackers to access accounts by adding unauthorized Key Credentials. This poses a critical risk, especially for privileged accounts.
@@ -431,7 +431,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 
 ---
 
-## ⚡ Performance and Scalability
+## Performance and Scalability
 
 ### Optimizations for Large AD Environments
 
@@ -486,7 +486,7 @@ Automatically generates risk heat maps, business impact assessments, remediation
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Requirements
 
@@ -521,7 +521,7 @@ pip install -e .
 
 ---
 
-## 🎮 Usage
+## Usage
 
 ### Basic Usage
 
@@ -703,7 +703,7 @@ python3 AtilKurt.py \
 
 ---
 
-## 📊 Detected Risks
+## Detected Risks
 
 ### User Risks
 
@@ -738,7 +738,7 @@ python3 AtilKurt.py \
 
 ---
 
-## 📈 Report Features
+## Report Features
 
 HTML report includes the following sections:
 
@@ -800,7 +800,7 @@ Each compliance framework includes:
 
 ---
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 AtilKurt/
@@ -912,14 +912,14 @@ AtilKurt/
 
 ---
 
-## 🔒 Security Notes
+## Security Notes
 
-⚠️ **IMPORTANT:** This tool only performs read-only LDAP queries. It makes no changes.
+**IMPORTANT:** This tool only performs read-only LDAP queries. It makes no changes.
 
-- ✅ The tool makes no changes to Active Directory
-- ✅ Only performs LDAP SEARCH operations
-- ✅ Write, Modify, Delete operations cannot be performed
-- ✅ Designed for security testing
+- The tool makes no changes to Active Directory
+- Only performs LDAP SEARCH operations
+- Write, Modify, Delete operations cannot be performed
+- Designed for security testing
 
 **Password handling:** Avoid passing the password on the command line (e.g. `make run PASS=...`) as it may appear in process listings. Prefer the `ATILKURT_PASS` environment variable or the interactive prompt.
 
@@ -932,7 +932,7 @@ The tool requires LDAP read permissions to read data from Active Directory. The 
 
 ---
 
-## 📝 License
+## License
 
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details.
 
@@ -944,13 +944,13 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This tool is intended only for authorized security testing and educational purposes. Unauthorized use is prohibited. The user accepts all responsibilities arising from the use of this tool.
 
 ---
 
-## 📚 Additional Resources
+## Additional Resources
 
 ### Learning Resources
 - [MITRE ATT&CK Framework](https://attack.mitre.org/)
@@ -971,6 +971,6 @@ This tool is intended only for authorized security testing and educational purpo
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0) - see the [LICENSE](LICENSE) file for details.
