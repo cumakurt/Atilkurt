@@ -4,7 +4,7 @@ Analyzes computer objects for security risks including EOL OS detection
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class ComputerRiskAnalyzer:
     """Analyzes computer objects for security risks."""
-    
+
     # End of Life operating systems (simplified list)
     EOL_OPERATING_SYSTEMS = {
         'Windows Server 2008': datetime(2020, 1, 14),
@@ -26,49 +26,49 @@ class ComputerRiskAnalyzer:
         'Windows Vista': datetime(2017, 4, 11),
         'Windows Server 2003': datetime(2015, 7, 14)
     }
-    
+
     def __init__(self):
         """Initialize computer risk analyzer."""
         pass
-    
+
     def analyze(self, computers):
         """
         Analyze computers for security risks.
-        
+
         Args:
             computers: List of computer dictionaries
-        
+
         Returns:
             list: List of risk dictionaries
         """
         risks = []
-        
+
         for computer in computers:
             # Enrich computer data with additional metadata
             self._enrich_computer_data(computer)
-            
+
             # Check EOL operating systems
             risks.extend(self._check_eol_os(computer))
-            
+
             # Check unconstrained delegation
             risks.extend(self._check_unconstrained_delegation(computer))
-            
+
             # Check constrained delegation
             risks.extend(self._check_constrained_delegation(computer))
-            
+
             # Check inactive computers
             risks.extend(self._check_inactive_computer(computer))
-            
+
             # Check never used computers
             risks.extend(self._check_never_used_computer(computer))
-        
+
         logger.info(f"Found {len(risks)} computer-related risks")
         return risks
-    
+
     def _enrich_computer_data(self, computer):
         """
         Enrich computer data with additional metadata for reporting.
-        
+
         Args:
             computer: Computer dictionary to enrich
         """
@@ -81,7 +81,7 @@ class ComputerRiskAnalyzer:
                 if isinstance(last_logon, datetime):
                     days_since_logon = (datetime.now() - last_logon.replace(tzinfo=None)).days
                     computer['daysSinceLastLogon'] = days_since_logon
-                    
+
                     # Check if inactive for specific periods
                     computer['inactiveFor10Days'] = days_since_logon >= 10
                     computer['inactiveFor30Days'] = days_since_logon >= 30
@@ -89,7 +89,7 @@ class ComputerRiskAnalyzer:
                     computer['inactiveFor90Days'] = days_since_logon >= 90
             except Exception:
                 pass
-        
+
         # Check if computer was never used (no lastLogonTimestamp or very old whenCreated)
         when_created = computer.get('whenCreated')
         if when_created and not last_logon:
@@ -102,20 +102,25 @@ class ComputerRiskAnalyzer:
                     computer['neverUsed'] = days_since_created > 30
             except Exception:
                 pass
-    
+
     def _check_eol_os(self, computer):
         """Check for End of Life operating systems."""
         risks = []
         os_name = computer.get('operatingSystem')
-        
+
         if not os_name:
             return risks
-        
+
         # Check if OS is in EOL list
-        for eol_os, eol_date in self.EOL_OPERATING_SYSTEMS.items():
+        eol_systems = sorted(
+            self.EOL_OPERATING_SYSTEMS.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+        for eol_os, eol_date in eol_systems:
             if eol_os.lower() in os_name.lower():
                 days_since_eol = (datetime.now() - eol_date).days
-                
+
                 risks.append({
                     'type': RiskTypes.EOL_OPERATING_SYSTEM,
                     'severity': Severity.CRITICAL,
@@ -133,13 +138,13 @@ class ComputerRiskAnalyzer:
                     'mitre_attack': 'T1068 - Exploitation for Privilege Escalation'
                 })
                 break
-        
+
         return risks
-    
+
     def _check_unconstrained_delegation(self, computer):
         """Check for unconstrained delegation on computers."""
         risks = []
-        
+
         if computer.get('unconstrainedDelegation'):
             risks.append({
                 'type': RiskTypes.COMPUTER_UNCONSTRAINED_DELEGATION,
@@ -154,17 +159,17 @@ class ComputerRiskAnalyzer:
                 'cis_reference': 'CIS Benchmark recommends disabling unconstrained delegation',
                 'mitre_attack': 'T1558.001 - Steal or Forge Kerberos Tickets: Golden Ticket'
             })
-        
+
         return risks
-    
+
     def _check_constrained_delegation(self, computer):
         """Check for constrained delegation configurations."""
         risks = []
-        
+
         allowed_to_delegate = computer.get('msDS-AllowedToDelegateTo', [])
         if not allowed_to_delegate:
             allowed_to_delegate = []
-        
+
         if len(allowed_to_delegate) > 0:
             # Check if delegation list is too broad
             if len(allowed_to_delegate) > 10:
@@ -182,17 +187,17 @@ class ComputerRiskAnalyzer:
                     'cis_reference': 'CIS Benchmark recommends minimizing delegation configurations',
                     'mitre_attack': 'T1558.002 - Steal or Forge Kerberos Tickets: Silver Ticket'
                 })
-        
+
         return risks
-    
+
     def _check_inactive_computer(self, computer):
         """Check for inactive computers (not logged on for extended periods)."""
         risks = []
-        
+
         days_since_logon = computer.get('daysSinceLastLogon')
         if days_since_logon is None:
             return risks
-        
+
         # Flag computers inactive for 90+ days
         if days_since_logon >= 90:
             risks.append({
@@ -209,13 +214,13 @@ class ComputerRiskAnalyzer:
                 'cis_reference': 'CIS Benchmark recommends removing unused computer accounts',
                 'mitre_attack': 'T1078 - Valid Accounts'
             })
-        
+
         return risks
-    
+
     def _check_never_used_computer(self, computer):
         """Check for computers that were joined to domain but never used."""
         risks = []
-        
+
         if computer.get('neverUsed'):
             risks.append({
                 'type': RiskTypes.NEVER_USED_COMPUTER,
@@ -230,5 +235,5 @@ class ComputerRiskAnalyzer:
                 'cis_reference': 'CIS Benchmark recommends removing unused accounts',
                 'mitre_attack': 'T1078 - Valid Accounts'
             })
-        
+
         return risks

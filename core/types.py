@@ -3,7 +3,7 @@ Type Definitions Module
 TypedDict definitions for better type safety
 """
 
-from typing import TypedDict, List, Optional, Dict, Any
+from typing import TypedDict, Optional, Any
 from datetime import datetime
 
 
@@ -12,12 +12,12 @@ class UserDict(TypedDict, total=False):
     sAMAccountName: str
     objectSid: Optional[str]
     displayName: Optional[str]
-    memberOf: List[str]
+    memberOf: list[str]
     lastLogonTimestamp: Optional[datetime]
     pwdLastSet: Optional[datetime]
     userAccountControl: int
     adminCount: Optional[int]
-    servicePrincipalName: List[str]
+    servicePrincipalName: list[str]
     mail: Optional[str]
     whenCreated: Optional[datetime]
     whenChanged: Optional[datetime]
@@ -29,10 +29,10 @@ class UserDict(TypedDict, total=False):
     isLocked: Optional[bool]
     # Enriched fields
     accountAgeDays: Optional[int]
-    domainAdminGroups: List[str]
-    enterpriseAdminGroups: List[str]
-    schemaAdminGroups: List[str]
-    adminGroups: List[str]
+    domainAdminGroups: list[str]
+    enterpriseAdminGroups: list[str]
+    schemaAdminGroups: list[str]
+    adminGroups: list[str]
     adminPrivilegeAgeDays: Optional[int]
     isServiceAccount: bool
     daysSinceLastLogon: Optional[int]
@@ -59,7 +59,7 @@ class ComputerDict(TypedDict, total=False):
     userAccountControl: int
     unconstrainedDelegation: Optional[bool]
     trustedToAuthForDelegation: Optional[bool]
-    msDS_AllowedToDelegateTo: Optional[List[str]]  # LDAP attribute: msDS-AllowedToDelegateTo
+    msDS_AllowedToDelegateTo: Optional[list[str]]  # LDAP attribute: msDS-AllowedToDelegateTo
     # Enriched fields
     daysSinceLastLogon: Optional[int]
     inactiveFor10Days: Optional[bool]
@@ -77,8 +77,8 @@ class GroupDict(TypedDict, total=False):
     sAMAccountName: Optional[str]
     objectSid: Optional[str]
     distinguishedName: str
-    member: List[str]
-    memberOf: Optional[List[str]]
+    member: list[str]
+    memberOf: Optional[list[str]]
     whenCreated: Optional[datetime]
     whenChanged: Optional[datetime]
     description: Optional[str]
@@ -122,19 +122,19 @@ class RiskDict(TypedDict, total=False):
     executive_description: Optional[str]
     combination_bonus: Optional[str]
     # Additional fields
-    spns: Optional[List[str]]
-    member_of: Optional[List[str]]
-    privileged_groups: Optional[List[str]]
+    spns: Optional[list[str]]
+    member_of: Optional[list[str]]
+    privileged_groups: Optional[list[str]]
     days_inactive: Optional[int]
-    escalation_path: Optional[Dict[str, Any]]
-    exploitability: Optional[Dict[str, Any]]
+    escalation_path: Optional[dict[str, Any]]
+    exploitability: Optional[dict[str, Any]]
 
 
 class EscalationPathDict(TypedDict, total=False):
     """Privilege escalation path dictionary."""
     user: str
     target_group: str
-    path: List[str]
+    path: list[str]
     depth: int
     probability: float
     path_type: str

@@ -6,6 +6,8 @@ from datetime import datetime
 import html as html_stdlib
 import json
 
+from reporting.html_safety import json_for_html_script
+
 
 
 class DirectorySectionMixin:
@@ -13,15 +15,13 @@ class DirectorySectionMixin:
 
     def _generate_directory_section(self, users, groups, computers, risks):
         """Generate directory objects section with search and detail views."""
-        import json
-        from datetime import datetime
-        
+
         def json_serializer(obj):
             """Custom JSON serializer for datetime objects."""
             if isinstance(obj, datetime):
                 return obj.isoformat()
             raise TypeError(f"Type {type(obj)} not serializable")
-        
+
         def clean_for_json(data):
             """Clean data for JSON serialization."""
             if isinstance(data, dict):
@@ -32,17 +32,17 @@ class DirectorySectionMixin:
                 return data.isoformat()
             else:
                 return data
-        
+
         # Prepare users data with group memberships
         users_data = []
         for user in users:
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
                 member_of = [member_of] if member_of else []
-            
+
             # Get user risks
             user_risks = [r for r in risks if r.get('affected_object') == user.get('sAMAccountName')]
-            
+
             # Extract group names
             group_names = []
             for group_dn in member_of:
@@ -52,7 +52,7 @@ class DirectorySectionMixin:
                         group_names.append(group_name)
                     except Exception:
                         pass
-            
+
             # Extract admin group names
             domain_admin_groups = []
             enterprise_admin_groups = []
@@ -77,7 +77,7 @@ class DirectorySectionMixin:
                         schema_admin_groups.append(group_name)
                     except Exception:
                         pass
-            
+
             # Format last logon
             last_logon_display = 'N/A'
             days_since_logon = None
@@ -91,7 +91,7 @@ class DirectorySectionMixin:
                         days_since_logon = (datetime.now() - last_logon.replace(tzinfo=None)).days
                 except Exception:
                     pass
-            
+
             # Format account age
             account_age_display = 'N/A'
             if user.get('whenCreated'):
@@ -104,13 +104,13 @@ class DirectorySectionMixin:
                         account_age_display = f"{account_age_days} days"
                 except Exception:
                     pass
-            
+
             # Check SPN
             spns = user.get('servicePrincipalName', []) or []
             if not isinstance(spns, list):
                 spns = [spns] if spns else []
             has_spn = len(spns) > 0
-            
+
             # Check if service account with password never expires
             is_service_account = user.get('isServiceAccount', False)
             uac = user.get('userAccountControl', 0)
@@ -121,7 +121,7 @@ class DirectorySectionMixin:
                     uac = 0
             password_never_expires = bool(uac & 0x10000)  # DONT_EXPIRE_PASSWORD flag
             is_service_with_pwd_never_expires = is_service_account and password_never_expires
-            
+
             users_data.append({
                 'sAMAccountName': user.get('sAMAccountName', 'N/A'),
                 'displayName': user.get('displayName', user.get('sAMAccountName', 'N/A')),
@@ -154,7 +154,7 @@ class DirectorySectionMixin:
                 'groupChangedInLast90Days': user.get('groupChangedInLast90Days', False),
                 'adminPrivilegeAgeDays': user.get('adminPrivilegeAgeDays')
             })
-        
+
         # Prepare groups data with members
         groups_data = []
         for group in groups:
@@ -164,7 +164,7 @@ class DirectorySectionMixin:
                 members = group.get('members', []) or []
             if not isinstance(members, list):
                 members = [members] if members else []
-            
+
             # Extract member names from DNs
             member_names = []
             for member_dn in members:
@@ -179,20 +179,20 @@ class DirectorySectionMixin:
                         member_names.append(str(member_dn))
                 else:
                     member_names.append(str(member_dn))
-            
+
             # Get group risks
             group_risks = [r for r in risks if r.get('affected_object') == group.get('name')]
-            
+
             groups_data.append({
                 'name': group.get('name', 'N/A'),
                 'member_count': len(member_names),
                 'members': member_names,  # All members, not limited
                 'risk_count': len(group_risks),
                 'critical_risks': len([r for r in group_risks if r.get('severity', '').lower() == 'critical']),
-                'is_privileged': any(priv in group.get('name', '').upper() for priv in 
+                'is_privileged': any(priv in group.get('name', '').upper() for priv in
                                     ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'ACCOUNT OPERATORS', 'BACKUP OPERATORS'])
             })
-        
+
         # Prepare computers data
         computers_data = []
         for computer in computers:
@@ -203,12 +203,12 @@ class DirectorySectionMixin:
                 'risk_count': len(comp_risks),
                 'critical_risks': len([r for r in comp_risks if r.get('severity', '').lower() == 'critical'])
             })
-        
+
         users_rows = self._generate_users_table_rows(users_data, users, risks)
         groups_rows = self._generate_groups_table_rows(groups_data, groups, risks)
         computers_rows = self._generate_computers_table_rows(computers_data, computers, risks)
         dir_page_size = 50
-        
+
         return f"""
         <!-- Directory Objects Section -->
         <div class="row mb-4">
@@ -227,13 +227,13 @@ class DirectorySectionMixin:
                         <div class="btn-group" role="group">
                             <input type="radio" class="btn-check" name="objectTypeFilter" id="filterAll" value="all" checked onchange="filterDirectoryObjects()">
                             <label class="btn btn-outline-primary" for="filterAll">All</label>
-                            
+
                             <input type="radio" class="btn-check" name="objectTypeFilter" id="filterUsers" value="users" onchange="filterDirectoryObjects()">
                             <label class="btn btn-outline-primary" for="filterUsers">Users</label>
-                            
+
                             <input type="radio" class="btn-check" name="objectTypeFilter" id="filterGroups" value="groups" onchange="filterDirectoryObjects()">
                             <label class="btn btn-outline-primary" for="filterGroups">Groups</label>
-                            
+
                             <input type="radio" class="btn-check" name="objectTypeFilter" id="filterComputers" value="computers" onchange="filterDirectoryObjects()">
                             <label class="btn btn-outline-primary" for="filterComputers">Computers</label>
                         </div>
@@ -241,7 +241,7 @@ class DirectorySectionMixin:
                 </div>
             </div>
         </div>
-        
+
         <!-- Users Table -->
         <div class="row mb-4" id="usersSection">
             <div class="col-12">
@@ -289,7 +289,7 @@ class DirectorySectionMixin:
                 </div>
             </div>
         </div>
-        
+
         <!-- Groups Table -->
         <div class="row mb-4" id="groupsSection">
             <div class="col-12">
@@ -330,7 +330,7 @@ class DirectorySectionMixin:
                 </div>
             </div>
         </div>
-        
+
         <!-- Computers Table -->
         <div class="row mb-4" id="computersSection">
             <div class="col-12">
@@ -370,7 +370,7 @@ class DirectorySectionMixin:
                 </div>
             </div>
         </div>
-        
+
         <!-- Object Detail Modal -->
         <div class="modal fade" id="objectDetailModal" tabindex="-1" aria-labelledby="objectDetailModalLabel" aria-hidden="true">
             <div class="modal-dialog modal-xl">
@@ -392,7 +392,7 @@ class DirectorySectionMixin:
                 </div>
             </div>
         </div>
-        
+
         <script>
         // XSS prevention: escape user-controlled data before inserting into innerHTML
         function escapeHtml(str) {{
@@ -404,23 +404,23 @@ class DirectorySectionMixin:
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
         }}
-        
+
         // Directory data and pagination
-        window.directoryTableRows = {json.dumps({"users": users_rows, "groups": groups_rows, "computers": computers_rows})};
+        window.directoryTableRows = {json_for_html_script({"users": users_rows, "groups": groups_rows, "computers": computers_rows})};
         window.dirPageSize = {dir_page_size};
         window.directoryTablePages = {{ users: 0, groups: 0, computers: 0 }};
         window.directoryTableFiltered = {{ users: null, groups: null, computers: null }};
-        
+
         const directoryData = {{
-            users: {json.dumps(users_data, default=json_serializer)},
-            groups: {json.dumps(groups_data, default=json_serializer)},
-            computers: {json.dumps(computers_data, default=json_serializer)},
-            allUsers: {json.dumps(clean_for_json(users), default=json_serializer)},
-            allGroups: {json.dumps(clean_for_json(groups), default=json_serializer)},
-            allComputers: {json.dumps(clean_for_json(computers), default=json_serializer)},
-            allRisks: {json.dumps(clean_for_json(risks), default=json_serializer)}
+            users: {json_for_html_script(users_data, default=json_serializer)},
+            groups: {json_for_html_script(groups_data, default=json_serializer)},
+            computers: {json_for_html_script(computers_data, default=json_serializer)},
+            allUsers: {json_for_html_script(clean_for_json(users), default=json_serializer)},
+            allGroups: {json_for_html_script(clean_for_json(groups), default=json_serializer)},
+            allComputers: {json_for_html_script(clean_for_json(computers), default=json_serializer)},
+            allRisks: {json_for_html_script(clean_for_json(risks), default=json_serializer)}
         }};
-        
+
         function changeDirectoryTablePage(tableType, delta) {{
             const pages = window.directoryTablePages;
             const pageSize = window.dirPageSize;
@@ -428,7 +428,7 @@ class DirectorySectionMixin:
             const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
             const newPage = Math.max(0, Math.min(pages[tableType] + delta, totalPages - 1));
             pages[tableType] = newPage;
-            
+
             const start = newPage * pageSize;
             const pageRows = rows.slice(start, start + pageSize);
             const tbody = document.getElementById(tableType + 'TableBody');
@@ -436,22 +436,22 @@ class DirectorySectionMixin:
             const pageInfoEl = document.getElementById(tableType + 'TablePageInfo');
             const prevBtn = document.getElementById(tableType + 'TablePrev');
             const nextBtn = document.getElementById(tableType + 'TableNext');
-            
+
             tbody.innerHTML = pageRows.join('');
-            
+
             const from = rows.length ? start + 1 : 0;
             const to = Math.min(start + pageSize, rows.length);
             infoEl.textContent = 'Showing ' + from + '-' + to + ' of ' + rows.length;
             pageInfoEl.textContent = 'Page ' + (newPage + 1) + ' of ' + totalPages;
-            
+
             prevBtn.classList.toggle('disabled', newPage <= 0);
             nextBtn.classList.toggle('disabled', newPage >= totalPages - 1);
         }}
-        
+
         function filterDirectoryObjects() {{
             const searchTerm = document.getElementById('directorySearch').value.toLowerCase();
             const filterType = document.querySelector('input[name="objectTypeFilter"]:checked').value;
-            
+
             function filterRows(rows) {{
                 if (!searchTerm) return null;
                 return rows.filter(html => {{
@@ -460,31 +460,31 @@ class DirectorySectionMixin:
                     return div.textContent.toLowerCase().includes(searchTerm);
                 }});
             }}
-            
+
             // Update filtered data and reset to page 0
             window.directoryTableFiltered.users = filterRows(window.directoryTableRows.users);
             window.directoryTableFiltered.groups = filterRows(window.directoryTableRows.groups);
             window.directoryTableFiltered.computers = filterRows(window.directoryTableRows.computers);
             window.directoryTablePages = {{ users: 0, groups: 0, computers: 0 }};
-            
+
             // Visibility
             document.getElementById('usersSection').style.display = (filterType === 'all' || filterType === 'users') ? '' : 'none';
             document.getElementById('groupsSection').style.display = (filterType === 'all' || filterType === 'groups') ? '' : 'none';
             document.getElementById('computersSection').style.display = (filterType === 'all' || filterType === 'computers') ? '' : 'none';
-            
+
             // Re-render all tables with filtered data
             ['users', 'groups', 'computers'].forEach(t => changeDirectoryTablePage(t, 0));
         }}
-        
+
         function clearDirectorySearch() {{
             document.getElementById('directorySearch').value = '';
             filterDirectoryObjects();
         }}
-        
+
         // Enhanced Search and Filter Functionality
         (function() {{
             'use strict';
-            
+
             // Debounce function for search
             function debounce(func, wait) {{
                 let timeout;
@@ -497,7 +497,7 @@ class DirectorySectionMixin:
                     timeout = setTimeout(later, wait);
                 }};
             }}
-            
+
             // Enhanced search functionality
             function handleSearch(searchId, containerId) {{
                 const searchInput = document.getElementById(searchId);
@@ -505,34 +505,34 @@ class DirectorySectionMixin:
                 const typeFilter = document.getElementById(searchId + '_type');
                 const sortBy = document.getElementById(searchId + '_sort');
                 const resultsCount = document.getElementById(searchId + '_results');
-                
+
                 if (!searchInput) return;
-                
+
                 const searchTerm = searchInput.value.toLowerCase();
                 const severityValue = severityFilter ? severityFilter.value : '';
                 const typeValue = typeFilter ? typeFilter.value : '';
                 const sortValue = sortBy ? sortBy.value : 'score-desc';
-                
+
                 const container = document.getElementById(containerId);
                 if (!container) return;
-                
+
                 const riskCards = container.querySelectorAll('.risk-card');
                 let visibleCount = 0;
-                
+
                 riskCards.forEach(card => {{
                     const title = card.querySelector('.risk-title')?.textContent.toLowerCase() || '';
                     const description = card.querySelector('.risk-card-body')?.textContent.toLowerCase() || '';
                     const affected = card.querySelector('.risk-object')?.textContent.toLowerCase() || '';
                     const severity = card.dataset.severity || '';
                     const type = card.dataset.type || '';
-                    
-                    const matchesSearch = !searchTerm || 
-                        title.includes(searchTerm) || 
-                        description.includes(searchTerm) || 
+
+                    const matchesSearch = !searchTerm ||
+                        title.includes(searchTerm) ||
+                        description.includes(searchTerm) ||
                         affected.includes(searchTerm);
                     const matchesSeverity = !severityValue || severity === severityValue;
                     const matchesType = !typeValue || type === typeValue;
-                    
+
                     if (matchesSearch && matchesSeverity && matchesType) {{
                         card.style.display = '';
                         visibleCount++;
@@ -540,24 +540,24 @@ class DirectorySectionMixin:
                         card.style.display = 'none';
                     }}
                 }});
-                
+
                 // Update results count
                 if (resultsCount) {{
                     resultsCount.textContent = `Showing ${{visibleCount}} of ${{riskCards.length}} risks`;
                 }}
-                
+
                 // Sort results
                 sortRiskCards(containerId, sortValue);
             }}
-            
+
             // Sort risk cards
             function sortRiskCards(containerId, sortBy) {{
                 const container = document.getElementById(containerId);
                 if (!container) return;
-                
+
                 const cards = Array.from(container.querySelectorAll('.risk-card'));
                 const visibleCards = cards.filter(card => card.style.display !== 'none');
-                
+
                 visibleCards.sort((a, b) => {{
                     switch(sortBy) {{
                         case 'score-desc':
@@ -576,26 +576,26 @@ class DirectorySectionMixin:
                             return 0;
                     }}
                 }});
-                
+
                 // Reorder visible cards
                 visibleCards.forEach(card => container.appendChild(card));
             }}
-            
+
             // Initialize search handlers for all risk sections (only input elements, not export buttons)
             document.addEventListener('DOMContentLoaded', function() {{
                 const searchInputs = document.querySelectorAll('input[id^="search_"]');
                 searchInputs.forEach(input => {{
                     const searchId = input.id;
                     const containerId = searchId.replace('search_', 'risks_container_');
-                    
+
                     // Add event listeners
                     input.addEventListener('input', debounce(() => handleSearch(searchId, containerId), 300));
-                    
+
                     // Add filter listeners
                     const severityFilter = document.getElementById(searchId + '_severity');
                     const typeFilter = document.getElementById(searchId + '_type');
                     const sortBy = document.getElementById(searchId + '_sort');
-                    
+
                     if (severityFilter) {{
                         severityFilter.addEventListener('change', () => handleSearch(searchId, containerId));
                     }}
@@ -605,7 +605,7 @@ class DirectorySectionMixin:
                     if (sortBy) {{
                         sortBy.addEventListener('change', () => handleSearch(searchId, containerId));
                     }}
-    
+
                     // Wire Export button for this risk section
                     const exportBtn = document.getElementById(searchId + '_export');
                     if (exportBtn) {{
@@ -614,7 +614,7 @@ class DirectorySectionMixin:
                 }});
             }});
         }})();
-    
+
         // Export risk section (visible/filtered risk cards) to CSV
         function exportRiskSectionToCsv(containerId, sectionId) {{
             const container = document.getElementById(containerId);
@@ -645,7 +645,7 @@ class DirectorySectionMixin:
             URL.revokeObjectURL(link.href);
         }};
         if (typeof window !== 'undefined') window.exportRiskSectionToCsv = exportRiskSectionToCsv;
-        
+
         // Export single risk card to CSV (for per-card Export button)
         function exportSingleRiskToCsv(btn) {{
             const card = btn.closest('.risk-card');
@@ -672,7 +672,7 @@ class DirectorySectionMixin:
             URL.revokeObjectURL(link.href);
         }};
         if (typeof window !== 'undefined') window.exportSingleRiskToCsv = exportSingleRiskToCsv;
-        
+
         // Legacy compatibility functions
         function filterRisks(searchId, containerId) {{
             const searchInput = document.getElementById(searchId);
@@ -680,119 +680,119 @@ class DirectorySectionMixin:
                 searchInput.dispatchEvent(new Event('input'));
             }}
         }}
-        
+
         function clearRiskSearch(searchId, containerId) {{
             const searchInput = document.getElementById(searchId);
             const severityFilter = document.getElementById(searchId + '_severity');
             const typeFilter = document.getElementById(searchId + '_type');
             const sortBy = document.getElementById(searchId + '_sort');
-            
+
             if (searchInput) searchInput.value = '';
             if (severityFilter) severityFilter.value = '';
             if (typeFilter) typeFilter.value = '';
             if (sortBy) sortBy.value = 'score-desc';
-            
+
             filterRisks(searchId, containerId);
         }}
-        
+
         // Attack paths search
         function filterAttackPaths() {{
             const searchTerm = document.getElementById('attackPathsSearch').value.toLowerCase();
             const container = document.getElementById('attackPathsContainer');
             if (!container) return;
-            
+
             const pathCards = container.querySelectorAll('.card.risk-card');
             pathCards.forEach(card => {{
                 const text = card.textContent.toLowerCase();
                 card.style.display = text.includes(searchTerm) ? '' : 'none';
             }});
         }}
-        
+
         function clearAttackPathsSearch() {{
             document.getElementById('attackPathsSearch').value = '';
             filterAttackPaths();
         }}
-        
+
         // Misconfig search
         function filterMisconfig() {{
             const searchTerm = document.getElementById('misconfigSearch').value.toLowerCase();
             const container = document.getElementById('misconfigContainer');
             if (!container) return;
-            
+
             const findingCards = container.querySelectorAll('.card.risk-card');
             findingCards.forEach(card => {{
                 const text = card.textContent.toLowerCase();
                 card.style.display = text.includes(searchTerm) ? '' : 'none';
             }});
         }}
-        
+
         function clearMisconfigSearch() {{
             document.getElementById('misconfigSearch').value = '';
             filterMisconfig();
         }}
-        
+
         // Password issues preview search
         function filterPasswordIssuesPreview() {{
             const searchTerm = document.getElementById('passwordIssuesPreviewSearch').value.toLowerCase();
             const table = document.getElementById('passwordIssuesPreviewTable');
             if (!table) return;
-            
+
             const rows = table.querySelectorAll('tbody tr');
             rows.forEach(row => {{
                 const text = row.textContent.toLowerCase();
                 row.style.display = text.includes(searchTerm) ? '' : 'none';
             }});
         }}
-        
+
         function clearPasswordIssuesPreviewSearch() {{
             document.getElementById('passwordIssuesPreviewSearch').value = '';
             filterPasswordIssuesPreview();
         }}
-        
+
         // Password issues full search
         function filterPasswordIssuesFull() {{
             const searchTerm = document.getElementById('passwordIssuesFullSearch').value.toLowerCase();
             const table = document.getElementById('passwordIssuesFullTable');
             if (!table) return;
-            
+
             const rows = table.querySelectorAll('tbody tr');
             rows.forEach(row => {{
                 const text = row.textContent.toLowerCase();
                 row.style.display = text.includes(searchTerm) ? '' : 'none';
             }});
         }}
-        
+
         function clearPasswordIssuesFullSearch() {{
             document.getElementById('passwordIssuesFullSearch').value = '';
             filterPasswordIssuesFull();
         }}
-        
+
         // Kerberoasting search
         function filterKerberoasting() {{
             const searchTerm = document.getElementById('kerberoastingSearch').value.toLowerCase();
             const container = document.getElementById('kerberoastingContainer');
             if (!container) return;
-            
+
             const riskCards = container.querySelectorAll('.card.risk-card');
             riskCards.forEach(card => {{
                 const text = card.textContent.toLowerCase();
                 card.style.display = text.includes(searchTerm) ? '' : 'none';
             }});
         }}
-        
+
         function clearKerberoastingSearch() {{
             document.getElementById('kerberoastingSearch').value = '';
             filterKerberoasting();
         }}
-        
+
         function showUserDetails(username) {{
             const user = directoryData.allUsers.find(u => u.sAMAccountName === username);
             if (!user) return;
-            
+
             // Get user data from users_data array for group memberships
             const userData = directoryData.users.find(u => u.sAMAccountName === username);
             const userRisks = directoryData.allRisks.filter(r => r.affected_object === username);
-            
+
             // Get group memberships
             let groups = [];
             if (userData && userData.groups && userData.groups.length > 0) {{
@@ -811,11 +811,11 @@ class DirectorySectionMixin:
                     return groupDn;
                 }});
             }}
-            
-            const isPrivileged = user.adminCount == 1 || user.adminCount == '1' || 
-                                groups.some(g => g.toUpperCase().includes('DOMAIN ADMINS') || 
+
+            const isPrivileged = user.adminCount == 1 || user.adminCount == '1' ||
+                                groups.some(g => g.toUpperCase().includes('DOMAIN ADMINS') ||
                                               g.toUpperCase().includes('ENTERPRISE ADMINS'));
-            
+
             // Get admin groups from memberOf
             const domainAdminGroups = [];
             const enterpriseAdminGroups = [];
@@ -843,7 +843,7 @@ class DirectorySectionMixin:
                     schemaAdminGroups.push(groupName);
                 }}
             }});
-            
+
             // Format last logon
             let lastLogon = 'N/A';
             let daysSinceLastLogon = null;
@@ -857,7 +857,7 @@ class DirectorySectionMixin:
                     lastLogon = user.lastLogonTimestamp;
                 }}
             }}
-            
+
             // Account status
             const isDisabled = user.isDisabled || false;
             const isLocked = user.isLocked || false;
@@ -868,28 +868,28 @@ class DirectorySectionMixin:
             if (isLocked) {{
                 statusBadge = '<span class="badge bg-danger">Locked</span>';
             }}
-            
+
             // SPN information
             const spns = user.servicePrincipalName || [];
             const hasSPN = spns.length > 0;
-            
+
             // Service account information
             const isServiceAccount = user.isServiceAccount || false;
             const passwordNeverExpires = (user.userAccountControl & 0x10000) !== 0;
             const isServiceWithPwdNeverExpires = isServiceAccount && passwordNeverExpires;
-            
+
             // Account age
             let accountAge = 'N/A';
             if (user.accountAgeDays !== undefined && user.accountAgeDays !== null) {{
                 accountAge = `${{user.accountAgeDays}} days`;
             }}
-            
+
             // Admin privilege age
             let adminPrivilegeAge = 'N/A';
             if (user.adminPrivilegeAgeDays !== undefined && user.adminPrivilegeAgeDays !== null) {{
                 adminPrivilegeAge = `${{user.adminPrivilegeAgeDays}} days`;
             }}
-            
+
             // Recently created/modified flags
             const createdInLast10Days = user.createdInLast10Days || false;
             const createdInLast30Days = user.createdInLast30Days || false;
@@ -899,7 +899,7 @@ class DirectorySectionMixin:
             const groupChangedInLast30Days = user.groupChangedInLast30Days || false;
             const groupChangedInLast60Days = user.groupChangedInLast60Days || false;
             const groupChangedInLast90Days = user.groupChangedInLast90Days || false;
-            
+
             // Format account creation date
             let accountCreated = 'N/A';
             if (user.whenCreated) {{
@@ -910,7 +910,7 @@ class DirectorySectionMixin:
                     accountCreated = user.whenCreated;
                 }}
             }}
-            
+
             // Format password last set
             let passwordLastSet = 'N/A';
             let passwordAge = null;
@@ -925,7 +925,7 @@ class DirectorySectionMixin:
                     passwordAge = null;
                 }}
             }}
-            
+
             // Build groups HTML with modern styling
             let groupsHtml = '';
             if (groups.length > 0) {{
@@ -946,7 +946,7 @@ class DirectorySectionMixin:
             }} else {{
                 groupsHtml = '<p class="text-muted"><i class="fas fa-info-circle"></i> This user is not a member of any groups.</p>';
             }}
-            
+
             // Build risks HTML with modern styling
             let risksHtml = '';
             if (userRisks.length > 0) {{
@@ -965,7 +965,7 @@ class DirectorySectionMixin:
                         'Medium': 'info-circle',
                         'Low': 'check-circle'
                     }}[severity] || 'info-circle';
-                    
+
                     risksHtml += `
                         <div class="col-12 mb-2">
                             <div class="card border-${{badgeColor}}">
@@ -984,7 +984,7 @@ class DirectorySectionMixin:
             }} else {{
                 risksHtml = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> No risks found for this user.</div>';
             }}
-            
+
             // Build modern modal content (escapeHtml prevents XSS from LDAP data)
             document.getElementById('objectDetailModalLabel').innerHTML = `
                 <i class="fas fa-user text-primary"></i> User Details: <strong>${{escapeHtml(username)}}</strong>
@@ -1074,7 +1074,7 @@ class DirectorySectionMixin:
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row mt-3">
                     <div class="col-12">
                         <div class="card">
@@ -1087,7 +1087,7 @@ class DirectorySectionMixin:
                         </div>
                     </div>
                 </div>
-                
+
                 ${{domainAdminGroups.length > 0 || enterpriseAdminGroups.length > 0 || schemaAdminGroups.length > 0 ? `
                 <div class="row mt-3">
                     <div class="col-12">
@@ -1104,7 +1104,7 @@ class DirectorySectionMixin:
                     </div>
                 </div>
                 ` : ''}}
-                
+
                 ${{hasSPN ? `
                 <div class="row mt-3">
                     <div class="col-12">
@@ -1121,7 +1121,7 @@ class DirectorySectionMixin:
                     </div>
                 </div>
                 ` : ''}}
-                
+
                 <div class="row mt-3">
                     <div class="col-12">
                         <div class="card">
@@ -1135,19 +1135,19 @@ class DirectorySectionMixin:
                     </div>
                 </div>
             `;
-            
+
             const modal = new bootstrap.Modal(document.getElementById('objectDetailModal'));
             modal.show();
         }}
-        
+
         function showGroupDetails(groupName) {{
             const group = directoryData.allGroups.find(g => g.name === groupName);
             if (!group) return;
-            
+
             // Get group data from groups_data array
             const groupData = directoryData.groups.find(g => g.name === groupName);
             const groupRisks = directoryData.allRisks.filter(r => r.affected_object === groupName);
-            
+
             // Get members - try multiple sources
             let memberList = [];
             if (groupData && groupData.members && groupData.members.length > 0) {{
@@ -1178,13 +1178,13 @@ class DirectorySectionMixin:
                     return memberDn;
                 }});
             }}
-            
+
             const memberCount = memberList.length;
-            const isPrivileged = group.isPrivileged || group.is_privileged || 
+            const isPrivileged = group.isPrivileged || group.is_privileged ||
                                 groupName.toUpperCase().includes('DOMAIN ADMINS') ||
                                 groupName.toUpperCase().includes('ENTERPRISE ADMINS') ||
                                 groupName.toUpperCase().includes('SCHEMA ADMINS');
-            
+
             // Build members HTML with modern styling
             let membersHtml = '';
             if (memberCount > 0) {{
@@ -1209,7 +1209,7 @@ class DirectorySectionMixin:
             }} else {{
                 membersHtml = '<p class="text-muted"><i class="fas fa-info-circle"></i> This group has no members.</p>';
             }}
-            
+
             // Build risks HTML with modern styling
             let risksHtml = '';
             if (groupRisks.length > 0) {{
@@ -1228,7 +1228,7 @@ class DirectorySectionMixin:
                         'Medium': 'info-circle',
                         'Low': 'check-circle'
                     }}[severity] || 'info-circle';
-                    
+
                     risksHtml += `
                         <div class="col-12 mb-2">
                             <div class="card border-${{badgeColor}}">
@@ -1247,7 +1247,7 @@ class DirectorySectionMixin:
             }} else {{
                 risksHtml = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> No risks found for this group.</div>';
             }}
-            
+
             // Build modern modal content (escapeHtml prevents XSS from LDAP data)
             document.getElementById('objectDetailModalLabel').innerHTML = `
                 <i class="fas fa-users-cog text-primary"></i> Group Details: <strong>${{escapeHtml(groupName)}}</strong>
@@ -1302,7 +1302,7 @@ class DirectorySectionMixin:
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row mt-3">
                     <div class="col-12">
                         <div class="card">
@@ -1315,7 +1315,7 @@ class DirectorySectionMixin:
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row mt-3">
                     <div class="col-12">
                         <div class="card">
@@ -1329,17 +1329,17 @@ class DirectorySectionMixin:
                     </div>
                 </div>
             `;
-            
+
             const modal = new bootstrap.Modal(document.getElementById('objectDetailModal'));
             modal.show();
         }}
-        
+
         function showComputerDetails(computerName) {{
             const computer = directoryData.allComputers.find(c => c.name === computerName);
             if (!computer) return;
-            
+
             const compRisks = directoryData.allRisks.filter(r => r.affected_object === computerName);
-            
+
             // Format last logon
             let lastLogon = 'N/A';
             if (computer.lastLogonTimestamp) {{
@@ -1350,13 +1350,13 @@ class DirectorySectionMixin:
                     lastLogon = computer.lastLogonTimestamp;
                 }}
             }}
-            
+
             // Check if domain controller
             const isDC = computer.operatingSystem && (
                 computer.operatingSystem.toUpperCase().includes('SERVER') ||
                 computer.operatingSystem.toUpperCase().includes('DOMAIN CONTROLLER')
             );
-            
+
             // Build risks HTML with modern styling
             let risksHtml = '';
             if (compRisks.length > 0) {{
@@ -1375,7 +1375,7 @@ class DirectorySectionMixin:
                         'Medium': 'info-circle',
                         'Low': 'check-circle'
                     }}[severity] || 'info-circle';
-                    
+
                     risksHtml += `
                         <div class="col-12 mb-2">
                             <div class="card border-${{badgeColor}}">
@@ -1394,7 +1394,7 @@ class DirectorySectionMixin:
             }} else {{
                 risksHtml = '<div class="alert alert-success"><i class="fas fa-check-circle"></i> No risks found for this computer.</div>';
             }}
-            
+
             // Build modern modal content (escapeHtml prevents XSS from LDAP data)
             document.getElementById('objectDetailModalLabel').innerHTML = `
                 <i class="fas fa-server text-primary"></i> Computer Details: <strong>${{escapeHtml(computerName)}}</strong>
@@ -1449,7 +1449,7 @@ class DirectorySectionMixin:
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="row mt-3">
                     <div class="col-12">
                         <div class="card">
@@ -1463,16 +1463,16 @@ class DirectorySectionMixin:
                     </div>
                 </div>
             `;
-            
+
             const modal = new bootstrap.Modal(document.getElementById('objectDetailModal'));
             modal.show();
         }}
-        
+
         // Excel Export Function (exports full data from directoryTableRows for paginated tables)
         function exportToExcel(type) {{
             let table, filename, useFullData = false;
             const timestamp = new Date().toISOString().slice(0,19).replace(/:/g, '-');
-            
+
             if (type === 'users') {{
                 table = document.getElementById('usersTable');
                 filename = `AtilKurt_Users_${{timestamp}}.csv`;
@@ -1485,9 +1485,9 @@ class DirectorySectionMixin:
             }} else {{
                 return;
             }}
-            
+
             if (!table) return;
-            
+
             // Use full rows from pagination cache (filtered or full)
             let rowsToExport = table.querySelectorAll('tbody tr');
             if (window.directoryTableRows && window.directoryTableRows[type]) {{
@@ -1500,16 +1500,16 @@ class DirectorySectionMixin:
                     useFullData = true;
                 }}
             }}
-            
+
             const headerRow = table.querySelector('thead tr');
             const rows = useFullData && headerRow
                 ? [headerRow, ...Array.from(rowsToExport)] : Array.from(table.querySelectorAll('tr'));
             let csv = [];
-            
+
             rows.forEach((row, index) => {{
                 const cols = row.querySelectorAll('td, th');
                 const rowData = [];
-                
+
                 // Special handling for groups table - include all members
                 if (type === 'groups' && row.querySelector('td')) {{
                     const groupMembers = row.getAttribute('data-group-members');
@@ -1523,16 +1523,16 @@ class DirectorySectionMixin:
                             membersText = '';
                         }}
                     }}
-                    
+
                     cols.forEach((col, colIndex) => {{
                         let text = col.textContent.trim();
                         text = text.replace(/View Details/g, '').trim();
-                        
+
                         // Replace Members column (index 1) with full member list
                         if (colIndex === 1 && membersText) {{
                             text = membersText;
                         }}
-                        
+
                         rowData.push('"' + text.replace(/"/g, '""') + '"');
                     }});
                 }} else {{
@@ -1545,12 +1545,12 @@ class DirectorySectionMixin:
                         rowData.push('"' + text.replace(/"/g, '""') + '"');
                     }});
                 }}
-                
+
                 if (rowData.length > 0) {{
                     csv.push(rowData.join(','));
                 }}
             }});
-            
+
             // Create download
             const csvContent = csv.join('\\n');
             const blob = new Blob([csvContent], {{ type: 'text/csv;charset=utf-8;' }});
@@ -1565,7 +1565,7 @@ class DirectorySectionMixin:
             URL.revokeObjectURL(url);
         }}
         if (typeof window !== 'undefined') window.exportToExcel = exportToExcel;
-        
+
         // Generic table export function
         function exportTableToExcel(tableId, tableName) {{
             const table = document.getElementById(tableId);
@@ -1573,10 +1573,10 @@ class DirectorySectionMixin:
                 console.warn('Table not found:', tableId);
                 return;
             }}
-            
+
             const timestamp = new Date().toISOString().slice(0,19).replace(/:/g, '-');
             const filename = `AtilKurt_${{tableName}}_${{timestamp}}.csv`;
-            
+
             let csv = [];
             const headerRow = Array.from(table.querySelectorAll('thead tr'))[0];
             if (headerRow) {{
@@ -1591,10 +1591,10 @@ class DirectorySectionMixin:
             }} else {{
                 csv.push('"' + String(tableName).replace(/"/g, '""') + '"');
             }}
-            
+
             // Get all data based on table type
             let dataRows = [];
-            
+
             // Check for paginated tables and export all data
             if (tableId === 'passwordIssuesPreviewTable' && window.passwordIssuesData) {{
                 window.passwordIssuesData.forEach(detail => {{
@@ -1686,13 +1686,13 @@ class DirectorySectionMixin:
                     }}
                 }});
             }}
-            
+
             // Add data rows to CSV
             dataRows.forEach(rowData => {{
                 const csvRow = rowData.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',');
                 csv.push(csvRow);
             }});
-            
+
             // Create download
             const csvContent = csv.join('\\n');
             const blob = new Blob([csvContent], {{ type: 'text/csv;charset=utf-8;' }});
@@ -1707,19 +1707,19 @@ class DirectorySectionMixin:
             URL.revokeObjectURL(url);
         }}
         if (typeof window !== 'undefined') window.exportTableToExcel = exportTableToExcel;
-        
+
         // Table sorting function
         let sortDirection = {{}};
         function sortTable(tableId, columnIndex) {{
             const table = document.getElementById(tableId);
             if (!table) return;
-            
+
             const tbody = table.querySelector('tbody');
             if (!tbody) return;
-            
+
             const rows = Array.from(tbody.querySelectorAll('tr'));
             if (rows.length === 0) return;
-            
+
             // Initialize sort direction for this table/column
             const sortKey = `${{tableId}}_${{columnIndex}}`;
             if (!sortDirection[sortKey]) {{
@@ -1727,32 +1727,32 @@ class DirectorySectionMixin:
             }} else {{
                 sortDirection[sortKey] = sortDirection[sortKey] === 'asc' ? 'desc' : 'asc';
             }}
-            
+
             const direction = sortDirection[sortKey];
-            
+
             // Sort rows
             rows.sort((a, b) => {{
                 const aText = a.cells[columnIndex] ? a.cells[columnIndex].textContent.trim() : '';
                 const bText = b.cells[columnIndex] ? b.cells[columnIndex].textContent.trim() : '';
-                
+
                 // Try to parse as number
                 const aNum = parseFloat(aText.replace(/[^0-9.-]/g, ''));
                 const bNum = parseFloat(bText.replace(/[^0-9.-]/g, ''));
-                
+
                 let comparison = 0;
                 if (!isNaN(aNum) && !isNaN(bNum)) {{
                     comparison = aNum - bNum;
                 }} else {{
                     comparison = aText.localeCompare(bText, undefined, {{ numeric: true, sensitivity: 'base' }});
                 }}
-                
+
                 return direction === 'asc' ? comparison : -comparison;
             }});
-            
+
             // Clear tbody and re-append sorted rows
             tbody.innerHTML = '';
             rows.forEach(row => tbody.appendChild(row));
-            
+
             // Update sort icons
             const headers = table.querySelectorAll('thead th');
             headers.forEach((header, index) => {{
@@ -1780,7 +1780,7 @@ class DirectorySectionMixin:
             groups_display = ', '.join(html_stdlib.escape(str(group)) for group in user_data['groups'][:3])
             if user_data['group_count'] > 3:
                 groups_display += f" (+{user_data['group_count'] - 3} more)"
-            
+
             # Status badges
             status_badges = []
             if user_data.get('isDisabled'):
@@ -1790,7 +1790,7 @@ class DirectorySectionMixin:
             if not status_badges:
                 status_badges.append('<span class="badge bg-success">Active</span>')
             status_display = ' '.join(status_badges)
-            
+
             # Last logon display
             last_logon_display = html_stdlib.escape(str(user_data.get('lastLogon', 'N/A')))
             days_since_logon = user_data.get('daysSinceLastLogon')
@@ -1799,10 +1799,10 @@ class DirectorySectionMixin:
                     last_logon_display += f' <span class="badge bg-danger">{days_since_logon}d</span>'
                 elif days_since_logon >= 30:
                     last_logon_display += f' <span class="badge bg-warning">{days_since_logon}d</span>'
-            
+
             # Account age display
             account_age_display = html_stdlib.escape(str(user_data.get('accountAge', 'N/A')))
-            
+
             # Admin groups display
             admin_groups_display = []
             if user_data.get('domainAdminGroups'):
@@ -1812,19 +1812,19 @@ class DirectorySectionMixin:
             if user_data.get('schemaAdminGroups'):
                 admin_groups_display.append(f'<span class="badge bg-danger">SA ({len(user_data["schemaAdminGroups"])})</span>')
             admin_groups_html = ' '.join(admin_groups_display) if admin_groups_display else '<span class="text-muted">-</span>'
-            
+
             # SPN display
             spn_display = '<span class="badge bg-warning">Yes</span>' if user_data.get('hasSPN') else '<span class="text-muted">No</span>'
-            
+
             # Service account display
             service_account_display = '<span class="badge bg-info">Yes</span>' if user_data.get('isServiceAccount') else '<span class="text-muted">No</span>'
             if user_data.get('isServiceWithPwdNeverExpires'):
                 service_account_display += ' <span class="badge bg-danger">Pwd Never Expires</span>'
-            
+
             privileged_badge = '<span class="badge bg-danger">Yes</span>' if user_data['adminCount'] else '<span class="badge bg-success">No</span>'
             risk_badge = f'<span class="badge bg-warning">{user_data["risk_count"]}</span>' if user_data['risk_count'] > 0 else '<span class="badge bg-success">0</span>'
             critical_badge = f'<span class="badge bg-danger">{user_data["critical_risks"]}</span>' if user_data['critical_risks'] > 0 else '<span class="badge bg-secondary">0</span>'
-            
+
             rows.append(f"""
             <tr>
                 <td><strong>{username}</strong></td>
@@ -1857,7 +1857,7 @@ class DirectorySectionMixin:
             members_list = group_data.get('members', [])
             member_count = group_data['member_count']
             group_detail_arg = html_stdlib.escape(json.dumps(raw_group_name), quote=True)
-            
+
             # Display members
             if member_count > 0 and len(members_list) > 0:
                 members_display = f"{member_count} member(s): {', '.join(html_stdlib.escape(str(member)) for member in members_list[:5])}"
@@ -1865,14 +1865,14 @@ class DirectorySectionMixin:
                     members_display += f" (+{member_count - 5} more)"
             else:
                 members_display = "0 members"
-            
+
             privileged_badge = '<span class="badge bg-danger">Yes</span>' if group_data['is_privileged'] else '<span class="badge bg-success">No</span>'
             risk_badge = f'<span class="badge bg-warning">{group_data["risk_count"]}</span>' if group_data['risk_count'] > 0 else '<span class="badge bg-success">0</span>'
             critical_badge = f'<span class="badge bg-danger">{group_data["critical_risks"]}</span>' if group_data['critical_risks'] > 0 else '<span class="badge bg-secondary">0</span>'
-            
+
             # Store members list in data attribute for Excel export
             members_json = html_stdlib.escape(json.dumps(members_list, default=str), quote=True)
-            
+
             rows.append(f"""
             <tr data-group-members='{members_json}'>
                 <td><strong>{group_name}</strong></td>
@@ -1899,7 +1899,7 @@ class DirectorySectionMixin:
             computer_detail_arg = html_stdlib.escape(json.dumps(raw_comp_name), quote=True)
             risk_badge = f'<span class="badge bg-warning">{comp_data["risk_count"]}</span>' if comp_data['risk_count'] > 0 else '<span class="badge bg-success">0</span>'
             critical_badge = f'<span class="badge bg-danger">{comp_data["critical_risks"]}</span>' if comp_data['critical_risks'] > 0 else '<span class="badge bg-secondary">0</span>'
-            
+
             rows.append(f"""
             <tr>
                 <td><strong>{comp_name}</strong></td>

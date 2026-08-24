@@ -3,7 +3,6 @@ Tests for Cache Module improvements
 Validates SHA-256 hashing, thread safety, and TTL expiration
 """
 
-import hashlib
 import threading
 import time
 import unittest

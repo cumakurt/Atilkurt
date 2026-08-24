@@ -4,61 +4,70 @@ Handles secure password input and memory management
 """
 
 import getpass
-import sys
-import ctypes
-import os
-from typing import Optional
 import logging
+import sys
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 class SecurePasswordManager:
     """
-    Secure password manager that handles password input and memory clearing.
-    Uses ctypes for real memory overwriting (Python strings are immutable,
-    so simple reassignment does NOT clear memory).
+    Secure password manager that handles password input and owned-buffer clearing.
+
+    Python strings are immutable and may be shared or interned, so mutating a
+    ``str`` object's internal memory is unsafe. The manager keeps its own
+    mutable UTF-8 buffer and overwrites that buffer when it is cleared. Any
+    string returned to a caller remains subject to normal Python memory
+    management and cannot be reliably wiped by this class.
     """
-    
+
     def __init__(self) -> None:
         """Initialize secure password manager."""
-        self._password: Optional[str] = None
+        self._password_buffer: Optional[bytearray] = None
         self._password_set = False
-    
+
+    def set_password(self, password: str) -> str:
+        """Store a password in an owned mutable buffer and return it."""
+        if not isinstance(password, str):
+            raise TypeError("Password must be a string")
+        self.clear_password()
+        self._password_buffer = bytearray(password, "utf-8")
+        self._password_set = True
+        return password
+
     def get_password_from_prompt(self, prompt: str = "Password: ") -> str:
         """
         Securely get password from user input using getpass.
-        
+
         Args:
             prompt: Prompt message for password input
-            
+
         Returns:
             str: Password entered by user
         """
         try:
             password = getpass.getpass(prompt)
-            self._password = password
-            self._password_set = True
-            return password
+            return self.set_password(password)
         except KeyboardInterrupt:
             print("\n[-] Password input cancelled")
             sys.exit(1)
         except Exception as e:
             logger.error(f"Error getting password: {e}")
             raise
-    
+
     def get_password_from_arg(self, password: str) -> str:
         """
         Store password from command line argument.
-        
+
         .. deprecated::
             Passing passwords via CLI is insecure (visible in ``ps aux``
             and ``/proc/<pid>/cmdline``). Use environment variables or
             interactive prompt instead.
-        
+
         Args:
             password: Password from command line
-            
+
         Returns:
             str: Password
         """
@@ -69,50 +78,31 @@ class SecurePasswordManager:
             DeprecationWarning,
             stacklevel=2
         )
-        self._password = password
-        self._password_set = True
-        return password
-    
+        return self.set_password(password)
+
     def get_password(self) -> Optional[str]:
         """
         Get stored password.
-        
+
         Returns:
             str: Stored password or None
         """
-        return self._password
-    
+        if self._password_buffer is None:
+            return None
+        return self._password_buffer.decode("utf-8")
+
     def clear_password(self) -> None:
         """
-        Clear password from memory.
-        
-        Uses ctypes to overwrite the underlying C string buffer. This is
-        the closest we can get to secure memory wiping in CPython — simple
-        reassignment only removes the reference while the original bytes
-        remain in the process heap until overwritten by the allocator.
+        Overwrite and release the manager-owned password buffer.
+
+        This deliberately does not attempt to mutate immutable Python string
+        objects because doing so can corrupt shared interpreter state.
         """
-        if self._password is not None:
-            try:
-                # Get the internal buffer address of the Python str object.
-                # CPython stores str data as a compact ASCII or UTF-8 buffer
-                # right after the object header.  We use ctypes.memset to
-                # zero it out in-place before dropping the reference.
-                password_len = len(self._password)
-                if password_len > 0:
-                    # id() returns the memory address of the object in CPython
-                    addr = id(self._password)
-                    # The actual character data in a compact ASCII string
-                    # starts at offset sys.getsizeof('') from the object base.
-                    offset = sys.getsizeof('') 
-                    ctypes.memset(addr + offset, 0, password_len)
-            except Exception as e:
-                # Fallback: best-effort overwrite (not guaranteed on all
-                # Python implementations, e.g. PyPy)
-                logger.debug(f"ctypes memory wipe failed, using fallback: {e}")
-            finally:
-                self._password = None
-                self._password_set = False
-    
+        if self._password_buffer is not None:
+            self._password_buffer[:] = b"\x00" * len(self._password_buffer)
+            self._password_buffer = None
+        self._password_set = False
+
     def is_set(self) -> bool:
         """Check if password is set."""
         return self._password_set
@@ -121,11 +111,11 @@ class SecurePasswordManager:
 def get_password_secure(prompt: str = "Password: ", use_prompt: bool = True) -> str:
     """
     Convenience function to get password securely.
-    
+
     Args:
         prompt: Prompt message
         use_prompt: If True, use getpass prompt. If False, read from stdin (for scripts)
-        
+
     Returns:
         str: Password
     """

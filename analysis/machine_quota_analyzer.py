@@ -5,8 +5,8 @@ A non-zero quota enables NoPac, RBCD, and rogue domain join attacks.
 """
 
 import logging
-from typing import List, Dict, Any
-from core.constants import RiskTypes, Severity, MITRETechniques
+from typing import Any
+from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,14 @@ class MachineQuotaAnalyzer:
         """
         self.ldap = ldap_connection
 
-    def analyze(self) -> List[Dict[str, Any]]:
+    def analyze(self) -> list[dict[str, Any]]:
         """
         Analyze machine account quota configuration.
 
         Returns:
             List of risk dictionaries for machine quota issues
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -192,14 +192,14 @@ class MachineQuotaAnalyzer:
         logger.debug("Could not read MachineAccountQuota with any filter/attribute variant")
         return None
 
-    def _analyze_creator_sids(self, base_dn: str) -> Dict[str, int]:
+    def _analyze_creator_sids(self, base_dn: str) -> dict[str, int]:
         """
         Count computer accounts per creator SID (ms-DS-CreatorSID).
 
         Returns:
             Dictionary mapping creator display name → count of created computers
         """
-        stats: Dict[str, int] = {}
+        stats: dict[str, int] = {}
         try:
             results = self.ldap.search(
                 search_base=base_dn,

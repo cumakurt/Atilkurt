@@ -18,8 +18,7 @@ Performs additional LDAP-based security checks:
 """
 
 import logging
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -48,8 +47,8 @@ class ExtendedLDAPAnalyzer:
         self.ldap = ldap_connection
         self.base_dn = ldap_connection.base_dn
 
-    def analyze_all(self, users: List[Dict], computers: List[Dict],
-                    groups: List[Dict], gpos: List[Dict]) -> List[Dict[str, Any]]:
+    def analyze_all(self, users: list[dict], computers: list[dict],
+                    groups: list[dict], gpos: list[dict]) -> list[dict[str, Any]]:
         """Run all extended LDAP analyses and return combined risks."""
         risks = []
 
@@ -73,7 +72,7 @@ class ExtendedLDAPAnalyzer:
 
         return risks
 
-    def _analyze_rbcd(self, users: List[Dict], computers: List[Dict]) -> List[Dict]:
+    def _analyze_rbcd(self, users: list[dict], computers: list[dict]) -> list[dict]:
         """Resource-based constrained delegation (msDS-AllowedToActOnBehalfOfOtherIdentity)."""
         risks = []
         try:
@@ -101,7 +100,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"RBCD analysis: {e}")
         return risks
 
-    def _analyze_key_credential_link(self, users: List[Dict], computers: List[Dict]) -> List[Dict]:
+    def _analyze_key_credential_link(self, users: list[dict], computers: list[dict]) -> list[dict]:
         """Objects with msDS-KeyCredentialLink (passwordless auth / potential shadow creds)."""
         risks = []
         try:
@@ -131,7 +130,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"KeyCredentialLink analysis: {e}")
         return risks
 
-    def _analyze_sid_history(self, users: List[Dict], computers: List[Dict]) -> List[Dict]:
+    def _analyze_sid_history(self, users: list[dict], computers: list[dict]) -> list[dict]:
         """Users/computers with sIDHistory - potential privilege escalation."""
         risks = []
         try:
@@ -160,7 +159,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"sIDHistory analysis: {e}")
         return risks
 
-    def _analyze_foreign_security_principals(self) -> List[Dict]:
+    def _analyze_foreign_security_principals(self) -> list[dict]:
         """Cross-domain group memberships (foreignSecurityPrincipal)."""
         risks = []
         try:
@@ -193,11 +192,10 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"Foreign Security Principal analysis: {e}")
         return risks
 
-    def _analyze_fine_grained_password_policy(self) -> List[Dict]:
+    def _analyze_fine_grained_password_policy(self) -> list[dict]:
         """Fine-grained password policies (PSO)."""
         risks = []
         try:
-            config_dn = f"CN=Configuration,{self.base_dn}"
             results = self.ldap.search(
                 search_filter='(objectClass=msDS-PasswordSettings)',
                 search_base=f"CN=Password Settings Container,CN=System,{self.base_dn}",
@@ -224,7 +222,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"PSO analysis: {e}")
         return risks
 
-    def _analyze_bitlocker_recovery(self) -> List[Dict]:
+    def _analyze_bitlocker_recovery(self) -> list[dict]:
         """BitLocker recovery information stored in AD."""
         risks = []
         try:
@@ -250,7 +248,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"BitLocker analysis: {e}")
         return risks
 
-    def _analyze_adminsdholder(self) -> List[Dict]:
+    def _analyze_adminsdholder(self) -> list[dict]:
         """AdminSDHolder and protected groups."""
         risks = []
         try:
@@ -276,7 +274,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"AdminSDHolder analysis: {e}")
         return risks
 
-    def _analyze_ou_structure(self, gpos: List[Dict]) -> List[Dict]:
+    def _analyze_ou_structure(self, gpos: list[dict]) -> list[dict]:
         """OU structure, GPO links, blocked inheritance."""
         risks = []
         try:
@@ -304,7 +302,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"OU structure analysis: {e}")
         return risks
 
-    def _analyze_empty_nested_groups(self, groups: List[Dict]) -> List[Dict]:
+    def _analyze_empty_nested_groups(self, groups: list[dict]) -> list[dict]:
         """Empty groups and deeply nested groups."""
         risks = []
 
@@ -345,7 +343,7 @@ class ExtendedLDAPAnalyzer:
                 })
         return risks
 
-    def _analyze_computer_expiration(self, computers: List[Dict]) -> List[Dict]:
+    def _analyze_computer_expiration(self, computers: list[dict]) -> list[dict]:
         """Computer accounts with expiration set (or expired)."""
         risks = []
         # accountExpires: 9223372036854775807 = never; 0 = different meaning
@@ -372,7 +370,7 @@ class ExtendedLDAPAnalyzer:
                 pass
         return risks
 
-    def _analyze_printer_objects(self) -> List[Dict]:
+    def _analyze_printer_objects(self) -> list[dict]:
         """Printer objects - PrintNightmare / printer abuse."""
         risks = []
         try:
@@ -401,7 +399,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"Printer analysis: {e}")
         return risks
 
-    def _analyze_exchange_objects(self) -> List[Dict]:
+    def _analyze_exchange_objects(self) -> list[dict]:
         """Exchange-related objects in AD. Uses (objectClass=*) to avoid 'invalid class' when Exchange schema is not installed."""
         risks = []
         results = []
@@ -436,7 +434,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"Exchange analysis: {e}")
         return risks
 
-    def _analyze_dns_zones(self) -> List[Dict]:
+    def _analyze_dns_zones(self) -> list[dict]:
         """AD-integrated DNS zones."""
         risks = []
         try:
@@ -464,7 +462,7 @@ class ExtendedLDAPAnalyzer:
             logger.debug(f"DNS zone analysis: {e}")
         return risks
 
-    def _analyze_recycle_bin(self) -> List[Dict]:
+    def _analyze_recycle_bin(self) -> list[dict]:
         """AD Recycle Bin - deleted objects."""
         risks = []
         try:

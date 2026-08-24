@@ -4,7 +4,7 @@ Detects accounts vulnerable to Kerberoasting and AS-REP roasting attacks
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -12,54 +12,54 @@ logger = logging.getLogger(__name__)
 
 class KerberoastingDetector:
     """Detects accounts vulnerable to Kerberoasting and AS-REP roasting."""
-    
+
     def __init__(self):
         """Initialize Kerberoasting detector."""
         pass
-    
-    def detect_kerberoasting_targets(self, users: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def detect_kerberoasting_targets(self, users: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect users vulnerable to Kerberoasting attacks.
-        
+
         Args:
             users: List of user dictionaries
-        
+
         Returns:
             List of risk dictionaries for Kerberoasting targets
         """
         risks = []
-        
+
         for user in users:
             username = user.get('sAMAccountName')
             if not username:
                 continue
-            
+
             spns = user.get('servicePrincipalName') or []
             if not isinstance(spns, list):
                 spns = [spns] if spns else []
-            
+
             # User must have SPN to be vulnerable to Kerberoasting
             if not spns or len(spns) == 0:
                 continue
-            
+
             # Check if user is in privileged groups (higher risk)
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
                 member_of = [member_of] if member_of else []
-            
+
             privileged_groups = []
             is_privileged = False
             for group_dn in member_of:
                 group_name = self._extract_group_name(group_dn)
                 if group_name:
-                    if any(priv in group_name.upper() for priv in 
+                    if any(priv in group_name.upper() for priv in
                           ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
                         is_privileged = True
                         privileged_groups.append(group_name)
-            
+
             # Determine severity
             severity = Severity.CRITICAL if is_privileged else Severity.HIGH
-            
+
             risks.append({
                 'type': RiskTypes.KERBEROASTING_TARGET,
                 'severity': severity,
@@ -91,57 +91,57 @@ class KerberoastingDetector:
                 ],
                 'export_format': self._generate_export_format(username, spns, 'kerberoasting')
             })
-        
+
         logger.info(f"Found {len(risks)} Kerberoasting targets")
         return risks
-    
-    def detect_asrep_roasting_targets(self, users: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def detect_asrep_roasting_targets(self, users: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect users vulnerable to AS-REP roasting attacks.
-        
+
         Args:
             users: List of user dictionaries
-        
+
         Returns:
             List of risk dictionaries for AS-REP roasting targets
         """
         risks = []
-        
+
         for user in users:
             username = user.get('sAMAccountName')
             if not username:
                 continue
-            
+
             uac = user.get('userAccountControl', 0)
             if isinstance(uac, str):
                 try:
                     uac = int(uac)
                 except ValueError:
                     continue
-            
+
             # Check if preauthentication is disabled
             # DONT_REQUIRE_PREAUTH = 4194304 (0x400000)
             if not (uac & 4194304):
                 continue
-            
+
             # Check if user is in privileged groups
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
                 member_of = [member_of] if member_of else []
-            
+
             privileged_groups = []
             is_privileged = False
             for group_dn in member_of:
                 group_name = self._extract_group_name(group_dn)
                 if group_name:
-                    if any(priv in group_name.upper() for priv in 
+                    if any(priv in group_name.upper() for priv in
                           ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
                         is_privileged = True
                         privileged_groups.append(group_name)
-            
+
             # Determine severity
             severity = Severity.CRITICAL if is_privileged else Severity.CRITICAL  # Always critical
-            
+
             risks.append({
                 'type': RiskTypes.ASREP_ROASTING_TARGET,
                 'severity': severity,
@@ -172,10 +172,10 @@ class KerberoastingDetector:
                 ],
                 'export_format': self._generate_export_format(username, [], 'asrep')
             })
-        
+
         logger.info(f"Found {len(risks)} AS-REP roasting targets")
         return risks
-    
+
     def _extract_group_name(self, group_dn: str) -> str:
         """Extract group name from DN."""
         if not group_dn:
@@ -187,16 +187,16 @@ class KerberoastingDetector:
             except Exception:
                 return ''
         return group_dn
-    
-    def _generate_export_format(self, username: str, spns: List[str], attack_type: str) -> Dict[str, Any]:
+
+    def _generate_export_format(self, username: str, spns: list[str], attack_type: str) -> dict[str, Any]:
         """
         Generate export format for exploitation tools.
-        
+
         Args:
             username: Username
             spns: List of SPNs (for Kerberoasting)
             attack_type: 'kerberoasting' or 'asrep'
-        
+
         Returns:
             Dictionary with export formats
         """
@@ -204,28 +204,28 @@ class KerberoastingDetector:
             'username': username,
             'attack_type': attack_type
         }
-        
+
         if attack_type == 'kerberoasting':
             # Impacket format
             export['impacket_command'] = f"GetUserSPNs.py -dc-ip <DC_IP> <DOMAIN>/{username}"
-            
+
             # Rubeus format
             export['rubeus_command'] = f"Rubeus.exe kerberoast /user:{username}"
-            
+
             # CrackMapExec format
             export['cme_command'] = f"crackmapexec ldap <DC_IP> -u {username} -p <PASSWORD> --kerberoasting"
-            
+
             # SPN list for manual testing
             export['spns'] = spns
-        
+
         elif attack_type == 'asrep':
             # Impacket format
             export['impacket_command'] = f"GetNPUsers.py -dc-ip <DC_IP> <DOMAIN>/{username} -no-pass"
-            
+
             # Rubeus format
             export['rubeus_command'] = f"Rubeus.exe asreproast /user:{username}"
-            
+
             # CrackMapExec format
             export['cme_command'] = f"crackmapexec ldap <DC_IP> -u {username} --asreproast"
-        
+
         return export

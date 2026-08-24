@@ -4,7 +4,7 @@ Detects LAPS configuration and access rights
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -12,44 +12,42 @@ logger = logging.getLogger(__name__)
 
 class LAPSAnalyzer:
     """Analyzes LAPS configuration and access rights."""
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize LAPS analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
-    
-    def analyze_laps(self, computers: List[Dict[str, Any]], 
-                    users: List[Dict[str, Any]], 
-                    groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def analyze_laps(self, computers: list[dict[str, Any]],
+                    users: list[dict[str, Any]],
+                    groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Analyze LAPS configuration and access.
-        
+
         Args:
             computers: List of computer dictionaries
             users: List of user dictionaries
             groups: List of group dictionaries
-        
+
         Returns:
             List of risk dictionaries for LAPS issues
         """
         risks = []
-        
+
         try:
-            base_dn = self.ldap.base_dn
-            
             # Check if LAPS is installed (ms-Mcs-AdmPwd attribute exists)
             laps_installed = False
             computers_with_laps = []
-            
+
             for computer in computers:
                 computer_name = computer.get('name')
                 if not computer_name:
                     continue
-                
+
                 # Check for LAPS password attribute
                 # Note: We can't read the password without proper permissions, but we can check if attribute exists
                 computer_dn = computer.get('distinguishedName')
@@ -57,9 +55,9 @@ class LAPSAnalyzer:
                     # Try to read LAPS attributes with different name variations
                     # LAPS attributes may have different names in different AD versions
                     # If attributes don't exist, that's normal (LAPS not installed or no permissions)
-                    laps_attributes = ['ms-Mcs-AdmPwdExpirationTime', 'msMcs-AdmPwdExpirationTime', 
+                    laps_attributes = ['ms-Mcs-AdmPwdExpirationTime', 'msMcs-AdmPwdExpirationTime',
                                      'msMcsAdmPwdExpirationTime']
-                    
+
                     for attr_name in laps_attributes:
                         try:
                             # Use size_limit=1 and disable paging for single object search
@@ -70,7 +68,7 @@ class LAPSAnalyzer:
                                 attributes=[attr_name],
                                 size_limit=1
                             )
-                            
+
                             if results and results[0].get(attr_name):
                                 laps_installed = True
                                 computers_with_laps.append(computer_name)
@@ -85,7 +83,7 @@ class LAPSAnalyzer:
                             else:
                                 logger.debug(f"Could not read LAPS attribute {attr_name} for {computer_name}: {str(e)}")
                             continue
-            
+
             # Check LAPS configuration
             if not laps_installed:
                 risks.append({
@@ -119,11 +117,11 @@ class LAPSAnalyzer:
                 # Check who can read LAPS passwords
                 # LAPS passwords are readable by accounts with "Read ms-Mcs-AdmPwd" permission
                 # Typically granted to specific groups or users
-                
+
                 # Check if too many accounts can read LAPS passwords
                 # This would require ACL analysis which is complex
                 # For now, we'll provide general guidance
-                
+
                 if len(computers_with_laps) > 0:
                     risks.append({
                         'type': RiskTypes.LAPS_ACCESS_ANALYSIS,
@@ -152,10 +150,10 @@ class LAPSAnalyzer:
                         'cis_reference': 'CIS Benchmark requires strict control over LAPS access',
                         'mitre_attack': MITRETechniques.LATERAL_MOVEMENT
                     })
-            
+
             logger.info(f"Found {len(risks)} LAPS-related risks")
             return risks
-            
+
         except Exception as e:
             logger.error(f"Error analyzing LAPS: {str(e)}")
             return []

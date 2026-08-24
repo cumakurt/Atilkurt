@@ -7,8 +7,8 @@ lockout policies, MFA coverage, and password age patterns.
 import logging
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
-from core.constants import RiskTypes, Severity, MITRETechniques
+from typing import Any, Optional
+from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +26,15 @@ class PasswordSprayRiskAnalyzer:
         self.ldap = ldap_connection
 
     def analyze(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Analyze password spray attack susceptibility.
 
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -62,9 +62,9 @@ class PasswordSprayRiskAnalyzer:
 
     def _analyze_lockout_policy(
         self, base_dn: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Evaluate account lockout policy against password spray attacks."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             results = self.ldap.search(
@@ -146,6 +146,23 @@ class PasswordSprayRiskAnalyzer:
                     'lockout_threshold': threshold,
                 })
 
+            duration_minutes = self._parse_duration_minutes(duration)
+            if threshold and duration_minutes is not None and 0 < duration_minutes < 15:
+                risks.append({
+                    'type': RiskTypes.PASSWORD_SPRAY_RISK,
+                    'severity': Severity.MEDIUM,
+                    'title': f'Account lockout duration is only {duration_minutes} min',
+                    'description': (
+                        f'Locked accounts are automatically unlocked after {duration_minutes} minutes, '
+                        'allowing password spray attempts to resume quickly.'
+                    ),
+                    'affected_object': 'Domain',
+                    'object_type': 'configuration',
+                    'mitigation': 'Set lockoutDuration to at least 15 minutes.',
+                    'mitre_attack': 'T1110.003',
+                    'lockout_duration_minutes': duration_minutes,
+                })
+
             # Check observation window
             obs_minutes = self._parse_duration_minutes(observation)
             if obs_minutes is not None and obs_minutes < 15:
@@ -175,11 +192,11 @@ class PasswordSprayRiskAnalyzer:
     # ── MFA / Smart Card Coverage ───────────────────────────────────────────
 
     def _analyze_mfa_coverage(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect privileged accounts without smart card requirement."""
-        risks: List[Dict[str, Any]] = []
-        no_smartcard_admins: List[str] = []
+        risks: list[dict[str, Any]] = []
+        no_smartcard_admins: list[str] = []
 
         for user in users:
             if self._is_disabled(user):
@@ -243,10 +260,10 @@ class PasswordSprayRiskAnalyzer:
     # ── Password Age Patterns ───────────────────────────────────────────────
 
     def _analyze_password_patterns(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect bulk password changes (suggesting forced resets with weak patterns)."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         date_counts: Counter = Counter()
 
         for user in users:
@@ -285,11 +302,11 @@ class PasswordSprayRiskAnalyzer:
 
     def _calculate_spray_score(
         self,
-        users: List[Dict[str, Any]],
+        users: list[dict[str, Any]],
         base_dn: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Calculate an overall password spray readiness score (0-100)."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         score = 100  # Start perfect, deduct for each weakness
 
         # Lockout threshold
@@ -368,7 +385,7 @@ class PasswordSprayRiskAnalyzer:
     # ── Utilities ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_disabled(user: Dict[str, Any]) -> bool:
+    def _is_disabled(user: dict[str, Any]) -> bool:
         uac = user.get('userAccountControl')
         if uac is None:
             return False
@@ -378,7 +395,7 @@ class PasswordSprayRiskAnalyzer:
             return False
 
     @staticmethod
-    def _has_uac_flag(user: Dict[str, Any], flag: int) -> bool:
+    def _has_uac_flag(user: dict[str, Any], flag: int) -> bool:
         uac = user.get('userAccountControl')
         if uac is None:
             return False

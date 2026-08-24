@@ -5,7 +5,7 @@ Includes working JS for all interactive features, export functionality, and prin
 """
 
 import html as html_module
-import json
+from typing import Optional
 
 
 def build_saas_report(
@@ -14,12 +14,12 @@ def build_saas_report(
     stats,
     ciso_data,
     risk_sections,
-    charts_data,
+    _charts_data,
     developer_info,
     *,
     inline_assets: bool = False,
-    inline_css: str | None = None,
-    inline_js: str | None = None,
+    inline_css: Optional[str] = None,
+    inline_js: Optional[str] = None,
 ):
     """
     Build complete SaaS-style HTML report.
@@ -36,12 +36,6 @@ def build_saas_report(
 
     # Tab content wrapped for Bootstrap
     tab_content = f'<div class="tab-content" id="pills-tabContent">{risk_sections}</div>'
-
-    charts_json = json.dumps(charts_data, default=str)
-    ciso_charts = json.dumps({
-        'risk_distribution': {'labels': list(ciso_data.get('risk_distribution', {}).keys()), 'data': list(ciso_data.get('risk_distribution', {}).values())},
-        'risk_categories': {'labels': list(ciso_data.get('risk_by_category', {}).keys()), 'data': list(ciso_data.get('risk_by_category', {}).values())}
-    }, default=str)
 
     # Build asset blocks (either external vendor/ links or fully inlined)
     if inline_assets:

@@ -14,24 +14,24 @@ class ComplianceSectionMixin:
         """Generate compliance reporting section."""
         if not compliance_data:
             return ''
-        
+
         cis_data = compliance_data.get('cis_benchmark', {})
         nist_data = compliance_data.get('nist_csf', {})
         iso_data = compliance_data.get('iso_27001', {})
         gdpr_data = compliance_data.get('gdpr', {})
-        
+
         cis_html = self._generate_cis_compliance_html(cis_data)
         nist_html = self._generate_nist_compliance_html(nist_data)
         iso_html = self._generate_iso_compliance_html(iso_data)
         gdpr_html = self._generate_gdpr_compliance_html(gdpr_data)
-        
+
         overall_score = (
             cis_data.get('compliance_score', 0) +
             nist_data.get('compliance_score', 0) +
             iso_data.get('compliance_score', 0) +
             gdpr_data.get('compliance_score', 0)
         ) / 4 if compliance_data else 0
-        
+
         return f"""
         <div id="compliance" class="tab-pane" role="tabpanel" aria-labelledby="compliance-tab">
             <nav aria-label="breadcrumb" class="mb-4">
@@ -40,7 +40,7 @@ class ComplianceSectionMixin:
                     <li class="breadcrumb-item active" aria-current="page">Compliance Reporting</li>
                 </ol>
             </nav>
-            
+
             <div class="card mb-4">
                 <div class="card-header bg-primary text-white">
                     <h4><i class="fas fa-clipboard-check"></i> Overall Compliance Score</h4>
@@ -52,7 +52,7 @@ class ComplianceSectionMixin:
                     <p class="text-muted">Average compliance across all frameworks</p>
                 </div>
             </div>
-            
+
             <div class="row">
                 <div class="col-md-6 mb-4">
                     {cis_html}
@@ -74,9 +74,9 @@ class ComplianceSectionMixin:
         """Generate CIS Benchmark compliance HTML."""
         if not cis_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No CIS Benchmark data available.</p></div></div>'
-        
+
         score = cis_data.get('compliance_score', 0)
-        
+
         # Check if advanced LDAP-based analysis was used
         if 'controls' in cis_data:
             # Advanced analysis with detailed controls
@@ -84,7 +84,7 @@ class ComplianceSectionMixin:
             passed = [c for c in controls if c.get('status') == 'passed']
             failed = [c for c in controls if c.get('status') == 'failed']
             warnings = [c for c in controls if c.get('status') == 'warning']
-            
+
             controls_html = '<div class="accordion report-accordion mt-3" id="cisControlsAccordion">'
             for idx, control in enumerate(controls):
                 status_badge = {
@@ -93,7 +93,7 @@ class ComplianceSectionMixin:
                     'warning': '<span class="badge bg-warning">WARNING</span>',
                     'unknown': '<span class="badge bg-secondary">UNKNOWN</span>'
                 }.get(control.get('status', 'unknown'), '<span class="badge bg-secondary">UNKNOWN</span>')
-                
+
                 details = control.get('details', {})
                 details_html = '<ul class="list-unstyled">'
                 for key, value in details.items():
@@ -104,7 +104,7 @@ class ComplianceSectionMixin:
                 if 'affected_computers' in details and details['affected_computers']:
                     details_html += f'<li><strong>Affected Computers:</strong> {", ".join(details["affected_computers"][:5])}</li>'
                 details_html += '</ul>'
-                
+
                 controls_html += f"""
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -125,7 +125,7 @@ class ComplianceSectionMixin:
                 </div>
                 """
             controls_html += '</div>'
-            
+
             return f"""
             <div class="card">
                 <div class="card-header">
@@ -150,12 +150,12 @@ class ComplianceSectionMixin:
             # Legacy risk-based analysis
             failed = cis_data.get('failed_controls', [])
             passed = cis_data.get('passed_controls', [])
-            
+
             failed_html = ''.join([
                 f'<li><span class="badge bg-danger">{c.get("control")}</span> - {c.get("risk_type")} ({c.get("count", 0)} instances)</li>'
                 for c in failed[:10]
             ])
-            
+
             return f"""
             <div class="card">
                 <div class="card-header">
@@ -180,17 +180,17 @@ class ComplianceSectionMixin:
         """Generate NIST CSF compliance HTML."""
         if not nist_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No NIST CSF data available.</p></div></div>'
-        
+
         score = nist_data.get('compliance_score', 0)
         functions = nist_data.get('functions', {})
-        
+
         functions_html = '<div class="accordion report-accordion mt-3" id="nistFunctionsAccordion">'
         for func_id, func in functions.items():
             controls = func.get('controls', [])
             if controls:
                 func_score = func.get('score', 0)
                 func_status = func.get('status', 'partial')
-                
+
                 controls_list_html = '<ul class="list-unstyled mt-2">'
                 for control in controls:
                     status_badge = {
@@ -198,10 +198,10 @@ class ComplianceSectionMixin:
                         'failed': '<span class="badge bg-danger">FAILED</span>',
                         'warning': '<span class="badge bg-warning">WARNING</span>'
                     }.get(control.get('status', 'unknown'), '<span class="badge bg-secondary">UNKNOWN</span>')
-                    
+
                     details = control.get('details', {})
                     details_str = ', '.join([f"{k}: {v}" for k, v in details.items() if k not in ['affected_users', 'affected_computers']])
-                    
+
                     controls_list_html += f"""
                     <li class="mb-2">
                         {status_badge} <strong>{control.get('control_id')}</strong> - {control.get('control_name')}
@@ -210,7 +210,7 @@ class ComplianceSectionMixin:
                     </li>
                     """
                 controls_list_html += '</ul>'
-                
+
                 functions_html += f"""
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -226,7 +226,7 @@ class ComplianceSectionMixin:
                 </div>
                 """
         functions_html += '</div>'
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -249,17 +249,17 @@ class ComplianceSectionMixin:
         """Generate ISO 27001 compliance HTML."""
         if not iso_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No ISO 27001 data available.</p></div></div>'
-        
+
         score = iso_data.get('compliance_score', 0)
         domains = iso_data.get('domains', {})
         domain_scores = iso_data.get('domain_scores', {})
-        
+
         domains_html = '<div class="accordion report-accordion mt-3" id="isoDomainsAccordion">'
         for domain, controls in domains.items():
             domain_score = domain_scores.get(domain, 0)
             passed = sum(1 for c in controls if c.get('status') == 'passed')
             failed = sum(1 for c in controls if c.get('status') == 'failed')
-            
+
             controls_list_html = '<ul class="list-unstyled mt-2">'
             for control in controls:
                 status_badge = {
@@ -267,10 +267,10 @@ class ComplianceSectionMixin:
                     'failed': '<span class="badge bg-danger">FAILED</span>',
                     'warning': '<span class="badge bg-warning">WARNING</span>'
                 }.get(control.get('status', 'unknown'), '<span class="badge bg-secondary">UNKNOWN</span>')
-                
+
                 details = control.get('details', {})
                 details_str = ', '.join([f"{k}: {v}" for k, v in details.items() if k not in ['affected_users', 'affected_computers']])
-                
+
                 controls_list_html += f"""
                 <li class="mb-2">
                     {status_badge} <strong>{control.get('control_id')}</strong> - {control.get('control_name')}
@@ -279,7 +279,7 @@ class ComplianceSectionMixin:
                 </li>
                 """
             controls_list_html += '</ul>'
-            
+
             domains_html += f"""
             <div class="accordion-item">
                 <h2 class="accordion-header">
@@ -295,7 +295,7 @@ class ComplianceSectionMixin:
             </div>
             """
         domains_html += '</div>'
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -318,17 +318,17 @@ class ComplianceSectionMixin:
         """Generate GDPR compliance HTML."""
         if not gdpr_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No GDPR data available.</p></div></div>'
-        
+
         score = gdpr_data.get('compliance_score', 0)
         articles = gdpr_data.get('articles', {})
         article_scores = gdpr_data.get('article_scores', {})
-        
+
         articles_html = '<div class="accordion report-accordion mt-3" id="gdprArticlesAccordion">'
         for article, controls in articles.items():
             article_score = article_scores.get(article, 0)
             passed = sum(1 for c in controls if c.get('status') == 'passed')
             failed = sum(1 for c in controls if c.get('status') == 'failed')
-            
+
             controls_list_html = '<ul class="list-unstyled mt-2">'
             for control in controls:
                 status_badge = {
@@ -336,10 +336,10 @@ class ComplianceSectionMixin:
                     'failed': '<span class="badge bg-danger">FAILED</span>',
                     'warning': '<span class="badge bg-warning">WARNING</span>'
                 }.get(control.get('status', 'unknown'), '<span class="badge bg-secondary">UNKNOWN</span>')
-                
+
                 details = control.get('details', {})
                 details_str = ', '.join([f"{k}: {v}" for k, v in details.items() if k not in ['affected_users', 'affected_computers']])
-                
+
                 controls_list_html += f"""
                 <li class="mb-2">
                     {status_badge} <strong>{control.get('control_id')}</strong> - {control.get('control_name')}
@@ -349,7 +349,7 @@ class ComplianceSectionMixin:
                 </li>
                 """
             controls_list_html += '</ul>'
-            
+
             articles_html += f"""
             <div class="accordion-item">
                 <h2 class="accordion-header">
@@ -365,7 +365,7 @@ class ComplianceSectionMixin:
             </div>
             """
         articles_html += '</div>'
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -388,16 +388,16 @@ class ComplianceSectionMixin:
         """Generate risk management section with heat map and ROI."""
         if not risk_management_data:
             return ''
-        
+
         heat_map_data = risk_management_data.get('heat_map', {})
         prioritized_risks = risk_management_data.get('prioritized_risks', [])
-        
+
         # Generate heat map HTML
         heat_map_html = self._generate_heat_map_html(heat_map_data)
-        
+
         # Generate prioritized risks HTML
         prioritized_html = self._generate_prioritized_risks_html(prioritized_risks[:20])  # Top 20
-        
+
         return f"""
         <div id="risk-management" class="tab-pane" role="tabpanel" aria-labelledby="risk-management-tab">
             <nav aria-label="breadcrumb" class="mb-4">
@@ -406,7 +406,7 @@ class ComplianceSectionMixin:
                     <li class="breadcrumb-item active" aria-current="page">Risk Management</li>
                 </ol>
             </nav>
-            
+
             <div class="card mb-4">
                 <div class="card-header bg-info text-white">
                     <h4><i class="fas fa-chart-line"></i> Risk Heat Map</h4>
@@ -415,7 +415,7 @@ class ComplianceSectionMixin:
                     {heat_map_html}
                 </div>
             </div>
-            
+
             <div class="card">
                 <div class="card-header bg-success text-white">
                     <h4><i class="fas fa-sort-amount-down"></i> Prioritized Risks by ROI</h4>
@@ -431,18 +431,16 @@ class ComplianceSectionMixin:
         """Generate risk heat map HTML with severity-based row coloring (same as risk cards)."""
         if not heat_map_data:
             return '<p class="text-muted">No heat map data available.</p>'
-        
+
         heat_map = heat_map_data.get('heat_map', {})
-        stats = heat_map_data.get('statistics', {})
-        
         severity_levels = ['critical', 'high', 'medium', 'low']
         likelihood_levels = ['high', 'medium', 'low']
-        
+
         grid_html = '<div class="table-responsive"><table class="table table-bordered align-middle"><thead><tr><th>Severity / Likelihood</th>'
         for likelihood in likelihood_levels:
             grid_html += f'<th class="text-center">{likelihood.upper()}</th>'
         grid_html += '</tr></thead><tbody>'
-        
+
         for severity in severity_levels:
             row_class = self._get_severity_heat_class(severity)
             grid_html += f'<tr class="{row_class}"><th>{severity.upper()}</th>'
@@ -452,20 +450,19 @@ class ComplianceSectionMixin:
                 count = len(items)
                 grid_html += f'<td class="text-center"><strong>{count}</strong></td>'
             grid_html += '</tr>'
-        
+
         grid_html += '</tbody></table></div>'
         return grid_html
 
     def _group_prioritized_risks_by_type(self, prioritized_risks):
         """Group prioritized risks by risk type so same finding appears once with all affected users."""
-        from collections import defaultdict
         groups = defaultdict(list)
         for item in prioritized_risks:
             risk = item.get('risk', {})
             rtype = risk.get('type', 'unknown')
             groups[rtype].append(item)
         grouped = []
-        for rtype, items in groups.items():
+        for items in groups.values():
             base = items[0].copy()
             risk = base.get('risk', {})
             affected = []
@@ -501,7 +498,7 @@ class ComplianceSectionMixin:
         """Generate prioritized risks HTML: same finding type once, with affected users listed."""
         if not prioritized_risks:
             return '<p class="text-muted">No prioritized risks available.</p>'
-        
+
         grouped = self._group_prioritized_risks_by_type(prioritized_risks)
         risks_html = '<div class="list-group">'
         for idx, item in enumerate(grouped[:25], 1):
@@ -528,7 +525,7 @@ class ComplianceSectionMixin:
             desc = (risk.get('description') or '')[:200]
             if count > 1 and affected_list:
                 desc = f"This finding applies to {len(affected_list)} object(s). " + (desc or '')
-            
+
             risks_html += f"""
             <div class="list-group-item border-start border-4 risk-card {severity_class}">
                 <div class="d-flex w-100 justify-content-between align-items-center flex-wrap gap-2">
@@ -554,6 +551,6 @@ class ComplianceSectionMixin:
                 <p class="mb-1 mt-2"><small>{html_stdlib.escape(desc)}{'...' if len(risk.get('description') or '') > 200 else ''}</small></p>
             </div>
             """
-        
+
         risks_html += '</div>'
         return risks_html

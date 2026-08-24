@@ -45,7 +45,7 @@ class RiskTypes:
     SERVICE_ACCOUNT_PASSWORD_NEVER_EXPIRES = 'service_account_password_never_expires'
     RECENTLY_CREATED_ACCOUNT = 'recently_created_account'
     RECENTLY_MODIFIED_GROUP_MEMBERSHIP = 'recently_modified_group_membership'
-    
+
     # Kerberos & Delegation risks
     UNCONSTRAINED_DELEGATION = 'unconstrained_delegation'
     UNCONSTRAINED_DELEGATION_USER = 'unconstrained_delegation_user'
@@ -53,27 +53,27 @@ class RiskTypes:
     COMPUTER_UNCONSTRAINED_DELEGATION = 'computer_unconstrained_delegation'
     COMPUTER_BROAD_CONSTRAINED_DELEGATION = 'computer_broad_constrained_delegation'
     DUPLICATE_SPN = 'duplicate_spn'
-    
+
     # Computer risks
     EOL_OPERATING_SYSTEM = 'eol_operating_system'
     LEGACY_OPERATING_SYSTEM = 'legacy_operating_system'
     INACTIVE_COMPUTER = 'inactive_computer'
     NEVER_USED_COMPUTER = 'never_used_computer'
     COMPUTER_ACCOUNT_EXPIRED = 'computer_account_expired'
-    
+
     # Group risks
     TOO_MANY_DOMAIN_ADMINS = 'too_many_domain_admins'
     NESTED_ADMIN_GROUP = 'nested_admin_group'
     OPERATORS_GROUP_MEMBERS = 'operators_group_members'
     EMPTY_GROUP = 'empty_group'
     DEEPLY_NESTED_GROUP = 'deeply_nested_group'
-    
+
     # Privilege escalation
     PRIVILEGE_ESCALATION_PATH = 'privilege_escalation_path'
     DELEGATION_PRIVILEGE_ESCALATION = 'delegation_privilege_escalation'
     SPN_PRIVILEGE_ESCALATION = 'spn_privilege_escalation'
     COMPUTER_DELEGATION_PRIVILEGE_PATH = 'computer_delegation_privilege_path'
-    
+
     # ACL risks
     ACL_GENERIC_ALL = 'acl_generic_all'
     ACL_WRITE_DACL = 'acl_write_dacl'
@@ -93,32 +93,32 @@ class RiskTypes:
     SHADOW_ADMIN = 'shadow_admin'
     ACL_INHERITANCE_RISK = 'acl_inheritance_risk'
     ACL_PRIVILEGE_ESCALATION_PATH = 'acl_privilege_escalation_path'
-    
+
     # Kerberoasting/AS-REP Roasting
     KERBEROASTING_TARGET = 'kerberoasting_target'
     ASREP_ROASTING_TARGET = 'asrep_roasting_target'
-    
+
     # Service account risks
     SERVICE_ACCOUNT_HIGH_PRIVILEGE = 'service_account_high_privilege'
     SERVICE_ACCOUNT_WITHOUT_MSA = 'service_account_without_msa'
-    
+
     # GPO risks
     GPO_MODIFICATION_RIGHTS = 'gpo_modification_rights'
     GPO_LINKED_TO_PRIVILEGED_OU = 'gpo_linked_to_privileged_ou'
-    
+
     # Policy risks
     PASSWORD_POLICY_WEAK = 'password_policy_weak'
-    
+
     # Trust risks
     TRUST_RELATIONSHIP_RISK = 'trust_relationship_risk'
-    
+
     # GPP risks
     GPP_PASSWORD_FOUND = 'gpp_password_found'
-    
+
     # LAPS risks
     LAPS_NOT_CONFIGURED = 'laps_not_configured'
     LAPS_ACCESS_ANALYSIS = 'laps_access_analysis'
-    
+
     # Vulnerability risks
     ZEROLOGON_VULNERABLE = 'zerologon_vulnerable'
     PRINTNIGHTMARE_VULNERABLE = 'printnightmare_vulnerable'
@@ -129,7 +129,7 @@ class RiskTypes:
     LDAP_SIGNING_DISABLED = 'ldap_signing_disabled'
     NTLM_RESTRICTION_WEAK = 'ntlm_restriction_weak'
     SMB_SIGNING_DISABLED = 'smb_signing_disabled'
-    
+
     # Certificate risks
     CERTIFICATE_SERVICES_DETECTED = 'certificate_services_detected'
     CERTIFICATE_ESC1 = 'certificate_esc1'

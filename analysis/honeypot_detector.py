@@ -5,8 +5,7 @@ recommendations for deploying effective deception objects.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -17,16 +16,16 @@ class HoneypotDetector:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze AD objects for honeypot characteristics.
 
         Returns:
             List of risk/info dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         risks.extend(self._detect_honeypot_candidates(users))
         risks.extend(self._recommend_deception(users, groups))
@@ -37,8 +36,8 @@ class HoneypotDetector:
     # ── Detect Existing Honeypot Candidates ─────────────────────────────────
 
     def _detect_honeypot_candidates(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Identify accounts that look like honeypots:
           - adminCount=1 but never logged in
@@ -46,8 +45,8 @@ class HoneypotDetector:
           - Account with attractive name (e.g. 'admin', 'svc_backup')
             but disabled / never used
         """
-        risks: List[Dict[str, Any]] = []
-        candidates: List[str] = []
+        risks: list[dict[str, Any]] = []
+        candidates: list[str] = []
 
         for user in users:
             sam = user.get('sAMAccountName', '')
@@ -106,11 +105,11 @@ class HoneypotDetector:
 
     def _recommend_deception(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Provide deception recommendations based on current AD posture."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         # Count privileged users
         admin_count = sum(
@@ -118,7 +117,7 @@ class HoneypotDetector:
             if not self._is_disabled(u) and self._is_privileged(u)
         )
 
-        recommendations: List[str] = []
+        recommendations: list[str] = []
 
         # 1. Decoy Domain Admin
         recommendations.append(
@@ -169,7 +168,7 @@ class HoneypotDetector:
     # ── Utilities ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_disabled(user: Dict[str, Any]) -> bool:
+    def _is_disabled(user: dict[str, Any]) -> bool:
         uac = user.get('userAccountControl')
         if uac is None:
             return False
@@ -179,7 +178,7 @@ class HoneypotDetector:
             return False
 
     @staticmethod
-    def _is_privileged(user: Dict[str, Any]) -> bool:
+    def _is_privileged(user: dict[str, Any]) -> bool:
         member_of = user.get('memberOf', []) or []
         if isinstance(member_of, str):
             member_of = [member_of]

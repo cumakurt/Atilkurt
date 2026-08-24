@@ -5,7 +5,7 @@ Analyzes domain password policy and account lockout policy
 
 import logging
 from datetime import timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -13,67 +13,67 @@ logger = logging.getLogger(__name__)
 
 class PasswordPolicyAnalyzer:
     """Analyzes password policy and account lockout policy."""
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize password policy analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
-    
-    def analyze_password_policy(self) -> List[Dict[str, Any]]:
+
+    def analyze_password_policy(self) -> list[dict[str, Any]]:
         """
         Analyze domain password policy.
-        
+
         Returns:
             List of risk dictionaries for weak password policies
         """
         risks = []
-        
+
         try:
             # Get domain root DN
             base_dn = self.ldap.base_dn
-            
+
             # Try multiple approaches to get password policy
             domain_info = None
-            
+
             # Approach 1: Query domain root object directly
             try:
                 results = self.ldap.search(
                     search_base=base_dn,
                     search_filter='(objectClass=domainDNS)',
-                    attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge', 
-                              'pwdHistoryLength', 'pwdProperties', 
-                              'lockoutThreshold', 'lockoutDuration', 
+                    attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge',
+                              'pwdHistoryLength', 'pwdProperties',
+                              'lockoutThreshold', 'lockoutDuration',
                               'lockoutObservationWindow', 'distinguishedName']
                 )
-                
+
                 if results and len(results) > 0:
                     domain_info = results[0]
                     logger.debug(f"Found domain object at: {domain_info.get('distinguishedName', base_dn)}")
             except Exception as e:
                 logger.debug(f"Error querying domain root: {e}")
-            
+
             # Approach 2: If not found, try searching from root
             if not domain_info:
                 try:
                     # Try to find domain object
                     results = self.ldap.search(
                         search_filter='(objectClass=domainDNS)',
-                        attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge', 
-                                  'pwdHistoryLength', 'pwdProperties', 
-                                  'lockoutThreshold', 'lockoutDuration', 
+                        attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge',
+                                  'pwdHistoryLength', 'pwdProperties',
+                                  'lockoutThreshold', 'lockoutDuration',
                                   'lockoutObservationWindow', 'distinguishedName']
                     )
-                    
+
                     if results and len(results) > 0:
                         domain_info = results[0]
                         logger.debug(f"Found domain object via search: {domain_info.get('distinguishedName', 'Unknown')}")
                 except Exception as e:
                     logger.debug(f"Error searching for domain object: {e}")
-            
+
             # Approach 3: Try Default Domain Policy container
             if not domain_info:
                 try:
@@ -81,41 +81,38 @@ class PasswordPolicyAnalyzer:
                     results = self.ldap.search(
                         search_base=policy_dn,
                         search_filter='(objectClass=*)',
-                        attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge', 
-                                  'pwdHistoryLength', 'pwdProperties', 
-                                  'lockoutThreshold', 'lockoutDuration', 
+                        attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge',
+                                  'pwdHistoryLength', 'pwdProperties',
+                                  'lockoutThreshold', 'lockoutDuration',
                                   'lockoutObservationWindow']
                     )
-                    
+
                     if results and len(results) > 0:
                         domain_info = results[0]
                         logger.debug(f"Found policy at: {policy_dn}")
                 except Exception as e:
                     logger.debug(f"Error querying Default Domain Policy: {e}")
-            
+
             if domain_info:
-                    
+
                     # Analyze password policy
                     min_length = domain_info.get('minPwdLength')
                     max_age = domain_info.get('maxPwdAge')
-                    min_age = domain_info.get('minPwdAge')
                     history_length = domain_info.get('pwdHistoryLength')
                     pwd_properties = domain_info.get('pwdProperties', 0)
-                    
+
                     # Analyze lockout policy
                     lockout_threshold = domain_info.get('lockoutThreshold')
-                    lockout_duration = domain_info.get('lockoutDuration')
-                    lockout_window = domain_info.get('lockoutObservationWindow')
-                    
+
                     policy_issues = []
-                    
+
                     # Initialize variables for policy details
                     min_length_val = None
                     max_age_days_val = None
                     history_length_val = None
                     complexity_enabled_val = None
                     lockout_threshold_val = None
-                    
+
                     # Check minimum password length
                     if min_length is not None:
                         try:
@@ -128,7 +125,7 @@ class PasswordPolicyAnalyzer:
                                 })
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Error parsing minPwdLength: {e}")
-                    
+
                     # Check password age
                     if max_age is not None:
                         try:
@@ -147,7 +144,7 @@ class PasswordPolicyAnalyzer:
                                 })
                         except Exception as e:
                             logger.debug(f"Error parsing maxPwdAge: {e}")
-                    
+
                     # Check password history
                     if history_length is not None:
                         try:
@@ -160,7 +157,7 @@ class PasswordPolicyAnalyzer:
                                 })
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Error parsing pwdHistoryLength: {e}")
-                    
+
                     # Check password complexity
                     if pwd_properties is not None:
                         try:
@@ -174,7 +171,7 @@ class PasswordPolicyAnalyzer:
                                 })
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Error parsing pwdProperties: {e}")
-                    
+
                     # Check lockout policy
                     if lockout_threshold is not None:
                         try:
@@ -193,7 +190,7 @@ class PasswordPolicyAnalyzer:
                                 })
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Error parsing lockoutThreshold: {e}")
-                    
+
                     # Create risks for each policy issue
                     for issue in policy_issues:
                         risks.append({
@@ -225,7 +222,7 @@ class PasswordPolicyAnalyzer:
             else:
                 # If no domain info found, create a warning risk
                 logger.warning("Could not retrieve domain password policy information. Trying alternative methods...")
-                
+
                 # Try one more approach: query rootDSE for defaultNamingContext
                 try:
                     # Try to get rootDSE
@@ -234,7 +231,7 @@ class PasswordPolicyAnalyzer:
                         search_filter='(objectClass=*)',
                         attributes=['defaultNamingContext']
                     )
-                    
+
                     if root_results:
                         default_naming_context = root_results[0].get('defaultNamingContext')
                         if default_naming_context:
@@ -242,17 +239,17 @@ class PasswordPolicyAnalyzer:
                             results = self.ldap.search(
                                 search_base=default_naming_context,
                                 search_filter='(objectClass=domainDNS)',
-                                attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge', 
-                                          'pwdHistoryLength', 'pwdProperties', 
-                                          'lockoutThreshold', 'lockoutDuration', 
+                                attributes=['minPwdLength', 'maxPwdAge', 'minPwdAge',
+                                          'pwdHistoryLength', 'pwdProperties',
+                                          'lockoutThreshold', 'lockoutDuration',
                                           'lockoutObservationWindow']
                             )
-                            
+
                             if results and len(results) > 0:
                                 domain_info = results[0]
                                 logger.info("Successfully retrieved password policy using defaultNamingContext")
                                 logger.info(f"Password policy attributes found: {list(domain_info.keys())}")
-                                
+
                                 # Re-analyze with found domain_info
                                 # Extract policy values
                                 min_length = domain_info.get('minPwdLength')
@@ -260,7 +257,7 @@ class PasswordPolicyAnalyzer:
                                 history_length = domain_info.get('pwdHistoryLength')
                                 pwd_properties = domain_info.get('pwdProperties', 0)
                                 lockout_threshold = domain_info.get('lockoutThreshold')
-                                
+
                                 # Analyze and create risks (reuse the same logic)
                                 policy_issues = []
                                 min_length_val = None
@@ -268,7 +265,7 @@ class PasswordPolicyAnalyzer:
                                 history_length_val = None
                                 complexity_enabled_val = None
                                 lockout_threshold_val = None
-                                
+
                                 # Check minimum password length
                                 if min_length is not None:
                                     try:
@@ -281,7 +278,7 @@ class PasswordPolicyAnalyzer:
                                             })
                                     except (ValueError, TypeError):
                                         pass
-                                
+
                                 # Check password age
                                 if max_age is not None:
                                     try:
@@ -300,7 +297,7 @@ class PasswordPolicyAnalyzer:
                                             })
                                     except Exception:
                                         pass
-                                
+
                                 # Check password history
                                 if history_length is not None:
                                     try:
@@ -313,7 +310,7 @@ class PasswordPolicyAnalyzer:
                                             })
                                     except (ValueError, TypeError):
                                         pass
-                                
+
                                 # Check password complexity
                                 if pwd_properties is not None:
                                     try:
@@ -327,7 +324,7 @@ class PasswordPolicyAnalyzer:
                                             })
                                     except (ValueError, TypeError):
                                         pass
-                                
+
                                 # Check lockout policy
                                 if lockout_threshold is not None:
                                     try:
@@ -346,7 +343,7 @@ class PasswordPolicyAnalyzer:
                                             })
                                     except (ValueError, TypeError):
                                         pass
-                                
+
                                 # Create risks for each policy issue
                                 for issue in policy_issues:
                                     risks.append({
@@ -377,7 +374,7 @@ class PasswordPolicyAnalyzer:
                                     })
                 except Exception as e:
                     logger.debug(f"Error trying alternative method: {e}")
-                
+
                 # Create warning risk if still no data
                 if not domain_info:
                     risks.append({
@@ -393,25 +390,25 @@ class PasswordPolicyAnalyzer:
                         'cis_reference': 'CIS Benchmark requires password policy review',
                         'mitre_attack': MITRETechniques.VALID_ACCOUNTS_DOMAIN
                     })
-            
+
             if len(risks) == 0 and domain_info:
                 # If policy was retrieved but no issues found, log success
                 logger.info("Password policy retrieved successfully - no issues found (policy appears to be strong)")
-            
+
             logger.info(f"Found {len(risks)} password policy issues")
             return risks
-            
+
         except Exception as e:
             logger.error(f"Error in password policy analysis: {str(e)}")
             return []
-    
+
     def _convert_timespan_to_days(self, timespan) -> int:
         """
         Convert Windows timespan (100-nanosecond intervals) to days.
-        
+
         Args:
             timespan: Windows timespan value
-        
+
         Returns:
             Number of days
         """

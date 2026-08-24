@@ -4,7 +4,7 @@ Checks LDAP Signing, Channel Binding, NTLM restrictions, and SMB signing via GPO
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,8 @@ class DomainSecurityAnalyzer:
 
     def analyze_domain_security(
         self,
-        gpos: Optional[List[Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
+        gpos: Optional[list[dict[str, Any]]] = None
+    ) -> list[dict[str, Any]]:
         """
         Analyze domain security settings.
         Checks LDAP signing, NTLM restrictions, and SMB signing.
@@ -35,7 +35,7 @@ class DomainSecurityAnalyzer:
             logger.error(f"Error in domain security analysis: {str(e)}")
         return risks
 
-    def _check_ldap_signing_channel_binding(self) -> List[Dict[str, Any]]:
+    def _check_ldap_signing_channel_binding(self) -> list[dict[str, Any]]:
         """Check LDAP server signing requirements and channel binding."""
         risks = []
         try:
@@ -117,7 +117,7 @@ class DomainSecurityAnalyzer:
             })
         return risks
 
-    def _check_ntlm_restrictions(self) -> List[Dict[str, Any]]:
+    def _check_ntlm_restrictions(self) -> list[dict[str, Any]]:
         """Check NTLM authentication restrictions."""
         risks = []
         try:
@@ -155,7 +155,6 @@ class DomainSecurityAnalyzer:
             # 0x00080000 = NTLMv2 session security required
             # 0x20000000 = Require 128-bit encryption
             # 0x80000000 = Require NTLMv2
-            NTLMV2_REQUIRED = 0x80000000
             if client_sec == 0 and server_sec == 0:
                 risks.append({
                     'type': RiskTypes.NTLM_RESTRICTION_WEAK,
@@ -180,7 +179,7 @@ class DomainSecurityAnalyzer:
             logger.debug(f"NTLM check: {e}")
         return risks
 
-    def _check_smb_signing(self, gpos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _check_smb_signing(self, gpos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Check SMB signing requirements via GPO (conceptual - GPO content requires SMB access)."""
         risks = []
         try:

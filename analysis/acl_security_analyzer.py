@@ -9,12 +9,10 @@ Comprehensive Active Directory ACL security analysis including:
 """
 
 import logging
-from typing import List, Dict, Any, Set, Tuple, Optional
+from typing import Any, Optional
 from collections import defaultdict
-from datetime import datetime
-from io import BytesIO
 from ldap3.utils.conv import escape_filter_chars
-from core.constants import RiskTypes, Severity, PRIVILEGED_GROUPS
+from core.constants import Severity, PRIVILEGED_GROUPS
 from core.security_descriptor_parser import SecurityDescriptorParser, parse_security_descriptor
 
 logger = logging.getLogger(__name__)
@@ -25,7 +23,7 @@ class ACLSecurityAnalyzer:
     Comprehensive ACL security analyzer for Active Directory.
     Detects dangerous permissions, Shadow Admins, and privilege escalation paths.
     """
-    
+
     # Well-known SIDs for trustee display (RID or full SID -> display name)
     WELL_KNOWN_SIDS = {
         'S-1-0-0': 'Null',
@@ -50,7 +48,7 @@ class ACLSecurityAnalyzer:
         'S-1-5-32-561': 'BUILTIN\\Pre-Windows 2000 Compatible Access',
         'S-1-5-32-562': 'BUILTIN\\Remote Desktop Users',
     }
-    
+
     # Critical permission types (MUST DETECT)
     # description: short technical label; used in reports for "what this permission means"
     CRITICAL_PERMISSIONS = {
@@ -137,7 +135,7 @@ class ACLSecurityAnalyzer:
             'risk_score': 100
         }
     }
-    
+
     # Object criticality levels (for risk scoring)
     OBJECT_CRITICALITY = {
         'domain': 5.0,
@@ -153,11 +151,11 @@ class ACLSecurityAnalyzer:
         'user': 1.5,
         'computer': 1.0
     }
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize ACL security analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
@@ -166,48 +164,46 @@ class ACLSecurityAnalyzer:
         self.shadow_admins = []
         self.privilege_escalation_paths = []
         self.acl_risks = []
-    
-    def analyze(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]], 
-                computers: List[Dict[str, Any]], domain_dn: str = None) -> Dict[str, Any]:
+
+    def analyze(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
+                computers: list[dict[str, Any]], domain_dn: str = None) -> dict[str, Any]:
         """
         Perform comprehensive ACL security analysis.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             domain_dn: Domain distinguished name
-            
+
         Returns:
             dict: Analysis results
         """
         logger.info("Starting comprehensive ACL security analysis...")
-        
+
         # Build object maps
         user_map = {u.get('sAMAccountName'): u for u in users}
         group_map = {g.get('name') or g.get('sAMAccountName'): g for g in groups}
-        computer_map = {c.get('name'): c for c in computers}
-        
+
         # Build SID -> display name map for trustee resolution (avoids "same report" confusion)
         sid_to_display_name = self._build_sid_to_display_name(users, groups)
-        
+
         # Get domain DN if not provided
         if not domain_dn:
             domain_dn = self._get_domain_dn()
-        
+
         # Identify privileged objects
         privileged_users = self._identify_privileged_users(users, groups)
         privileged_groups = self._identify_privileged_groups(groups)
-        tier0_objects = self._identify_tier0_objects(users, groups, computers, domain_dn)
-        
+
         # Analyze ACLs on critical objects
         critical_objects = []
         critical_objects.extend([{'type': 'domain', 'dn': domain_dn, 'name': 'Domain'}])
-        critical_objects.extend([{'type': 'user', 'dn': u.get('distinguishedName'), 'name': u.get('sAMAccountName')} 
+        critical_objects.extend([{'type': 'user', 'dn': u.get('distinguishedName'), 'name': u.get('sAMAccountName')}
                                 for u in privileged_users])
-        critical_objects.extend([{'type': 'group', 'dn': g.get('distinguishedName'), 'name': g.get('name')} 
+        critical_objects.extend([{'type': 'group', 'dn': g.get('distinguishedName'), 'name': g.get('name')}
                                 for g in privileged_groups])
-        
+
         # Analyze each critical object (each obj is a distinct dict; findings get explicit object identity)
         all_acl_findings = []
         for obj in critical_objects:
@@ -215,7 +211,7 @@ class ACLSecurityAnalyzer:
                 continue
             findings = self._analyze_object_acl(obj, user_map, group_map, sid_to_display_name)
             all_acl_findings.extend(findings)
-        
+
         # Shadow Admin Detection
         shadow_admins = self._detect_shadow_admins(
             users,
@@ -225,22 +221,22 @@ class ACLSecurityAnalyzer:
             privileged_groups,
             all_acl_findings,
         )
-        
+
         # Privilege Escalation Path Analysis
         escalation_paths = self._analyze_privilege_escalation_paths(
             users, groups, computers, all_acl_findings
         )
-        
+
         # Inheritance Analysis
         inheritance_risks = self._analyze_inheritance(domain_dn, all_acl_findings)
-        
+
         # Calculate risk scores
         scored_risks = self._calculate_risk_scores(all_acl_findings, shadow_admins, escalation_paths)
-        
+
         logger.info(f"Found {len(all_acl_findings)} ACL risks")
         logger.info(f"Found {len(shadow_admins)} Shadow Admins")
         logger.info(f"Found {len(escalation_paths)} privilege escalation paths")
-        
+
         return {
             'acl_risks': scored_risks,
             'shadow_admins': shadow_admins,
@@ -250,7 +246,7 @@ class ACLSecurityAnalyzer:
             'critical_risks': len([r for r in scored_risks if r.get('severity') == Severity.CRITICAL]),
             'high_risks': len([r for r in scored_risks if r.get('severity') == Severity.HIGH])
         }
-    
+
     def _get_domain_dn(self) -> str:
         """Get domain distinguished name from LDAP."""
         try:
@@ -264,62 +260,62 @@ class ACLSecurityAnalyzer:
         except Exception as e:
             logger.error(f"Error getting domain DN: {e}")
         return ''
-    
-    def _identify_privileged_users(self, users: List[Dict[str, Any]], 
-                                   groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _identify_privileged_users(self, users: list[dict[str, Any]],
+                                   groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Identify privileged users."""
         privileged_users = []
-        privileged_group_names = {g.get('name') or g.get('sAMAccountName', '') 
+        privileged_group_names = {g.get('name') or g.get('sAMAccountName', '')
                                   for g in groups if self._is_privileged_group(g)}
-        
+
         for user in users:
             # Check adminCount flag
             if user.get('adminCount') == 1 or user.get('adminCount') == '1':
                 privileged_users.append(user)
                 continue
-            
+
             # Check group memberships
             member_of = user.get('memberOf', [])
             if isinstance(member_of, str):
                 member_of = [member_of]
-            
+
             for group_dn in member_of:
                 # Extract group name from DN
                 group_name = self._extract_name_from_dn(group_dn)
                 if group_name in privileged_group_names:
                     privileged_users.append(user)
                     break
-        
+
         return privileged_users
-    
-    def _identify_privileged_groups(self, groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _identify_privileged_groups(self, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Identify privileged groups."""
         return [g for g in groups if self._is_privileged_group(g)]
-    
-    def _is_privileged_group(self, group: Dict[str, Any]) -> bool:
+
+    def _is_privileged_group(self, group: dict[str, Any]) -> bool:
         """Check if group is privileged."""
         group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
         return any(priv_group.lower() in group_name for priv_group in self.privileged_groups_set)
-    
-    def _identify_tier0_objects(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]],
-                                computers: List[Dict[str, Any]], domain_dn: str) -> List[Dict[str, Any]]:
+
+    def _identify_tier0_objects(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
+                                computers: list[dict[str, Any]], domain_dn: str) -> list[dict[str, Any]]:
         """Identify Tier-0 objects (most critical)."""
         tier0 = []
-        
+
         # Domain Admins, Enterprise Admins
         for group in groups:
             group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
             if 'domain admin' in group_name or 'enterprise admin' in group_name:
                 tier0.append({'type': 'group', 'object': group})
-        
+
         # Domain Controllers
         for computer in computers:
             if 'DC' in (computer.get('name') or '').upper() or 'CONTROLLER' in (computer.get('name') or '').upper():
                 tier0.append({'type': 'computer', 'object': computer})
-        
+
         return tier0
-    
-    def _build_sid_to_display_name(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, str]:
+
+    def _build_sid_to_display_name(self, users: list[dict[str, Any]], groups: list[dict[str, Any]]) -> dict[str, str]:
         """Build SID -> display name map from users, groups, and well-known SIDs."""
         sid_map = dict(self.WELL_KNOWN_SIDS)
         for u in users or []:
@@ -332,7 +328,7 @@ class ACLSecurityAnalyzer:
                 sid_map[sid_str] = g.get('name') or g.get('sAMAccountName') or sid_str
         return sid_map
 
-    def _sid_from_object(self, obj: Dict[str, Any]) -> str:
+    def _sid_from_object(self, obj: dict[str, Any]) -> str:
         """Return a normalized SID string from a collected object."""
         raw_sid = obj.get('objectSid')
         if not raw_sid:
@@ -344,23 +340,23 @@ class ACLSecurityAnalyzer:
         if isinstance(raw_sid, (bytes, bytearray, str)):
             return self._binary_sid_to_string(raw_sid)
         return str(raw_sid)
-    
-    def _analyze_object_acl(self, obj: Dict[str, Any], user_map: Dict, group_map: Dict,
-                            sid_to_display_name: Dict[str, str]) -> List[Dict[str, Any]]:
+
+    def _analyze_object_acl(self, obj: dict[str, Any], user_map: dict, group_map: dict,
+                            sid_to_display_name: dict[str, str]) -> list[dict[str, Any]]:
         """
         Analyze ACL for a specific object.
-        
+
         Args:
             obj: Object dictionary with type, dn, name (one per critical object)
             user_map: Map of users
             group_map: Map of groups
             sid_to_display_name: SID -> display name for trustee labels
-            
+
         Returns:
             list: List of ACL risk findings (each with distinct affected_object, object_type, trustee)
         """
         findings = []
-        
+
         try:
             # Get nTSecurityDescriptor (binary format)
             # Note: ldap3 returns binary attributes as bytes automatically
@@ -370,24 +366,24 @@ class ACLSecurityAnalyzer:
                 attributes=['nTSecurityDescriptor', 'distinguishedName', 'objectClass'],
                 size_limit=1,
             )
-            
+
             if not results:
                 return findings
-            
+
             entry = results[0]
             sd = entry.get('nTSecurityDescriptor')
-            
+
             if not sd:
                 return findings
-            
+
             # Ensure we have binary data
             # ldap3 should return bytes, but handle different formats
             if isinstance(sd, list) and len(sd) > 0:
                 sd = sd[0]
-            
+
             # Parse security descriptor using BloodHound parser
             aces = self._parse_security_descriptor(sd)
-            
+
             # Determine object type from objectClass (use local vars so obj is not mutated for identity)
             object_class = entry.get('objectClass', [])
             if isinstance(object_class, str):
@@ -401,12 +397,12 @@ class ACLSecurityAnalyzer:
                 obj_type = 'domain'
             obj_name = obj.get('name') or ''
             obj_dn = obj.get('dn') or ''
-            
+
             for ace in aces:
                 trustee_sid = ace.get('trustee')
                 permissions = ace.get('permissions', [])
                 is_inherited = ace.get('inherited', False)
-                
+
                 # Check each permission
                 for perm_name, perm_data in permissions.items():
                     if perm_name in self.CRITICAL_PERMISSIONS:
@@ -421,27 +417,27 @@ class ACLSecurityAnalyzer:
                             is_inherited=is_inherited,
                         )
                         findings.append(finding)
-        
+
         except Exception as e:
             logger.debug(f"Error analyzing ACL for {obj.get('dn')}: {e}")
-        
+
         return findings
-    
-    def _parse_security_descriptor(self, sd: Any) -> List[Dict[str, Any]]:
+
+    def _parse_security_descriptor(self, sd: Any) -> list[dict[str, Any]]:
         """
         Parse security descriptor to extract ACEs using our custom parser.
-        
+
         Args:
             sd: Security descriptor (binary data from LDAP)
-            
+
         Returns:
             list: List of ACE dictionaries with permissions
         """
         aces = []
-        
+
         if not sd:
             return aces
-        
+
         try:
             # Convert to bytes if it's not already
             if isinstance(sd, str):
@@ -464,13 +460,13 @@ class ACLSecurityAnalyzer:
             else:
                 logger.debug(f"Unknown security descriptor type: {type(sd)}")
                 return aces
-            
+
             # Parse using our custom parser
             parsed_sd = parse_security_descriptor(sd_bytes)
-            
+
             # Extract ACEs from DACL
             dacl_aces = parsed_sd.get('dacl', [])
-            
+
             # Convert parsed ACEs to our format
             for ace_data in dacl_aces:
                 ace = {
@@ -478,7 +474,7 @@ class ACLSecurityAnalyzer:
                     'permissions': {},
                     'inherited': ace_data.get('is_inherited', False)
                 }
-                
+
                 # Extract permissions from parsed ACE
                 ace_permissions = ace_data.get('permissions', {})
                 for perm_name, perm_info in ace_permissions.items():
@@ -491,27 +487,27 @@ class ACLSecurityAnalyzer:
                             'severity': perm_info.get('severity', 'medium'),
                             'description': perm_info.get('description', '')
                         }
-                
+
                 if ace['permissions']:
                     aces.append(ace)
-        
+
         except Exception as e:
             logger.debug(f"Error parsing security descriptor: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-        
+
         return aces
-    
+
     def _create_acl_finding(self, obj_type: str, obj_name: str, obj_dn: str,
-                            trustee_sid: str, sid_to_display_name: Dict[str, str],
-                            perm_name: str, perm_data: Dict[str, Any], is_inherited: bool) -> Dict[str, Any]:
+                            trustee_sid: str, sid_to_display_name: dict[str, str],
+                            perm_name: str, perm_data: dict[str, Any], is_inherited: bool) -> dict[str, Any]:
         """Create ACL risk finding with explicit object identity and resolved trustee."""
         perm_info = self.CRITICAL_PERMISSIONS[perm_name]
         severity = perm_info['severity']
         severity_str = getattr(severity, 'value', str(severity)).lower() if severity else 'medium'
         trustee_display = sid_to_display_name.get(trustee_sid) if sid_to_display_name else None
         trustee_label = trustee_display or trustee_sid
-        
+
         return {
             'type': f'acl_{perm_name.lower().replace("-", "_")}',
             'severity': severity,
@@ -533,14 +529,14 @@ class ACLSecurityAnalyzer:
             'cis_reference': 'CIS Benchmark requires reviewing ACLs on critical objects',
             'mitre_attack': self._get_mitre_technique(perm_name)
         }
-    
-    def _detect_shadow_admins(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]],
-                             domain_dn: str, privileged_users: List[Dict[str, Any]],
-                             privileged_groups: List[Dict[str, Any]],
-                             acl_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _detect_shadow_admins(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
+                             domain_dn: str, privileged_users: list[dict[str, Any]],
+                             privileged_groups: list[dict[str, Any]],
+                             acl_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect Shadow Admins.
-        
+
         Shadow Admin criteria:
         - NOT a member of Domain Admin / Enterprise Admin
         - BUT has dangerous ACL permissions on:
@@ -578,14 +574,14 @@ class ACLSecurityAnalyzer:
             if sid:
                 privileged_group_sids.add(sid)
 
-        shadow_by_principal: Dict[str, Dict[str, Any]] = {}
+        shadow_by_principal: dict[str, dict[str, Any]] = {}
 
         def add_shadow_principal(
             principal_key: str,
             principal_name: str,
             principal_dn: Optional[str],
             principal_type: str,
-            permission: Dict[str, Any],
+            permission: dict[str, Any],
         ) -> None:
             record = shadow_by_principal.setdefault(principal_key, {
                 'user': principal_name,
@@ -667,30 +663,30 @@ class ACLSecurityAnalyzer:
             })
 
         return shadow_admins
-    
-    def _check_user_permissions_on_object(self, user: Dict[str, Any], 
-                                          target: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_user_permissions_on_object(self, user: dict[str, Any],
+                                          target: dict[str, Any]) -> list[dict[str, Any]]:
         """
         Check if user has dangerous permissions on target object.
-        
+
         Args:
             user: User dictionary
             target: Target object dictionary
-            
+
         Returns:
             list: List of dangerous permissions found
         """
         dangerous_perms = []
-        
+
         if not target.get('dn'):
             return dangerous_perms
-        
+
         try:
             # Get user's SID (simplified - would need to resolve from DN/name)
             user_sid = self._get_user_sid(user)
             if not user_sid:
                 return dangerous_perms
-            
+
             # Get security descriptor for target object (binary format)
             results = self.ldap.search(
                 search_base=target['dn'],
@@ -698,27 +694,27 @@ class ACLSecurityAnalyzer:
                 attributes=['nTSecurityDescriptor', 'objectClass'],
                 size_limit=1,
             )
-            
+
             if not results:
                 return dangerous_perms
-            
+
             entry = results[0]
             sd = entry.get('nTSecurityDescriptor')
-            
+
             if not sd:
                 return dangerous_perms
-            
+
             # Ensure we have binary data
             if isinstance(sd, list) and len(sd) > 0:
                 sd = sd[0]
-            
+
             # Parse security descriptor
             aces = self._parse_security_descriptor(sd)
-            
+
             # Check if user has dangerous permissions
             for ace in aces:
                 trustee_sid = ace.get('trustee', '')
-                
+
                 # Check if this ACE applies to our user
                 # This is simplified - would need proper SID resolution
                 if trustee_sid == user_sid or self._sid_matches_user(trustee_sid, user):
@@ -730,19 +726,19 @@ class ACLSecurityAnalyzer:
                                 'object_type': target.get('type'),
                                 'inherited': ace.get('inherited', False)
                             })
-        
+
         except Exception as e:
             logger.debug(f"Error checking user permissions: {e}")
-        
+
         return dangerous_perms
-    
-    def _get_user_sid(self, user: Dict[str, Any]) -> Optional[str]:
+
+    def _get_user_sid(self, user: dict[str, Any]) -> Optional[str]:
         """
         Get user's SID.
-        
+
         Args:
             user: User dictionary
-            
+
         Returns:
             str: User SID or None
         """
@@ -761,22 +757,22 @@ class ACLSecurityAnalyzer:
                 return self._binary_sid_to_string(results[0]['objectSid'])
         except Exception as e:
             logger.debug(f"Error getting user SID: {e}")
-        
+
         return None
-    
+
     def _binary_sid_to_string(self, binary_sid: bytes) -> str:
         """
         Convert binary SID to string format using our parser.
-        
+
         Args:
             binary_sid: Binary SID bytes
-            
+
         Returns:
             str: SID in string format (e.g., S-1-5-21-...)
         """
         if not binary_sid:
             return ''
-        
+
         try:
             if isinstance(binary_sid, list) and binary_sid:
                 binary_sid = binary_sid[0]
@@ -796,15 +792,15 @@ class ACLSecurityAnalyzer:
         except Exception as e:
             logger.debug(f"Error converting SID: {e}")
             return ''
-    
-    def _sid_matches_user(self, sid: str, user: Dict[str, Any]) -> bool:
+
+    def _sid_matches_user(self, sid: str, user: dict[str, Any]) -> bool:
         """
         Check if SID matches user (including group memberships).
-        
+
         Args:
             sid: SID to check
             user: User dictionary
-            
+
         Returns:
             bool: True if SID matches user or their groups
         """
@@ -812,49 +808,49 @@ class ACLSecurityAnalyzer:
         # For now, just check direct match
         user_sid = self._get_user_sid(user)
         return sid == user_sid
-    
-    def _is_user_already_admin(self, user: Dict[str, Any], groups: List[Dict[str, Any]]) -> bool:
+
+    def _is_user_already_admin(self, user: dict[str, Any], groups: list[dict[str, Any]]) -> bool:
         """
         Check if user is already Domain Admin or Enterprise Admin.
-        
+
         Args:
             user: User dictionary
             groups: List of group dictionaries
-            
+
         Returns:
             bool: True if user is already admin
         """
         # Check adminCount flag
         if user.get('adminCount') == 1 or user.get('adminCount') == '1':
             return True
-        
+
         # Check group memberships
         member_of = user.get('memberOf', [])
         if isinstance(member_of, str):
             member_of = [member_of]
-        
+
         # Build privileged group names set for quick lookup
         privileged_group_names = set()
         for group in groups:
             group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
             if any(priv_name in group_name for priv_name in ['domain admin', 'enterprise admin', 'schema admin']):
                 privileged_group_names.add(group_name)
-        
+
         # Check if user is member of any privileged group
         for group_dn in member_of:
             group_name = self._extract_name_from_dn(group_dn).lower()
             if group_name in privileged_group_names:
                 return True
-        
+
         return False
-    
-    def _analyze_privilege_escalation_paths(self, users: List[Dict[str, Any]],
-                                            groups: List[Dict[str, Any]],
-                                            computers: List[Dict[str, Any]],
-                                            acl_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _analyze_privilege_escalation_paths(self, users: list[dict[str, Any]],
+                                            groups: list[dict[str, Any]],
+                                            computers: list[dict[str, Any]],
+                                            acl_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Analyze privilege escalation paths through ACLs.
-        
+
         Paths to detect:
         - User → Group (GenericWrite)
         - User → User (WriteOwner, WriteDACL)
@@ -862,35 +858,35 @@ class ACLSecurityAnalyzer:
         - Service Account → Domain Admin path
         """
         paths = []
-        
+
         # Build graph of ACL relationships
         acl_graph = defaultdict(list)
-        
+
         for finding in acl_findings:
             trustee = finding.get('trustee')
             target = finding.get('affected_object')
             permission = finding.get('permission')
-            
+
             if trustee and target:
                 acl_graph[trustee].append({
                     'target': target,
                     'permission': permission,
                     'finding': finding
                 })
-        
+
         # Find paths to Domain Admin
         da_group_names = {'domain admins', 'enterprise admins'}
-        
+
         for user in users:
             user_name = user.get('sAMAccountName')
             if not user_name:
                 continue
-            
+
             # Skip users who are already Domain Admin or Enterprise Admin
             if self._is_user_already_admin(user, groups):
                 logger.debug(f"Skipping user '{user_name}' - already has admin privileges")
                 continue
-            
+
             # Check if user can reach DA through ACL paths
             path = self._find_path_to_da(user_name, acl_graph, da_group_names, groups)
             if path:
@@ -901,44 +897,44 @@ class ACLSecurityAnalyzer:
                     'critical_permission': self._identify_critical_permission_in_path(path),
                     'attack_scenario': self._build_attack_scenario_for_path(path)
                 })
-        
+
         return paths
-    
-    def _find_path_to_da(self, start_user: str, acl_graph: Dict, 
-                        da_group_names: Set[str], groups: List[Dict[str, Any]]) -> Optional[List[str]]:
+
+    def _find_path_to_da(self, start_user: str, acl_graph: dict,
+                        da_group_names: set[str], groups: list[dict[str, Any]]) -> Optional[list[str]]:
         """Find path from user to Domain Admin through ACLs."""
         # Simplified BFS to find path
         # In production, would use more sophisticated graph traversal
         visited = set()
         queue = [(start_user, [start_user])]
-        
+
         while queue:
             current, path = queue.pop(0)
-            
+
             if current in visited:
                 continue
             visited.add(current)
-            
+
             # Check if current is DA
             for group in groups:
                 group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
                 if current.lower() == group_name.lower():
                     if any(da_name in group_name for da_name in da_group_names):
                         return path
-            
+
             # Check ACL edges
             for edge in acl_graph.get(current, []):
                 target = edge['target']
                 if target not in visited:
                     new_path = path + [target]
                     queue.append((target, new_path))
-        
+
         return None
-    
-    def _analyze_inheritance(self, domain_dn: str, acl_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _analyze_inheritance(self, domain_dn: str, acl_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Analyze ACL inheritance.
-        
+
         Checks:
         - ACL inheritance enabled/disabled
         - Objects with broken inheritance
@@ -946,7 +942,7 @@ class ACLSecurityAnalyzer:
         - Risky inherited permissions from Domain
         """
         inheritance_risks = []
-        
+
         # Check for broken inheritance
         for finding in acl_findings:
             if not finding.get('is_inherited', True):
@@ -956,7 +952,7 @@ class ACLSecurityAnalyzer:
                     'finding': finding,
                     'risk': 'Explicit permissions override inheritance and may indicate intentional privilege grant'
                 })
-        
+
         # Check for risky inherited permissions
         inherited_findings = [f for f in acl_findings if f.get('is_inherited', False)]
         if inherited_findings:
@@ -966,15 +962,15 @@ class ACLSecurityAnalyzer:
                 'findings': inherited_findings,
                 'risk': 'Permissions inherited from parent objects may grant unintended access'
             })
-        
+
         return inheritance_risks
-    
-    def _calculate_risk_scores(self, acl_findings: List[Dict[str, Any]],
-                               shadow_admins: List[Dict[str, Any]],
-                               escalation_paths: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _calculate_risk_scores(self, acl_findings: list[dict[str, Any]],
+                               shadow_admins: list[dict[str, Any]],
+                               escalation_paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Calculate risk scores for ACL findings.
-        
+
         Factors:
         - Object criticality (Domain > OU > Group > User)
         - Permission power
@@ -982,24 +978,24 @@ class ACLSecurityAnalyzer:
         - Explicit vs Inherited
         """
         scored_risks = []
-        
+
         for finding in acl_findings:
             base_score = finding.get('risk_score', 50)
-            
+
             # Object criticality multiplier
             obj_type = finding.get('object_type', 'user')
             criticality = self.OBJECT_CRITICALITY.get(obj_type, 1.0)
-            
+
             # Inheritance penalty (inherited = lower risk than explicit)
             if finding.get('is_inherited', False):
                 inheritance_multiplier = 0.8
             else:
                 inheritance_multiplier = 1.0
-            
+
             # Calculate final score
             final_score = base_score * criticality * inheritance_multiplier
             final_score = min(100, max(0, final_score))
-            
+
             finding['calculated_risk_score'] = final_score
             finding['risk_factors'] = {
                 'base_score': base_score,
@@ -1007,11 +1003,11 @@ class ACLSecurityAnalyzer:
                 'inheritance_multiplier': inheritance_multiplier,
                 'final_score': final_score
             }
-            
+
             scored_risks.append(finding)
-        
+
         return scored_risks
-    
+
     # Helper methods
     def _extract_name_from_dn(self, dn: str) -> str:
         """Extract name from distinguished name."""
@@ -1023,7 +1019,7 @@ class ACLSecurityAnalyzer:
             if '=' in cn_part:
                 return cn_part.split('=')[1]
         return dn
-    
+
     def _get_permission_impact(self, perm_name: str, obj_type: str) -> str:
         """Get impact description for permission (what the risk means in practice)."""
         impacts = {
@@ -1035,7 +1031,7 @@ class ACLSecurityAnalyzer:
             'UserForceChangePassword': 'The trustee can trigger a forced password change for the user. An attacker can abuse this to set a known password and take over the account.',
             'WriteServicePrincipalName': 'The trustee can add or change SPNs on the account. This enables Kerberoasting (crack service account hashes) or Silver Ticket attacks.',
             'WriteUserAccountControl': 'The trustee can change userAccountControl (e.g. disable "Require Kerberos preauthentication" for AS-REP Roasting, or set "Password never expires"). Enables credential theft and persistence.',
-            'WriteMember': f'The trustee can add or remove members of this group. If the group is privileged (e.g. Domain Admins), the attacker can add themselves and gain domain admin.',
+            'WriteMember': 'The trustee can add or remove members of this group. If the group is privileged (e.g. Domain Admins), the attacker can add themselves and gain domain admin.',
             'DS-Replication-Get-Changes': 'This right is part of DCSync. Combined with Get-Changes-All or Filtered-Set, it allows replicating AD and extracting password hashes for the entire domain.',
             'DS-Replication-Get-Changes-All': 'Enables full DCSync: the trustee can request replication of all directory changes from a DC and extract NTLM hashes for every account, leading to domain takeover.',
             'DS-Replication-Get-Changes-In-Filtered-Set': 'Enables DCSync with a filter. Attackers can use this to replicate and dump password hashes, same as Get-Changes-All in practice.',
@@ -1049,8 +1045,8 @@ class ACLSecurityAnalyzer:
             'GenericAll': f'Attacker with GenericAll on this {obj_type} can: (1) grant themselves WriteDACL then WriteOwner if needed, (2) modify the object (e.g. add themselves to a group, change user password), or (3) delete it. On Domain or admin groups this leads to Domain Admin.',
             'WriteDACL': f'Attacker adds an ACE granting themselves GenericAll (or WriteOwner) on the {obj_type}, then takes full control. No need for admin group membership.',
             'WriteOwner': f'Attacker sets themselves as owner of the {obj_type}. As owner, they can modify the ACL to grant themselves GenericAll, then alter the object (e.g. add themselves to Domain Admins).',
-            'GenericWrite': f'On a user: attacker may write scriptPath, msDS-AllowedToActOnBehalfOfOtherIdentity, or other attributes. On a group: may abuse attribute writes. On GPO/OU: link GPO or move objects to escalate.',
-            'WriteProperty': f'Depends on which properties are writable. Often used to add oneself to a group (via member attribute), set userAccountControl, or change SPN. Leads to privilege escalation.',
+            'GenericWrite': 'On a user: attacker may write scriptPath, msDS-AllowedToActOnBehalfOfOtherIdentity, or other attributes. On a group: may abuse attribute writes. On GPO/OU: link GPO or move objects to escalate.',
+            'WriteProperty': 'Depends on which properties are writable. Often used to add oneself to a group (via member attribute), set userAccountControl, or change SPN. Leads to privilege escalation.',
             'UserForceChangePassword': 'Attacker triggers "User must change password at next logon" and sets a known password, or uses the right in a tool to reset the password and log in as the user.',
             'WriteServicePrincipalName': 'Attacker adds an SPN to the account (e.g. HOST/victim), requests a ticket (Kerberoasting), cracks it offline, then uses the hash for Silver Ticket or lateral movement.',
             'WriteUserAccountControl': 'Attacker disables "Require Kerberos preauthentication" on the account, then performs AS-REP Roasting to get a crackable hash, or sets DONT_EXPIRE_PASSWD for persistence.',
@@ -1099,8 +1095,8 @@ class ACLSecurityAnalyzer:
             'AllExtendedRights': 'T1003.006 (DCSync), T1098 (Account Manipulation)',
         }
         return techniques.get(perm_name, 'T1078 (Valid Accounts), T1484 (Domain Policy Modification)')
-    
-    def _explain_shadow_admin_risk(self, dangerous_perms: List[Dict[str, Any]]) -> str:
+
+    def _explain_shadow_admin_risk(self, dangerous_perms: list[dict[str, Any]]) -> str:
         """Explain why Shadow Admin is risky."""
         perm_names = [p.get('permission', '') for p in dangerous_perms]
         if 'GenericAll' in perm_names:
@@ -1108,12 +1104,12 @@ class ACLSecurityAnalyzer:
         elif 'WriteDACL' in perm_names:
             return 'Can modify ACLs on critical objects to grant themselves Domain Admin'
         return 'Has dangerous permissions on critical objects'
-    
-    def _get_shadow_admin_attack_scenario(self, dangerous_perms: List[Dict[str, Any]]) -> str:
+
+    def _get_shadow_admin_attack_scenario(self, dangerous_perms: list[dict[str, Any]]) -> str:
         """Get attack scenario for Shadow Admin."""
         return 'An attacker who compromises this account can abuse its dangerous ACL permissions to escalate to Domain Admin (or equivalent) without being a member of Domain Admins. Monitoring and tiering often focus on admin group membership, so this account may be under less scrutiny while still enabling full domain compromise.'
 
-    def _get_shadow_admin_recommendation(self, dangerous_perms: List[Dict[str, Any]]) -> str:
+    def _get_shadow_admin_recommendation(self, dangerous_perms: list[dict[str, Any]]) -> str:
         """Get remediation recommendation for Shadow Admin."""
         perm_names = [p.get('permission', '') for p in dangerous_perms]
         if any(p in perm_names for p in ('GenericAll', 'DS-Replication-Get-Changes-All', 'DS-Replication-Get-Changes-In-Filtered-Set', 'AllExtendedRights')):
@@ -1121,8 +1117,8 @@ class ACLSecurityAnalyzer:
         if any(p in perm_names for p in ('WriteDACL', 'WriteOwner')):
             return 'Remove WriteDACL and WriteOwner from this account. Grant only the minimum permissions needed for the intended role. Prefer managed service accounts or delegated roles with documented justification.'
         return 'Remove dangerous permissions from this account. Apply least privilege: grant only the specific rights required for the business function. Document and review periodically. Consider moving sensitive operations to dedicated admin accounts.'
-    
-    def _calculate_shadow_admin_risk(self, dangerous_perms: List[Dict[str, Any]]) -> str:
+
+    def _calculate_shadow_admin_risk(self, dangerous_perms: list[dict[str, Any]]) -> str:
         """Calculate Shadow Admin risk level."""
         perm_names = [p.get('permission', '') for p in dangerous_perms]
         if any('DCSync' in p or 'GenericAll' in p for p in perm_names):
@@ -1130,12 +1126,12 @@ class ACLSecurityAnalyzer:
         elif 'WriteDACL' in perm_names or 'WriteOwner' in perm_names:
             return Severity.HIGH
         return Severity.MEDIUM
-    
-    def _identify_critical_permission_in_path(self, path: List[str]) -> str:
+
+    def _identify_critical_permission_in_path(self, path: list[str]) -> str:
         """Identify critical permission in escalation path."""
         # Simplified - would analyze actual permissions in path
         return 'GenericWrite'
-    
-    def _build_attack_scenario_for_path(self, path: List[str]) -> str:
+
+    def _build_attack_scenario_for_path(self, path: list[str]) -> str:
         """Build attack scenario for escalation path."""
         return f"Attacker can escalate from {path[0]} to {path[-1]} through {len(path)-1} hops"

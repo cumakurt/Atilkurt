@@ -4,10 +4,10 @@ Tests for Input Validation Module
 
 import unittest
 import os
-import tempfile
 from core.validators import (
     validate_domain,
     validate_ip_address,
+    validate_server_address,
     validate_username,
     validate_password,
     validate_timeout,
@@ -61,6 +61,20 @@ class TestValidateIPAddress(unittest.TestCase):
             validate_ip_address("invalid")
         with self.assertRaises(ValidationError):
             validate_ip_address("256.256.256.256")
+
+
+class TestValidateServerAddress(unittest.TestCase):
+    """Test cases for LDAP server IP address and hostname validation."""
+
+    def test_valid_ip_and_hostname(self):
+        self.assertEqual(validate_server_address("192.0.2.10"), "192.0.2.10")
+        self.assertEqual(validate_server_address("dc01.example.com"), "dc01.example.com")
+        self.assertEqual(validate_server_address("dc01"), "dc01")
+
+    def test_invalid_server_address(self):
+        for address in ("", "dc01/example.com", "-dc01.example.com", "256.256.256.256"):
+            with self.subTest(address=address), self.assertRaises(ValidationError):
+                validate_server_address(address)
 
 
 class TestValidateOutputFile(unittest.TestCase):

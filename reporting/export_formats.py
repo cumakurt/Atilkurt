@@ -6,21 +6,22 @@ Supports multiple export formats for integration with other tools
 import json
 import csv
 import logging
-from typing import List, Dict, Any, Optional
-from pathlib import Path
+from typing import Any
 from datetime import datetime
+
+from core.secure_file import atomic_text_writer
 
 logger = logging.getLogger(__name__)
 
 
 class ExportFormats:
     """Handles export to various formats."""
-    
+
     @staticmethod
-    def export_csv(risks: List[Dict[str, Any]], output_file: str) -> None:
+    def export_csv(risks: list[dict[str, Any]], output_file: str) -> None:
         """
         Export risks to CSV format.
-        
+
         Args:
             risks: List of risk dictionaries
             output_file: Output file path
@@ -28,18 +29,18 @@ class ExportFormats:
         if not risks:
             logger.warning("No risks to export")
             return
-        
+
         # Get all unique keys from risks
         fieldnames = set()
         for risk in risks:
             fieldnames.update(risk.keys())
-        
+
         fieldnames = sorted(list(fieldnames))
-        
-        with open(output_file, 'w', newline='', encoding='utf-8') as f:
+
+        with atomic_text_writer(output_file, newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            
+
             for risk in risks:
                 # Convert complex types to strings
                 row = {}
@@ -49,15 +50,15 @@ class ExportFormats:
                     else:
                         row[key] = value
                 writer.writerow(row)
-        
+
         logger.info(f"CSV export saved to {output_file}")
-    
+
     @staticmethod
-    def export_nessus_xml(risks: List[Dict[str, Any]], output_file: str, 
+    def export_nessus_xml(risks: list[dict[str, Any]], output_file: str,
                          domain: str) -> None:
         """
         Export risks in Nessus XML format (simplified).
-        
+
         Args:
             risks: List of risk dictionaries
             output_file: Output file path
@@ -65,17 +66,17 @@ class ExportFormats:
         """
         from xml.etree.ElementTree import Element, SubElement, tostring
         from xml.dom import minidom
-        
+
         root = Element('NessusClientData_v2')
         policy = SubElement(root, 'Policy')
         SubElement(policy, 'policyName').text = 'AtilKurt AD Security Scan'
-        
+
         report = SubElement(root, 'Report')
         report.set('name', f'AD Security Scan - {domain}')
-        
+
         report_host = SubElement(report, 'ReportHost')
         report_host.set('name', domain)
-        
+
         for risk in risks:
             if risk.get('severity') in ['high', 'critical']:
                 item = SubElement(report_host, 'ReportItem')
@@ -86,25 +87,25 @@ class ExportFormats:
                 item.set('pluginID', str(hash(risk.get('type', '')) % 100000))
                 item.set('pluginName', risk.get('title', 'Unknown Risk'))
                 item.set('pluginFamily', 'Active Directory')
-                
+
                 SubElement(item, 'description').text = risk.get('description', '')
                 SubElement(item, 'solution').text = risk.get('mitigation', '')
                 SubElement(item, 'risk_factor').text = risk.get('severity', 'medium').upper()
-        
+
         # Pretty print
         xml_str = minidom.parseString(tostring(root)).toprettyxml(indent="  ")
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
+
+        with atomic_text_writer(output_file, encoding='utf-8') as f:
             f.write(xml_str)
-        
+
         logger.info(f"Nessus XML export saved to {output_file}")
-    
+
     @staticmethod
-    def export_kerberoasting_list(kerberoasting_targets: List[Dict[str, Any]], 
+    def export_kerberoasting_list(kerberoasting_targets: list[dict[str, Any]],
                                  output_file: str) -> None:
         """
         Export Kerberoasting targets in a format suitable for exploitation tools.
-        
+
         Args:
             kerberoasting_targets: List of Kerberoasting target dictionaries
             output_file: Output file path
@@ -113,7 +114,7 @@ class ExportFormats:
             'export_date': datetime.now().isoformat(),
             'targets': []
         }
-        
+
         for target in kerberoasting_targets:
             export_format = target.get('export_format', {})
             export_data['targets'].append({
@@ -124,15 +125,15 @@ class ExportFormats:
                 'rubeus_command': export_format.get('rubeus_command', ''),
                 'cme_command': export_format.get('cme_command', '')
             })
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
+
+        with atomic_text_writer(output_file, encoding='utf-8') as f:
             json.dump(export_data, f, indent=2)
-        
+
         logger.info(f"Kerberoasting targets export saved to {output_file}")
-    
+
     @staticmethod
     def export_siem_json(
-        risks: List[Dict[str, Any]],
+        risks: list[dict[str, Any]],
         output_file: str,
         domain: str = '',
         host: str = 'atilkurt'
@@ -141,7 +142,7 @@ class ExportFormats:
         Export risks in SIEM-friendly JSON format for Splunk/Elastic.
         Each risk is a separate JSON object (ndjson) for easy ingestion.
         """
-        with open(output_file, 'w', encoding='utf-8') as f:
+        with atomic_text_writer(output_file, encoding='utf-8') as f:
             for risk in risks:
                 siem_event = {
                     'timestamp': datetime.now().isoformat(),
@@ -163,7 +164,7 @@ class ExportFormats:
 
     @staticmethod
     def export_cef(
-        risks: List[Dict[str, Any]],
+        risks: list[dict[str, Any]],
         output_file: str,
         domain: str = '',
         device_vendor: str = 'AtilKurt',
@@ -177,7 +178,7 @@ class ExportFormats:
                 return ''
             return str(s).replace('\\', '\\\\').replace('=', '\\=').replace('\n', ' ')
 
-        with open(output_file, 'w', encoding='utf-8') as f:
+        with atomic_text_writer(output_file, encoding='utf-8') as f:
             for risk in risks:
                 ext = (
                     f"rt={int(datetime.now().timestamp()) * 1000} "
@@ -201,7 +202,7 @@ class ExportFormats:
             except Exception:
                 return ''
         return group_dn
-    
+
     @staticmethod
     def _extract_member_name(member_dn: str) -> str:
         """Extract member name from DN."""

@@ -4,7 +4,7 @@ Analyzes forest trusts, external trusts, and trust configurations
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -12,29 +12,29 @@ logger = logging.getLogger(__name__)
 
 class TrustAnalyzer:
     """Analyzes trust relationships in Active Directory."""
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize trust analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
-    
-    def analyze_trusts(self) -> List[Dict[str, Any]]:
+
+    def analyze_trusts(self) -> list[dict[str, Any]]:
         """
         Analyze trust relationships.
-        
+
         Returns:
             List of risk dictionaries for trust relationships
         """
         risks = []
-        
+
         try:
             base_dn = self.ldap.base_dn
             trusts_found = []
-            
+
             # Search for trust objects - try multiple locations
             search_filter = '(objectClass=trustedDomain)'
             attributes = [
@@ -45,7 +45,7 @@ class TrustAnalyzer:
                 'flatName',
                 'distinguishedName'
             ]
-            
+
             # Approach 1: Search in System container (most common location)
             try:
                 results = self.ldap.search(
@@ -58,7 +58,7 @@ class TrustAnalyzer:
                     logger.debug(f"Found {len(results)} trusts in System container")
             except Exception as e:
                 logger.debug(f"Error searching System container for trusts: {e}")
-            
+
             # Approach 2: Search from domain root
             if not trusts_found:
                 try:
@@ -72,7 +72,7 @@ class TrustAnalyzer:
                         logger.debug(f"Found {len(results)} trusts from domain root")
                 except Exception as e:
                     logger.debug(f"Error searching domain root for trusts: {e}")
-            
+
             # Approach 3: Search without base (search entire domain)
             if not trusts_found:
                 try:
@@ -85,7 +85,7 @@ class TrustAnalyzer:
                         logger.debug(f"Found {len(results)} trusts via domain-wide search")
                 except Exception as e:
                     logger.debug(f"Error doing domain-wide trust search: {e}")
-            
+
             # Approach 4: Try to find trusts in Configuration partition
             if not trusts_found:
                 try:
@@ -100,7 +100,7 @@ class TrustAnalyzer:
                         logger.debug(f"Found {len(results)} trusts in Configuration partition")
                 except Exception as e:
                     logger.debug(f"Error searching Configuration partition: {e}")
-            
+
             # Remove duplicates based on DN
             seen_dns = set()
             unique_trusts = []
@@ -109,7 +109,7 @@ class TrustAnalyzer:
                 if trust_dn and trust_dn not in seen_dns:
                     seen_dns.add(trust_dn)
                     unique_trusts.append(trust)
-            
+
             if not unique_trusts:
                 logger.info("No trust relationships found in the domain")
                 # Create informational risk if no trusts found
@@ -130,18 +130,18 @@ class TrustAnalyzer:
                     'mitre_attack': MITRETechniques.LATERAL_MOVEMENT
                 })
                 return risks
-            
+
             logger.info(f"Found {len(unique_trusts)} trust relationship(s)")
-            
+
             for trust in unique_trusts:
                 trust_name = trust.get('name')
                 if not trust_name:
                     continue
-                
+
                 trust_direction = trust.get('trustDirection', 0)
                 trust_type = trust.get('trustType', 0)
                 trust_attributes = trust.get('trustAttributes', 0)
-                
+
                 # Convert to integers if strings
                 if isinstance(trust_direction, str):
                     trust_direction = int(trust_direction)
@@ -149,18 +149,18 @@ class TrustAnalyzer:
                     trust_type = int(trust_type)
                 if isinstance(trust_attributes, str):
                     trust_attributes = int(trust_attributes)
-                
+
                 # Analyze trust direction
                 # 0 = Disabled, 1 = Inbound, 2 = Outbound, 3 = Bidirectional
                 direction_str = self._get_trust_direction_str(trust_direction)
-                
+
                 # Analyze trust type
                 # 1 = Downlevel (external), 2 = Uplevel (forest)
                 type_str = 'Forest Trust' if trust_type == 2 else 'External Trust'
-                
+
                 # Check for security risks
                 trust_risks = []
-                
+
                 # Bidirectional trusts are riskier
                 if trust_direction == 3:
                     trust_risks.append({
@@ -171,7 +171,7 @@ class TrustAnalyzer:
                             'to resources in either domain, increasing attack surface.'
                         )
                     })
-                
+
                 # Outbound-only trusts (we trust them, they don't trust us)
                 if trust_direction == 2:
                     trust_risks.append({
@@ -182,7 +182,7 @@ class TrustAnalyzer:
                             'in our domain, but we cannot access their domain.'
                         )
                     })
-                
+
                 # Check for SID filtering
                 # TRUST_ATTRIBUTE_QUARANTINED_DOMAIN = 0x4
                 if not (trust_attributes & 0x4):
@@ -194,7 +194,7 @@ class TrustAnalyzer:
                             'could use SID history to gain unauthorized access.'
                         )
                     })
-                
+
                 # Check for selective authentication
                 # TRUST_ATTRIBUTE_CROSS_ORGANIZATION = 0x10 means selective authentication
                 if trust_attributes & 0x10:
@@ -215,7 +215,7 @@ class TrustAnalyzer:
                             'can authenticate to resources in our domain.'
                         )
                     })
-                
+
                 # Create risk entries
                 for trust_risk in trust_risks:
                     risks.append({
@@ -247,14 +247,14 @@ class TrustAnalyzer:
                         'cis_reference': 'CIS Benchmark requires SID filtering on all trusts',
                         'mitre_attack': MITRETechniques.LATERAL_MOVEMENT
                     })
-            
+
             logger.info(f"Found {len(risks)} trust relationship risks")
             return risks
-            
+
         except Exception as e:
             logger.error(f"Error analyzing trusts: {str(e)}")
             return []
-    
+
     def _get_trust_direction_str(self, direction: int) -> str:
         """Get human-readable trust direction string."""
         directions = {

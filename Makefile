@@ -7,12 +7,13 @@ VENV_BIN = $(VENV_DIR)/bin
 PIP = $(VENV_BIN)/pip
 PY = $(VENV_BIN)/python
 
-# AtilKurt run parameters (override from env or: make run DOMAIN=corp.local USER=admin PASS=secret DC=10.0.0.1)
+# AtilKurt run parameters (override from env or make arguments)
 DOMAIN ?= example.com
 USER ?= username
 PASS ?=
-DC_IP ?= 192.168.1.10
+DC_IP ?=
 OUTPUT ?= report.html
+DC_ARG = $(if $(strip $(DC_IP)),--dc-ip "$(DC_IP)")
 
 # Docker
 DOCKER_IMAGE ?= atilkurt:latest
@@ -29,7 +30,7 @@ help:
 	@echo "  make install-dev Install with dev dependencies (pytest, ruff)"
 	@echo ""
 	@echo "Run (local):"
-	@echo "  make run         Run AtilKurt (DOMAIN, USER, PASS, DC_IP required)"
+	@echo "  make run         Run AtilKurt (DOMAIN, USER, PASS required; DC_IP optional)"
 	@echo "  make run ARGS='--ssl --json-export out.json'  Extra arguments"
 	@echo ""
 	@echo "Docker:"
@@ -44,8 +45,8 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make install"
-	@echo "  make run DOMAIN=corp.local USER=admin PASS=MyPass123 DC_IP=10.0.0.1"
-	@echo "  make docker-run DOMAIN=corp.local USER=admin PASS=MyPass123 DC_IP=10.0.0.1"
+	@echo "  make run DOMAIN=corp.local USER=admin PASS=MyPass123"
+	@echo "  make docker-run DOMAIN=corp.local USER=admin PASS=MyPass123"
 
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
@@ -53,26 +54,26 @@ venv:
 	@echo "Activate with: source $(VENV_DIR)/bin/activate"
 
 install: venv
-	$(PIP) install -r requirements.txt
+	$(PIP) install -e .
 	@echo "Dependencies installed."
 
 install-dev: install
-	$(PIP) install pytest ruff 2>/dev/null || true
+	$(PIP) install -e ".[dev]"
 	@echo "Dev tools added."
 
 
 run:
 	@if [ -z "$(PASS)" ]; then \
-		$(PYTHON) AtilKurt.py -d $(DOMAIN) -u $(USER) --dc-ip $(DC_IP) --output $(OUTPUT) $(ARGS); \
+		$(PY) AtilKurt.py -d "$(DOMAIN)" -u "$(USER)" $(DC_ARG) --output "$(OUTPUT)" $(ARGS); \
 	else \
-		$(PYTHON) AtilKurt.py -d $(DOMAIN) -u $(USER) -p "$(PASS)" --dc-ip $(DC_IP) --output $(OUTPUT) $(ARGS); \
+		ATILKURT_PASS="$(PASS)" $(PY) AtilKurt.py -d "$(DOMAIN)" -u "$(USER)" $(DC_ARG) --output "$(OUTPUT)" $(ARGS); \
 	fi
 
 test:
-	$(PYTHON) -m pytest tests/ -v --tb=short
+	$(PY) -m pytest tests/ -v --tb=short
 
 lint:
-	@command -v ruff >/dev/null 2>&1 && ruff check . --exclude .venv || echo "Ruff not installed: pip install ruff"
+	$(PY) -m ruff check .
 
 clean:
 	rm -rf .pytest_cache .ruff_cache
@@ -87,7 +88,7 @@ docker-build:
 docker-run:
 	@mkdir -p $(DOCKER_OUTPUT_DIR)
 	@if [ -z "$(PASS)" ]; then \
-		echo "Error: PASS required. Example: make docker-run DOMAIN=corp.local USER=admin PASS=xxx DC_IP=10.0.0.1"; exit 1; \
+		echo "Error: PASS required. Example: make docker-run DOMAIN=corp.local USER=admin PASS=xxx"; exit 1; \
 	fi
 	docker run --rm \
 		-e ATILKURT_DOMAIN=$(DOMAIN) \

@@ -8,7 +8,7 @@ Evaluates lateral movement potential by analyzing:
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any
 from core.constants import (
     RiskTypes, Severity, MITRETechniques, PRIVILEGED_GROUPS,
 )
@@ -27,17 +27,17 @@ class LateralMovementAnalyzer:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-        computers: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze lateral movement risk.
 
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         risks.extend(self._check_unrestricted_logon(users))
         risks.extend(self._check_tier_violations(users, computers))
@@ -49,11 +49,11 @@ class LateralMovementAnalyzer:
     # ── Unrestricted Logon Workstations ─────────────────────────────────────
 
     def _check_unrestricted_logon(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect privileged accounts without logonWorkstation restrictions."""
-        risks: List[Dict[str, Any]] = []
-        unrestricted: List[str] = []
+        risks: list[dict[str, Any]] = []
+        unrestricted: list[str] = []
 
         for user in users:
             if self._is_disabled(user):
@@ -117,16 +117,16 @@ class LateralMovementAnalyzer:
 
     def _check_tier_violations(
         self,
-        users: List[Dict[str, Any]],
-        computers: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Detect Tier 0 accounts that appear to authenticate to non-Tier0 systems.
         Heuristic: Tier 0 accounts with no logon restrictions have implicit
         cross-tier risk.
         """
-        risks: List[Dict[str, Any]] = []
-        tier0_accounts: List[str] = []
+        risks: list[dict[str, Any]] = []
+        tier0_accounts: list[str] = []
 
         tier0_groups = {'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'DOMAIN CONTROLLERS'}
 
@@ -188,10 +188,10 @@ class LateralMovementAnalyzer:
     # ── RDP / WinRM Exposure ────────────────────────────────────────────────
 
     def _check_rdp_exposure(
-        self, groups: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, groups: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Check Remote Desktop Users and Remote Management Users membership."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         for group in groups:
             gname = group.get('sAMAccountName') or group.get('name', '')
@@ -236,7 +236,7 @@ class LateralMovementAnalyzer:
     # ── Utilities ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_disabled(user: Dict[str, Any]) -> bool:
+    def _is_disabled(user: dict[str, Any]) -> bool:
         uac = user.get('userAccountControl')
         if uac is None:
             return False
@@ -246,7 +246,7 @@ class LateralMovementAnalyzer:
             return False
 
     @staticmethod
-    def _is_privileged(user: Dict[str, Any]) -> bool:
+    def _is_privileged(user: dict[str, Any]) -> bool:
         member_of = user.get('memberOf', []) or []
         if isinstance(member_of, str):
             member_of = [member_of]

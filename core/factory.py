@@ -3,7 +3,7 @@ Factory Pattern Module
 Factory classes for creating analyzers and other components
 """
 
-from typing import Dict, Type, Optional
+from typing import Optional
 from core.base_analyzer import BaseAnalyzer
 from analysis.user_risks import UserRiskAnalyzer
 from analysis.computer_risks import ComputerRiskAnalyzer
@@ -30,8 +30,8 @@ from core.config import AppConfig, get_config
 
 class AnalyzerFactory:
     """Factory for creating analyzer instances."""
-    
-    _analyzer_registry: Dict[str, Type[BaseAnalyzer]] = {
+
+    _analyzer_registry: dict[str, type[BaseAnalyzer]] = {
         'user': UserRiskAnalyzer,
         'computer': ComputerRiskAnalyzer,
         'group': GroupRiskAnalyzer,
@@ -52,44 +52,44 @@ class AnalyzerFactory:
         'laps': LAPSAnalyzer,
         'vulnerability': VulnerabilityScanner,
     }
-    
+
     @classmethod
     def create_analyzer(cls, analyzer_type: str, **kwargs) -> BaseAnalyzer:
         """
         Create an analyzer instance.
-        
+
         Args:
             analyzer_type: Type of analyzer to create
             **kwargs: Additional arguments for analyzer initialization
-        
+
         Returns:
             Analyzer instance
-        
+
         Raises:
             ValueError: If analyzer type is not registered
         """
         analyzer_class = cls._analyzer_registry.get(analyzer_type.lower())
         if analyzer_class is None:
             raise ValueError(f"Unknown analyzer type: {analyzer_type}")
-        
+
         return analyzer_class(**kwargs)
-    
+
     @classmethod
-    def register_analyzer(cls, analyzer_type: str, analyzer_class: Type[BaseAnalyzer]) -> None:
+    def register_analyzer(cls, analyzer_type: str, analyzer_class: type[BaseAnalyzer]) -> None:
         """
         Register a new analyzer type.
-        
+
         Args:
             analyzer_type: Type identifier for the analyzer
             analyzer_class: Analyzer class to register
         """
         cls._analyzer_registry[analyzer_type.lower()] = analyzer_class
-    
+
     @classmethod
     def list_analyzers(cls) -> list:
         """
         List all registered analyzer types.
-        
+
         Returns:
             List of analyzer type names
         """
@@ -98,24 +98,24 @@ class AnalyzerFactory:
 
 class RiskScorerFactory:
     """Factory for creating risk scorer instances."""
-    
+
     @staticmethod
     def create_scorer(config: Optional[AppConfig] = None) -> RiskScorer:
         """
         Create a risk scorer instance.
-        
+
         Args:
             config: Application configuration (optional)
-        
+
         Returns:
             RiskScorer instance
         """
         if config is None:
             config = get_config()
-        
+
         scorer = RiskScorer()
         # Update base scores from config if needed
         if config and config.risk_scoring:
             scorer.BASE_RISK_SCORES.update(config.risk_scoring.base_scores)
-        
+
         return scorer

@@ -13,18 +13,18 @@ class RiskTabBuilderMixin:
         user_risks = [r for r in risks if r.get('object_type') == 'user']
         computer_risks = [r for r in risks if r.get('object_type') == 'computer']
         group_risks = [r for r in risks if r.get('object_type') == 'group']
-        
+
         # Filter escalation risks - exclude users who are already admins
         escalation_risks_raw = [r for r in risks if r.get('type') in ['privilege_escalation_path', 'delegation_privilege_escalation', 'spn_privilege_escalation', 'computer_delegation_privilege_path', 'acl_privilege_escalation_path']]
         escalation_risks = self._filter_admin_users_from_escalation_paths(escalation_risks_raw, users, groups) if users and groups else escalation_risks_raw
         kerberos_risks = [r for r in risks if 'delegation' in r.get('type', '').lower() or 'kerberos' in r.get('type', '').lower()]
-        
+
         # New categories
         kerberoasting_risks = [r for r in risks if 'kerberoasting' in r.get('type', '').lower() or 'asrep' in r.get('type', '').lower() or r.get('type') == 'user_with_spn' or r.get('type') == 'kerberos_preauth_disabled']
         asrep_risks = [r for r in risks if 'asrep' in r.get('type', '').lower() or r.get('type') == 'kerberos_preauth_disabled']
         service_account_risks = [r for r in risks if 'service_account' in r.get('type', '').lower()]
         gpo_abuse_risks = [r for r in risks if 'gpo' in r.get('type', '').lower()]
-        
+
         # Advanced penetration testing categories
         dcsync_risks = [r for r in risks if 'dcsync' in r.get('type', '').lower()]
         password_policy_risks = [r for r in risks if 'password_policy' in r.get('type', '').lower() or r.get('object_type') == 'policy']
@@ -45,13 +45,13 @@ class RiskTabBuilderMixin:
             'computer_account_expired', 'printer_object_risk', 'exchange_objects_found', 'dns_zone_found',
             'ad_recycle_bin_enabled', 'ad_recycle_bin_deleted_objects'
         )]
-        
+
         # Legacy OS and ACL Security Analysis
         legacy_os_risks = [r for r in risks if 'legacy' in r.get('type', '').lower() or 'eol' in r.get('type', '').lower()]
         acl_security_risks = [r for r in risks if r.get('type', '').startswith('acl_')]
         shadow_admin_risks = [r for r in risks if r.get('type') == 'shadow_admin']
         acl_escalation_risks_list = [r for r in risks if r.get('type') == 'acl_privilege_escalation_path']
-        
+
         # ── New module categories ───────────────────────────────────────────
         password_spray_risks = [r for r in risks if 'password_spray' in r.get('type', '').lower()]
         golden_gmsa_risks = [r for r in risks if 'golden_gmsa' in r.get('type', '').lower()]
@@ -72,11 +72,11 @@ class RiskTabBuilderMixin:
         replication_risks = [r for r in risks if 'replication_' in r.get('type', '').lower()]
 
         # Filter by severity for KPI navigation
-        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or 
+        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
                                              r.get('severity', '').lower() == 'critical')]
-        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or 
+        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or
                                          r.get('severity', '').lower() == 'high')]
-        
+
         # Filter privileged account risks
         privileged_account_risks = []
         for risk in risks:
@@ -95,10 +95,10 @@ class RiskTabBuilderMixin:
                             if any(priv in group_dn.upper() for priv in ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
                                 privileged_account_risks.append(risk)
                                 break
-        
+
         # Delegation risks (already filtered in kerberos_risks, but create separate list)
         delegation_risks = [r for r in risks if 'delegation' in r.get('type', '').lower()]
-        
+
         all_risks_html = self._generate_risk_list(risks, "All Security Risks", "all_risks", group_by_finding=True)
         user_risks_html = self._generate_risk_list(user_risks, "User-Related Risks", "user_risks", group_by_finding=True)
         computer_risks_html = self._generate_risk_list(computer_risks, "Computer-Related Risks", "computer_risks", group_by_finding=True)
@@ -149,14 +149,14 @@ class RiskTabBuilderMixin:
         acl_security_html = self._generate_acl_security_section(acl_security_risks, shadow_admin_risks, acl_escalation_risks_list)
         paths_html = self._generate_attack_paths(escalation_risks, users, groups)
         misconfig_html = self._generate_misconfig_section(misconfig_findings)
-        
+
         # Generate tab content with dashboard
         dashboard_tab = f"""
         <div id="dashboard" class="tab-pane show active" role="tabpanel" aria-labelledby="dashboard-tab">
             {ciso_dashboard_html}
         </div>
         """
-        
+
         return f"""
         {dashboard_tab}
         <div id="risks" class="tab-pane" role="tabpanel" aria-labelledby="risks-tab">

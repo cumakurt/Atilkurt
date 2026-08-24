@@ -21,7 +21,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         path_cards = []
         for risk in escalation_risks:
             def _esc(value):
@@ -30,12 +30,12 @@ class ACLSectionMixin:
             # Extract user from different risk formats
             escalation_path = risk.get('escalation_path', {})
             user = escalation_path.get('user', risk.get('affected_object', risk.get('source_user', 'Unknown')))
-            
+
             # Additional safety check: skip if user is already admin
             if users and groups and user != 'Unknown':
                 if self._is_user_already_admin_in_report(user, users, groups):
                     continue
-            
+
             esc_user = _esc(user)
             esc_title = _esc(risk.get('title', 'Privilege Escalation Path'))
             esc_description = _esc(risk.get('description', 'No description.'))
@@ -48,24 +48,24 @@ class ACLSectionMixin:
                     <h5 class="card-title">{esc_title}</h5>
                     <p class="text-muted"><strong>User</strong>:</strong> {esc_user}</p>
                     <p class="card-text">{esc_description}</p>
-                    
+
                     <div class="attack-path mt-3">
                         <strong>Escalation Path</strong>:<br>
                         <span class="path-step">{esc_user}</span>
                         <span class="arrow">→</span>
             """
-            
+
             # Add path steps
             direct_groups = escalation_path.get('direct_groups', [])
             for group_dn in direct_groups:
                 group_name = group_dn.split('CN=')[1].split(',')[0] if 'CN=' in group_dn else group_dn
                 path_html += f'<span class="path-step">{_esc(group_name)}</span> <span class="arrow">→</span> '
-            
+
             path_html += '<span class="path-step" style="background-color: #dc3545;">Privileged Access</span>'
-            
+
             path_html += """
                     </div>
-                    
+
                     <div class="mt-3">
                         <p><strong>Impact</strong>:</strong> """ + esc_impact + """</p>
                         <p><strong>Mitigation</strong>:</strong> """ + esc_mitigation + """</p>
@@ -73,9 +73,9 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-            
+
             path_cards.append(path_html)
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -110,7 +110,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         findings_cards = []
         for finding in misconfig_findings:
             def _esc(value):
@@ -126,7 +126,7 @@ class ACLSectionMixin:
             esc_recommendation = _esc(finding.get('recommendation', 'No recommendation provided.'))
             esc_cis = _esc(finding.get('cis_reference', 'N/A'))
             esc_ms = _esc(finding.get('microsoft_reference', 'N/A'))
-            
+
             finding_card = f"""
             <div class="card risk-card risk-{severity}">
                 <div class="card-body">
@@ -136,7 +136,7 @@ class ACLSectionMixin:
                     </div>
                     <p class="text-muted"><strong>Category:</strong> {esc_category}</p>
                     <p class="card-text">{esc_description}</p>
-                    
+
                     <div class="mt-3">
                         <p><strong>Recommendation:</strong> {esc_recommendation}</p>
                         <div class="mt-2">
@@ -150,7 +150,7 @@ class ACLSectionMixin:
             </div>
             """
             findings_cards.append(finding_card)
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -186,17 +186,17 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         risks_html = ""
         for risk in legacy_os_risks:
             severity = risk.get('severity', 'medium').lower()
             severity_badge = f'<span class="badge bg-{self._get_severity_badge_class(severity)}">{severity.upper()}</span>'
-            
+
             os_name = risk.get('operating_system', 'Unknown')
             is_eol = risk.get('is_eol', False)
             eol_date = risk.get('eol_date', 'N/A')
             days_since_eol = risk.get('days_since_eol')
-            
+
             risks_html += f"""
             <div class="card mb-3 risk-card risk-{severity}">
                 <div class="card-header">
@@ -221,7 +221,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -239,7 +239,6 @@ class ACLSectionMixin:
         Group ACL findings by (permission, trustee) so same permission + same trustee
         appears as one card with multiple affected objects. Reduces duplicate cards.
         """
-        from collections import defaultdict
         groups = defaultdict(list)
         for risk in acl_risks:
             perm = risk.get('permission') or risk.get('type', '')
@@ -247,7 +246,7 @@ class ACLSectionMixin:
             key = (perm, trustee)
             groups[key].append(risk)
         grouped = []
-        for (perm, trustee), risk_list in groups.items():
+        for risk_list in groups.values():
             base = risk_list[0].copy()
             affected_list = []
             seen = set()
@@ -271,7 +270,7 @@ class ACLSectionMixin:
     def _generate_acl_security_section(self, acl_risks, shadow_admin_risks, escalation_risks):
         """Generate comprehensive ACL Security Analysis section with grouped findings."""
         sections_html = ""
-        
+
         # ACL Risks Section (grouped by permission + trustee to avoid duplicate cards)
         if acl_risks:
             grouped_risks = self._group_acl_risks(acl_risks)
@@ -305,7 +304,7 @@ class ACLSectionMixin:
                 if len(affected_detail) > 15:
                     affected_chips += f'<span class="text-muted small">+{len(affected_detail) - 15} more</span>'
                 affected_block = f'<div class="mt-1">{affected_chips}</div>' if affected_detail else ''
-    
+
                 acl_risks_html += f"""
                 <div class="card mb-3 risk-card risk-{severity}">
                     <div class="card-body">
@@ -321,7 +320,7 @@ class ACLSectionMixin:
                     </div>
                 </div>
                 """
-            
+
             total_findings = len(acl_risks)
             sections_html += f"""
             <div class="card mb-4">
@@ -335,7 +334,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         # Shadow Admins Section
         if shadow_admin_risks:
             shadow_html = ""
@@ -345,18 +344,18 @@ class ACLSectionMixin:
                 severity = str(severity).lower()
                 severity_badge = f'<span class="badge bg-{self._get_severity_badge_class(severity)}">{severity.upper()}</span>'
                 display_name = risk.get('affected_object') or risk.get('user', 'Unknown')
-                
+
                 dangerous_perms = risk.get('dangerous_permissions', [])
                 perms_html = ""
                 for perm in dangerous_perms[:10]:
                     perm_name = perm.get('permission', 'Unknown')
                     obj_info = perm.get('object') or perm.get('object_type') or ''
                     perms_html += f"<li>{html_stdlib.escape(perm_name)}{(' on ' + html_stdlib.escape(obj_info)) if obj_info else ''}</li>"
-                
+
                 why_risky = risk.get('why_risky', 'Has dangerous permissions without being Domain Admin')
                 attack_scenario = risk.get('attack_scenario', '')
                 recommendation = risk.get('recommendation', '')
-                
+
                 shadow_html += f"""
                 <div class="card mb-3 risk-card risk-{severity}">
                     <div class="card-header">
@@ -371,7 +370,7 @@ class ACLSectionMixin:
                     </div>
                 </div>
                 """
-            
+
             sections_html += f"""
             <div class="card mb-4">
                 <div class="card-header bg-danger text-white">
@@ -383,7 +382,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         # ACL Escalation Paths Section
         if escalation_risks:
             escalation_html = ""
@@ -392,7 +391,7 @@ class ACLSectionMixin:
                 path_str = ' → '.join(path) if path else 'Unknown'
                 source = risk.get('affected_object') or risk.get('source_user', 'Unknown')
                 attack_scenario = risk.get('attack_scenario', '')
-                
+
                 escalation_html += f"""
                 <div class="card mb-3">
                     <div class="card-body">
@@ -404,7 +403,7 @@ class ACLSectionMixin:
                     </div>
                 </div>
                 """
-            
+
             sections_html += f"""
             <div class="card mb-4">
                 <div class="card-header">
@@ -416,7 +415,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         if not sections_html:
             return """
             <div class="card">
@@ -426,7 +425,7 @@ class ACLSectionMixin:
                 </div>
             </div>
             """
-        
+
         return f"""
         <div class="card">
             <div class="card-header bg-primary text-white">
@@ -442,97 +441,97 @@ class ACLSectionMixin:
     def _filter_admin_users_from_escalation_paths(self, escalation_risks, users, groups):
         """
         Filter out escalation paths for users who are already admins.
-        
+
         Args:
             escalation_risks: List of escalation risk dictionaries
             users: List of user dictionaries
             groups: List of group dictionaries
-            
+
         Returns:
             list: Filtered escalation risks
         """
         if not escalation_risks or not users or not groups:
             return escalation_risks
-        
+
         filtered_risks = []
         privileged_group_names = self._get_privileged_group_names(groups)
-        
+
         for risk in escalation_risks:
             # Extract username from different risk formats
             user = None
             escalation_path = risk.get('escalation_path', {})
             if escalation_path:
                 user = escalation_path.get('user')
-            
+
             if not user:
                 user = risk.get('affected_object') or risk.get('source_user')
-            
+
             if not user:
                 # If we can't identify the user, include the risk
                 filtered_risks.append(risk)
                 continue
-            
+
             # Check if user is already admin
             if self._is_user_already_admin_in_report(user, users, groups, privileged_group_names):
                 continue
-            
+
             filtered_risks.append(risk)
-        
+
         return filtered_risks
 
     def _is_user_already_admin_in_report(self, username, users, groups, privileged_group_names=None):
         """
         Check if user is already Domain Admin or Enterprise Admin.
-        
+
         Args:
             username: Username to check
             users: List of user dictionaries
             groups: List of group dictionaries
             privileged_group_names: Optional set of privileged group names
-            
+
         Returns:
             bool: True if user is already admin
         """
         if not username or not users:
             return False
-        
+
         # Find user in users list
         user_obj = None
         for u in users:
             if u.get('sAMAccountName') == username:
                 user_obj = u
                 break
-        
+
         if not user_obj:
             return False
-        
+
         # Check adminCount flag
         if user_obj.get('adminCount') == 1 or user_obj.get('adminCount') == '1':
             return True
-        
+
         # Check group memberships
         if not privileged_group_names:
             privileged_group_names = self._get_privileged_group_names(groups)
-        
+
         member_of = user_obj.get('memberOf', [])
         if isinstance(member_of, str):
             member_of = [member_of]
-        
+
         for group_dn in member_of:
             # Extract group name from DN
             group_name = self._extract_group_name_from_dn(group_dn)
             if group_name and group_name.lower() in privileged_group_names:
                 return True
-        
+
         return False
 
     def _get_privileged_group_names(self, groups):
         """
         Get set of privileged group names (lowercase).
-        
+
         Args:
             groups: List of group dictionaries
-            
+
         Returns:
             set: Set of privileged group names in lowercase
         """
@@ -541,33 +540,33 @@ class ACLSectionMixin:
             'account operators', 'backup operators', 'server operators',
             'print operators', 'administrators'
         }
-        
+
         # Also check actual group names
         for group in groups:
             group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
             if any(priv_name in group_name for priv_name in ['domain admin', 'enterprise admin', 'schema admin']):
                 privileged_groups.add(group_name)
-        
+
         return privileged_groups
 
     def _extract_group_name_from_dn(self, dn):
         """
         Extract group name from distinguished name.
-        
+
         Args:
             dn: Distinguished name string
-            
+
         Returns:
             str: Group name or None
         """
         if not dn:
             return None
-        
+
         try:
             if 'CN=' in dn:
                 cn_part = dn.split('CN=')[1].split(',')[0]
                 return cn_part.strip()
         except Exception:
             pass
-        
+
         return None

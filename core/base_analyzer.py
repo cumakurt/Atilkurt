@@ -5,30 +5,30 @@ Base class for all analyzers to reduce code duplication
 
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.types import RiskDict
-from core.constants import RiskTypes, Severity, MITRETechniques
+from core.constants import Severity
 
 logger = logging.getLogger(__name__)
 
 
 class BaseAnalyzer(ABC):
     """Base class for all risk analyzers."""
-    
+
     def __init__(self):
         """Initialize base analyzer."""
-        self.risks: List[RiskDict] = []
-    
+        self.risks: list[RiskDict] = []
+
     @abstractmethod
-    def analyze(self, *args, **kwargs) -> List[RiskDict]:
+    def analyze(self, *args, **kwargs) -> list[RiskDict]:
         """
         Analyze data for security risks.
-        
+
         Returns:
             List of risk dictionaries
         """
         pass
-    
+
     def _create_risk(
         self,
         risk_type: str,
@@ -46,7 +46,7 @@ class BaseAnalyzer(ABC):
     ) -> RiskDict:
         """
         Create a standardized risk dictionary.
-        
+
         Args:
             risk_type: Risk type identifier
             title: Risk title
@@ -60,7 +60,7 @@ class BaseAnalyzer(ABC):
             cis_reference: CIS Benchmark reference
             mitre_attack: MITRE ATT&CK technique ID
             **additional_fields: Additional fields to include in risk
-        
+
         Returns:
             Risk dictionary
         """
@@ -72,7 +72,7 @@ class BaseAnalyzer(ABC):
             'affected_object': affected_object,
             'object_type': object_type,
         }
-        
+
         # Add optional fields if provided
         if impact:
             risk['impact'] = impact
@@ -84,18 +84,18 @@ class BaseAnalyzer(ABC):
             risk['cis_reference'] = cis_reference
         if mitre_attack:
             risk['mitre_attack'] = mitre_attack
-        
+
         # Add any additional fields
         risk.update(additional_fields)
-        
+
         return risk
-    
+
     def _create_user_risk(
         self,
         risk_type: str,
         title: str,
         description: str,
-        user: Dict[str, Any],
+        user: dict[str, Any],
         severity: str = Severity.MEDIUM,
         impact: Optional[str] = None,
         attack_scenario: Optional[str] = None,
@@ -106,7 +106,7 @@ class BaseAnalyzer(ABC):
     ) -> RiskDict:
         """
         Create a user-related risk.
-        
+
         Args:
             risk_type: Risk type identifier
             title: Risk title
@@ -119,7 +119,7 @@ class BaseAnalyzer(ABC):
             cis_reference: CIS Benchmark reference
             mitre_attack: MITRE ATT&CK technique ID
             **additional_fields: Additional fields to include in risk
-        
+
         Returns:
             Risk dictionary
         """
@@ -138,13 +138,13 @@ class BaseAnalyzer(ABC):
             mitre_attack=mitre_attack,
             **additional_fields
         )
-    
+
     def _create_computer_risk(
         self,
         risk_type: str,
         title: str,
         description: str,
-        computer: Dict[str, Any],
+        computer: dict[str, Any],
         severity: str = Severity.MEDIUM,
         impact: Optional[str] = None,
         attack_scenario: Optional[str] = None,
@@ -155,7 +155,7 @@ class BaseAnalyzer(ABC):
     ) -> RiskDict:
         """
         Create a computer-related risk.
-        
+
         Args:
             risk_type: Risk type identifier
             title: Risk title
@@ -168,7 +168,7 @@ class BaseAnalyzer(ABC):
             cis_reference: CIS Benchmark reference
             mitre_attack: MITRE ATT&CK technique ID
             **additional_fields: Additional fields to include in risk
-        
+
         Returns:
             Risk dictionary
         """
@@ -187,13 +187,13 @@ class BaseAnalyzer(ABC):
             mitre_attack=mitre_attack,
             **additional_fields
         )
-    
+
     def _create_group_risk(
         self,
         risk_type: str,
         title: str,
         description: str,
-        group: Dict[str, Any],
+        group: dict[str, Any],
         severity: str = Severity.MEDIUM,
         impact: Optional[str] = None,
         attack_scenario: Optional[str] = None,
@@ -204,7 +204,7 @@ class BaseAnalyzer(ABC):
     ) -> RiskDict:
         """
         Create a group-related risk.
-        
+
         Args:
             risk_type: Risk type identifier
             title: Risk title
@@ -217,7 +217,7 @@ class BaseAnalyzer(ABC):
             cis_reference: CIS Benchmark reference
             mitre_attack: MITRE ATT&CK technique ID
             **additional_fields: Additional fields to include in risk
-        
+
         Returns:
             Risk dictionary
         """
@@ -236,15 +236,15 @@ class BaseAnalyzer(ABC):
             mitre_attack=mitre_attack,
             **additional_fields
         )
-    
+
     def _check_uac_flag(self, uac: Any, flag: int) -> bool:
         """
         Check if a UAC flag is set.
-        
+
         Args:
             uac: User Account Control value
             flag: Flag to check
-        
+
         Returns:
             True if flag is set, False otherwise
         """
@@ -253,8 +253,8 @@ class BaseAnalyzer(ABC):
                 uac = int(uac)
             except ValueError:
                 return False
-        
+
         if not isinstance(uac, int):
             return False
-        
+
         return bool(uac & flag)

@@ -4,8 +4,8 @@ Analyzes user data for security risks
 """
 
 import logging
-from typing import List, Dict, Any
-from datetime import datetime, timedelta
+from typing import Any
+from datetime import datetime
 from core.constants import UACFlags, RiskTypes, Severity, MITRETechniques, TimeThresholds
 from core.base_analyzer import BaseAnalyzer
 from core.types import UserDict, RiskDict
@@ -15,67 +15,67 @@ logger = logging.getLogger(__name__)
 
 class UserRiskAnalyzer(BaseAnalyzer):
     """Analyzes user objects for security risks."""
-    
+
     def __init__(self):
         """Initialize user risk analyzer."""
         super().__init__()
-    
-    def analyze(self, users: List[UserDict]) -> List[RiskDict]:
+
+    def analyze(self, users: list[UserDict]) -> list[RiskDict]:
         """
         Analyze users for security risks.
-        
+
         Args:
             users: List of user dictionaries
-        
+
         Returns:
             list: List of risk dictionaries
         """
         risks = []
-        
+
         for user in users:
             # Enrich user data with additional metadata
             self._enrich_user_data(user)
-            
+
             # Check password never expires
             risks.extend(self._check_password_never_expires(user))
-            
+
             # Check password not required
             risks.extend(self._check_password_not_required(user))
-            
+
             # Check Kerberos preauth disabled
             risks.extend(self._check_kerberos_preauth_disabled(user))
-            
+
             # Check SPN defined users
             risks.extend(self._check_spn_users(user))
-            
+
             # Check adminCount users
             risks.extend(self._check_admin_count(user))
-            
+
             # Check inactive privileged accounts
             risks.extend(self._check_inactive_privileged(user))
-            
+
             # Check disabled accounts
             risks.extend(self._check_disabled_account(user))
-            
+
             # Check locked accounts
             risks.extend(self._check_locked_account(user))
-            
+
             # Check service accounts with password never expires
             risks.extend(self._check_service_account_password_never_expires(user))
-            
+
             # Check recently created accounts
             risks.extend(self._check_recently_created_account(user))
-            
+
             # Check recently modified group membership
             risks.extend(self._check_recently_modified_group_membership(user))
-        
+
         logger.info(f"Found {len(risks)} user-related risks")
         return risks
-    
-    def _enrich_user_data(self, user: Dict[str, Any]):
+
+    def _enrich_user_data(self, user: dict[str, Any]):
         """
         Enrich user data with additional metadata for reporting.
-        
+
         Args:
             user: User dictionary to enrich
         """
@@ -90,17 +90,17 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     user['accountAgeDays'] = account_age_days
             except Exception:
                 pass
-        
+
         # Extract admin group memberships
         member_of = user.get('memberOf', []) or []
         if not isinstance(member_of, list):
             member_of = [member_of] if member_of else []
-        
+
         domain_admin_groups = []
         enterprise_admin_groups = []
         schema_admin_groups = []
         admin_groups = []
-        
+
         for group_dn in member_of:
             group_str = str(group_dn).upper()
             if 'DOMAIN ADMINS' in group_str:
@@ -111,12 +111,12 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 schema_admin_groups.append(group_dn)
             if any(priv in group_str for priv in ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'ADMINISTRATORS']):
                 admin_groups.append(group_dn)
-        
+
         user['domainAdminGroups'] = domain_admin_groups
         user['enterpriseAdminGroups'] = enterprise_admin_groups
         user['schemaAdminGroups'] = schema_admin_groups
         user['adminGroups'] = admin_groups
-        
+
         # Calculate admin privilege age (when adminCount was set or when joined admin group)
         # This is approximate - we use whenChanged as proxy for when admin privileges were granted
         when_changed = user.get('whenChanged')
@@ -130,17 +130,17 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     user['adminPrivilegeAgeDays'] = admin_privilege_age_days
             except Exception:
                 pass
-        
+
         # Check if service account (has SPN or name starts with service account patterns)
         spns = user.get('servicePrincipalName', []) or []
         if not isinstance(spns, list):
             spns = [spns] if spns else []
-        
+
         username = user.get('sAMAccountName', '') or ''
         username_upper = username.upper() if username else ''
         description = user.get('description') or ''
         description_upper = description.upper() if description else ''
-        
+
         is_service_account = (
             len(spns) > 0 or
             username_upper.startswith('SVC_') or
@@ -150,7 +150,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
             (description_upper and 'SERVICE' in description_upper)
         )
         user['isServiceAccount'] = is_service_account
-        
+
         # Calculate days since last logon
         last_logon = user.get('lastLogonTimestamp')
         if last_logon:
@@ -162,7 +162,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     user['daysSinceLastLogon'] = days_since_logon
             except Exception:
                 pass
-        
+
         # Check if account was created recently (10/30/60/90 days)
         if when_created:
             try:
@@ -176,7 +176,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     user['createdInLast90Days'] = days_ago <= 90
             except Exception:
                 pass
-        
+
         # Check if group membership was changed recently
         if when_changed:
             try:
@@ -190,18 +190,18 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     user['groupChangedInLast90Days'] = days_ago <= 90
             except Exception:
                 pass
-    
-    def _check_password_never_expires(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_password_never_expires(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user has password never expires flag."""
         risks = []
         uac = user.get('userAccountControl', 0)
-        
+
         if isinstance(uac, str):
             try:
                 uac = int(uac)
             except ValueError:
                 return risks
-        
+
         if self._check_uac_flag(uac, UACFlags.DONT_EXPIRE_PASSWORD):
             risks.append(self._create_user_risk(
                 risk_type=RiskTypes.USER_PASSWORD_NEVER_EXPIRES,
@@ -215,20 +215,20 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 cis_reference='CIS Benchmark recommends password expiration policies',
                 mitre_attack=MITRETechniques.VALID_ACCOUNTS
             ))
-        
+
         return risks
-    
-    def _check_password_not_required(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_password_not_required(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user has password not required flag (CRITICAL)."""
         risks = []
         uac = user.get('userAccountControl', 0)
-        
+
         if isinstance(uac, str):
             try:
                 uac = int(uac)
             except ValueError:
                 return risks
-        
+
         if self._check_uac_flag(uac, UACFlags.PASSWD_NOTREQD):
             risks.append(self._create_user_risk(
                 risk_type=RiskTypes.PASSWORD_NOT_REQUIRED,
@@ -242,20 +242,20 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 cis_reference='CIS Benchmark prohibits password not required flag',
                 mitre_attack=MITRETechniques.VALID_ACCOUNTS
             ))
-        
+
         return risks
-    
-    def _check_kerberos_preauth_disabled(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_kerberos_preauth_disabled(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if Kerberos preauthentication is disabled."""
         risks = []
         uac = user.get('userAccountControl', 0)
-        
+
         if isinstance(uac, str):
             try:
                 uac = int(uac)
             except ValueError:
                 return risks
-        
+
         if uac & UACFlags.DONT_REQUIRE_PREAUTH:
             risks.append({
                 'type': RiskTypes.KERBEROS_PREAUTH_DISABLED,
@@ -270,16 +270,16 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark requires Kerberos preauthentication for all accounts',
                 'mitre_attack': 'T1558.003 - Steal or Forge Kerberos Tickets: Kerberoasting'
             })
-        
+
         return risks
-    
-    def _check_spn_users(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_spn_users(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user has Service Principal Names defined."""
         risks = []
         spns = user.get('servicePrincipalName') or []
         if not isinstance(spns, list):
             spns = [spns] if spns else []
-        
+
         if spns and len(spns) > 0:
             risks.append({
                 'type': RiskTypes.USER_WITH_SPN,
@@ -295,21 +295,21 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends using managed service accounts for services',
                 'mitre_attack': 'T1558.003 - Steal or Forge Kerberos Tickets: Kerberoasting'
             })
-        
+
         return risks
-    
-    def _check_admin_count(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_admin_count(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user has adminCount flag set."""
         risks = []
         admin_count = user.get('adminCount')
-        
+
         if admin_count == 1 or admin_count == '1':
             groups = user.get('memberOf') or []
             if not isinstance(groups, list):
                 groups = [groups] if groups else []
-            privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in 
+            privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in
                 ['Domain Admins', 'Enterprise Admins', 'Administrators', 'Account Operators'])]
-            
+
             risks.append({
                 'type': RiskTypes.ADMIN_COUNT_SET,
                 'severity': Severity.HIGH,
@@ -325,36 +325,36 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends regular review of administrative accounts',
                 'mitre_attack': 'T1078 - Valid Accounts'
             })
-        
+
         return risks
-    
-    def _check_inactive_privileged(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_inactive_privileged(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check for inactive privileged accounts."""
         risks = []
-        
+
         # Check if user has privileged group membership
         groups = user.get('memberOf') or []
         if not isinstance(groups, list):
             groups = [groups] if groups else []
-        privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in 
-            ['Domain Admins', 'Enterprise Admins', 'Administrators', 'Account Operators', 
+        privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in
+            ['Domain Admins', 'Enterprise Admins', 'Administrators', 'Account Operators',
              'Backup Operators', 'Server Operators'])]
-        
+
         if not privileged_groups:
             return risks
-        
+
         # Check last logon
         last_logon = user.get('lastLogonTimestamp')
         if not last_logon:
             return risks
-        
+
         # Check if last logon is more than threshold days ago
         if isinstance(last_logon, str):
             try:
                 last_logon = datetime.fromisoformat(last_logon.replace('Z', '+00:00'))
             except Exception:
                 return risks
-        
+
         if isinstance(last_logon, datetime):
             days_inactive = (datetime.now() - last_logon.replace(tzinfo=None)).days
             if days_inactive > TimeThresholds.INACTIVE_ACCOUNT_THRESHOLD:
@@ -373,13 +373,13 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     'cis_reference': 'CIS Benchmark recommends disabling inactive accounts',
                     'mitre_attack': 'T1078 - Valid Accounts'
                 })
-        
+
         return risks
-    
-    def _check_disabled_account(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_disabled_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user account is disabled."""
         risks = []
-        
+
         if user.get('isDisabled'):
             risks.append({
                 'type': RiskTypes.DISABLED_USER_ACCOUNT,
@@ -394,13 +394,13 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends removing unused accounts',
                 'mitre_attack': 'T1078 - Valid Accounts'
             })
-        
+
         return risks
-    
-    def _check_locked_account(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_locked_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user account is locked."""
         risks = []
-        
+
         if user.get('isLocked'):
             risks.append({
                 'type': RiskTypes.LOCKED_USER_ACCOUNT,
@@ -415,24 +415,24 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends monitoring account lockouts',
                 'mitre_attack': 'T1110 - Brute Force'
             })
-        
+
         return risks
-    
-    def _check_service_account_password_never_expires(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_service_account_password_never_expires(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if service account has password never expires flag."""
         risks = []
-        
+
         # Check if this is a service account
         if not user.get('isServiceAccount'):
             return risks
-        
+
         uac = user.get('userAccountControl', 0)
         if isinstance(uac, str):
             try:
                 uac = int(uac)
             except ValueError:
                 return risks
-        
+
         if uac & UACFlags.DONT_EXPIRE_PASSWORD:
             risks.append({
                 'type': RiskTypes.SERVICE_ACCOUNT_PASSWORD_NEVER_EXPIRES,
@@ -448,13 +448,13 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends using managed service accounts',
                 'mitre_attack': 'T1078 - Valid Accounts'
             })
-        
+
         return risks
-    
-    def _check_recently_created_account(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_recently_created_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if account was created recently (potential security concern)."""
         risks = []
-        
+
         # Only flag if account was created in last threshold days and has admin privileges
         if user.get('createdInLast30Days') and (user.get('adminCount') == 1 or user.get('adminCount') == '1' or user.get('adminGroups')):
             risks.append({
@@ -472,13 +472,13 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 'cis_reference': 'CIS Benchmark recommends monitoring account creation',
                 'mitre_attack': 'T1136 - Create Account'
             })
-        
+
         return risks
-    
-    def _check_recently_modified_group_membership(self, user: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _check_recently_modified_group_membership(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if group membership was modified recently (potential security concern)."""
         risks = []
-        
+
         # Only flag if group membership was changed in last 30 days and user has admin privileges
         if user.get('groupChangedInLast30Days') and (user.get('adminCount') == 1 or user.get('adminCount') == '1' or user.get('adminGroups')):
             days_ago = None
@@ -490,7 +490,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 days_ago = 'last 60 days'
             elif user.get('groupChangedInLast90Days'):
                 days_ago = 'last 90 days'
-            
+
             if days_ago:
                 risks.append({
                     'type': RiskTypes.RECENTLY_MODIFIED_GROUP_MEMBERSHIP,
@@ -506,5 +506,5 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     'cis_reference': 'CIS Benchmark recommends monitoring group membership changes',
                     'mitre_attack': 'T1078 - Valid Accounts'
                 })
-        
+
         return risks

@@ -5,7 +5,7 @@ Compares current scan results with previous baseline to detect drift
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class BaselineComparator:
     """Compares current scan with baseline for drift detection."""
 
-    def load_baseline(self, baseline_path: str) -> Optional[Dict[str, Any]]:
+    def load_baseline(self, baseline_path: str) -> Optional[dict[str, Any]]:
         """
         Load baseline from JSON file (from --json-export or checkpoint).
         """
@@ -24,7 +24,7 @@ class BaselineComparator:
             logger.error(f"Baseline file not found: {baseline_path}")
             return None
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             return data
         except Exception as e:
@@ -33,14 +33,14 @@ class BaselineComparator:
 
     def compare(
         self,
-        current_risks: List[Dict[str, Any]],
-        baseline_risks: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        current_risks: list[dict[str, Any]],
+        baseline_risks: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """
         Compare current risks with baseline.
         Returns new risks, resolved risks, and summary.
         """
-        def _risk_key(r: Dict) -> str:
+        def _risk_key(r: dict) -> str:
             return f"{r.get('type', '')}|{r.get('affected_object', '')}"
 
         baseline_keys = {_risk_key(r) for r in baseline_risks}
@@ -67,9 +67,9 @@ class BaselineComparator:
 
     def compare_full(
         self,
-        current_data: Dict[str, Any],
+        current_data: dict[str, Any],
         baseline_path: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Full comparison using baseline file.
         current_data should have 'risks' key from main scan.

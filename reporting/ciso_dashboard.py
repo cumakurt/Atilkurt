@@ -56,11 +56,11 @@ ANALYSIS_DISPLAY_LABELS = {
 
 class CISODashboardGenerator:
     """Generates CISO-focused executive dashboard."""
-    
+
     def __init__(self):
         """Initialize CISO dashboard generator."""
         pass
-    
+
     def generate_dashboard_data(self, risks, users, computers, groups, domain_score, executive_summary,
                                  analysis_summary_counts=None):
         """
@@ -129,15 +129,15 @@ class CISODashboardGenerator:
             'admin_group_stats': admin_group_stats,
             'account_status_stats': account_status_stats
         }
-    
+
     def _calculate_top_kpis(self, risks, users, computers, groups):
         """Calculate top KPIs for CISO dashboard."""
         # Get severity from 'severity' or 'severity_level' field
-        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or 
+        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
                                                r.get('severity', '').lower() == 'critical')]
-        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or 
+        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or
                                           r.get('severity', '').lower() == 'high')]
-        
+
         # Count privileged accounts
         privileged_accounts = 0
         for user in users:
@@ -149,14 +149,14 @@ class CISODashboardGenerator:
                     member_of = [member_of] if member_of else []
                 for group_dn in member_of:
                     group_name = self._extract_group_name(group_dn)
-                    if group_name and any(priv in group_name.upper() for priv in 
+                    if group_name and any(priv in group_name.upper() for priv in
                         ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
                         privileged_accounts += 1
                         break
-        
+
         # Count delegation risks
         delegation_risks = len([r for r in risks if 'delegation' in r.get('type', '').lower()])
-        
+
         return {
             'overall_score': {
                 'value': 0,  # Will be set from domain_score
@@ -189,7 +189,7 @@ class CISODashboardGenerator:
                 'trend': 'stable'
             }
         }
-    
+
     def _calculate_risk_distribution(self, risks):
         """Calculate risk distribution by severity."""
         distribution = {
@@ -198,7 +198,7 @@ class CISODashboardGenerator:
             'Medium': 0,
             'Low': 0
         }
-        
+
         for risk in risks:
             # Try both 'severity_level' and 'severity' fields
             severity = risk.get('severity_level') or risk.get('severity', 'Medium')
@@ -209,9 +209,9 @@ class CISODashboardGenerator:
             else:
                 # Default to Medium if unknown
                 distribution['Medium'] += 1
-        
+
         return distribution
-    
+
     def _calculate_risk_by_category(self, risks):
         """Calculate risks by category."""
         categories = {
@@ -229,10 +229,10 @@ class CISODashboardGenerator:
             'LAPS': 0,
             'Vulnerabilities': 0
         }
-        
+
         for risk in risks:
             risk_type = risk.get('type', '').lower()
-            
+
             # Categorize risks
             if 'dcsync' in risk_type:
                 categories['DCSync'] += 1
@@ -260,13 +260,13 @@ class CISODashboardGenerator:
                 categories['ACL'] += 1
             elif 'eol' in risk_type or 'operating_system' in risk_type:
                 categories['Legacy Systems'] += 1
-        
+
         return categories
-    
+
     def _calculate_password_statistics(self, users):
         """Calculate password-related statistics."""
         from datetime import datetime
-        
+
         stats = {
             'never_changed': 0,
             'over_90_days': 0,
@@ -276,14 +276,14 @@ class CISODashboardGenerator:
             'total_users': len(users),
             'details': []
         }
-        
+
         now = datetime.now()
-        
+
         for user in users:
             pwd_last_set = user.get('pwdLastSet')
             when_created = user.get('whenCreated')
             username = user.get('sAMAccountName', 'Unknown')
-            
+
             if not pwd_last_set:
                 stats['never_changed'] += 1
                 stats['details'].append({
@@ -292,7 +292,7 @@ class CISODashboardGenerator:
                     'days': None
                 })
                 continue
-            
+
             # Convert timestamp to datetime if needed
             pwd_date = None
             if isinstance(pwd_last_set, datetime):
@@ -312,17 +312,17 @@ class CISODashboardGenerator:
                             continue
             else:
                 continue
-            
+
             if not pwd_date:
                 continue
-            
+
             # Remove timezone for calculation
             if pwd_date.tzinfo:
                 pwd_date = pwd_date.replace(tzinfo=None)
-            
+
             # Calculate age
             age_days = (now - pwd_date).days
-            
+
             # Check if same as creation date
             created_date = None
             if when_created:
@@ -339,7 +339,7 @@ class CISODashboardGenerator:
                                 created_date = datetime.strptime(when_created, '%Y-%m-%d %H:%M:%S.%f')
                             except (ValueError, TypeError):
                                 created_date = None
-                
+
                 if created_date:
                     if created_date.tzinfo:
                         created_date = created_date.replace(tzinfo=None)
@@ -352,7 +352,7 @@ class CISODashboardGenerator:
                             'days': age_days
                         })
                         continue
-            
+
             # Count by age
             if age_days > 365:
                 stats['over_365_days'] += 1
@@ -375,27 +375,27 @@ class CISODashboardGenerator:
                     'issue': f'Password not changed for {age_days} days',
                     'days': age_days
                 })
-        
+
         return stats
-    
+
     def _get_top_risky_objects(self, risks):
         """Get top 10 riskiest objects."""
         object_scores = defaultdict(lambda: {'score': 0, 'count': 0, 'type': 'unknown'})
-        
+
         for risk in risks:
             affected_object = risk.get('affected_object')
             if affected_object:
                 object_scores[affected_object]['score'] += risk.get('final_score', risk.get('score', 0))
                 object_scores[affected_object]['count'] += 1
                 object_scores[affected_object]['type'] = risk.get('object_type', 'unknown')
-        
+
         # Sort by score
         sorted_objects = sorted(
             object_scores.items(),
             key=lambda x: x[1]['score'],
             reverse=True
         )[:10]
-        
+
         return [
             {
                 'name': obj[0],
@@ -405,7 +405,7 @@ class CISODashboardGenerator:
             }
             for obj in sorted_objects
         ]
-    
+
     def _build_all_analyses_summary(self, analysis_summary_counts):
         """Build list of {label, count, status} for every analysis category."""
         result = []
@@ -448,7 +448,7 @@ class CISODashboardGenerator:
         total_findings = 0
         categories_with_findings = 0
         if analysis_summary_counts:
-            for k, v in analysis_summary_counts.items():
+            for v in analysis_summary_counts.values():
                 if v and isinstance(v, (int, float)):
                     total_findings += int(v)
                     categories_with_findings += 1
@@ -508,7 +508,7 @@ class CISODashboardGenerator:
             )
 
         return " ".join(summary_parts)
-    
+
     def _generate_action_priorities(self, risks, executive_summary):
         """Generate action priorities with timelines."""
         priorities = {
@@ -516,7 +516,7 @@ class CISODashboardGenerator:
             'medium_term': [],  # 30-90 days
             'long_term': []  # 90+ days
         }
-        
+
         # Quick wins from executive summary
         quick_wins = executive_summary.get('quick_wins', []) if executive_summary else []
         for win in quick_wins[:5]:
@@ -528,7 +528,7 @@ class CISODashboardGenerator:
                 'description': win.get('description', ''),
                 'estimated_risk_reduction': self._estimate_risk_reduction(win, risks)
             })
-        
+
         # Medium-term from executive summary
         long_term = executive_summary.get('long_term_improvements', []) if executive_summary else []
         for improvement in long_term:
@@ -549,14 +549,14 @@ class CISODashboardGenerator:
                     'description': improvement.get('description', ''),
                     'estimated_risk_reduction': self._estimate_risk_reduction(improvement, risks)
                 })
-        
+
         return priorities
-    
+
     def _estimate_risk_reduction(self, action_item, risks):
         """Estimate risk reduction percentage for an action."""
         # Simplified estimation based on action type
         action = action_item.get('action', '').lower()
-        
+
         if 'password' in action:
             # Password-related fixes typically reduce 15-25% of risks
             return "15-25%"
@@ -571,7 +571,7 @@ class CISODashboardGenerator:
             return "5-15%"
         else:
             return "10-20%"
-    
+
     def _extract_group_name(self, group_dn):
         """Extract group name from DN."""
         if not group_dn:
@@ -583,11 +583,10 @@ class CISODashboardGenerator:
             except Exception:
                 return None
         return group_dn
-    
+
     def _calculate_account_activity_statistics(self, users):
         """Calculate account activity statistics (recently created, group changes)."""
-        from datetime import datetime
-        
+
         stats = {
             'recently_created': {
                 'last_10_days': 0,
@@ -604,10 +603,10 @@ class CISODashboardGenerator:
                 'details': []
             }
         }
-        
+
         for user in users:
             username = user.get('sAMAccountName', 'Unknown')
-            
+
             # Check recently created accounts
             if user.get('createdInLast10Days'):
                 stats['recently_created']['last_10_days'] += 1
@@ -637,7 +636,7 @@ class CISODashboardGenerator:
                     'days_ago': user.get('accountAgeDays', 0),
                     'period': '90 days'
                 })
-            
+
             # Check recently modified group membership
             if user.get('groupChangedInLast10Days'):
                 stats['recently_group_changed']['last_10_days'] += 1
@@ -663,13 +662,13 @@ class CISODashboardGenerator:
                     'username': username,
                     'period': '90 days'
                 })
-        
+
         return stats
-    
+
     def _calculate_admin_group_statistics(self, users):
         """Calculate admin group membership statistics."""
         from datetime import datetime
-        
+
         stats = {
             'domain_admins': {
                 'count': 0,
@@ -685,11 +684,11 @@ class CISODashboardGenerator:
             },
             'total_privileged': 0
         }
-        
+
         for user in users:
             username = user.get('sAMAccountName', 'Unknown')
             is_privileged = False
-            
+
             # Format account creation time
             account_created_time = None
             account_created_display = 'N/A'
@@ -706,7 +705,7 @@ class CISODashboardGenerator:
                         account_created_display = account_created_time.strftime('%Y-%m-%d %H:%M:%S')
                 except Exception:
                     pass
-            
+
             # Format group membership change time (proxy using whenChanged)
             group_added_time = None
             group_added_display = 'N/A'
@@ -723,7 +722,7 @@ class CISODashboardGenerator:
                         group_added_display = group_added_time.strftime('%Y-%m-%d %H:%M:%S')
                 except Exception:
                     pass
-            
+
             # Check Domain Admin groups
             domain_admin_groups = user.get('domainAdminGroups', [])
             if domain_admin_groups:
@@ -737,7 +736,7 @@ class CISODashboardGenerator:
                     'groupAddedRaw': group_added_time.isoformat() if group_added_time else None
                 })
                 is_privileged = True
-            
+
             # Check Enterprise Admin groups
             enterprise_admin_groups = user.get('enterpriseAdminGroups', [])
             if enterprise_admin_groups:
@@ -751,7 +750,7 @@ class CISODashboardGenerator:
                     'groupAddedRaw': group_added_time.isoformat() if group_added_time else None
                 })
                 is_privileged = True
-            
+
             # Check Schema Admin groups
             schema_admin_groups = user.get('schemaAdminGroups', [])
             if schema_admin_groups:
@@ -765,12 +764,12 @@ class CISODashboardGenerator:
                     'groupAddedRaw': group_added_time.isoformat() if group_added_time else None
                 })
                 is_privileged = True
-            
+
             if is_privileged:
                 stats['total_privileged'] += 1
-        
+
         return stats
-    
+
     def _calculate_account_status_statistics(self, users):
         """Calculate account status statistics (disabled, locked)."""
         stats = {
@@ -787,14 +786,14 @@ class CISODashboardGenerator:
                 'accounts': []
             }
         }
-        
+
         from datetime import datetime
-        
+
         for user in users:
             username = user.get('sAMAccountName', 'Unknown')
             is_disabled = user.get('isDisabled', False)
             is_locked = user.get('isLocked', False)
-            
+
             # Format disabled time (use whenChanged as proxy for when disabled)
             disabled_time = None
             disabled_time_display = 'N/A'
@@ -812,7 +811,7 @@ class CISODashboardGenerator:
                             disabled_time_display = disabled_time.strftime('%Y-%m-%d %H:%M:%S')
                     except Exception:
                         pass
-            
+
             # Format locked time (use lockoutTime)
             locked_time = None
             locked_time_display = 'N/A'
@@ -830,7 +829,7 @@ class CISODashboardGenerator:
                             locked_time_display = locked_time.strftime('%Y-%m-%d %H:%M:%S')
                     except Exception:
                         pass
-            
+
             if is_disabled:
                 stats['disabled']['count'] += 1
                 stats['disabled']['accounts'].append({
@@ -839,7 +838,7 @@ class CISODashboardGenerator:
                     'disabledTime': disabled_time_display,
                     'disabledTimeRaw': disabled_time.isoformat() if disabled_time else None
                 })
-            
+
             if is_locked:
                 stats['locked']['count'] += 1
                 stats['locked']['accounts'].append({
@@ -848,7 +847,7 @@ class CISODashboardGenerator:
                     'lockedTime': locked_time_display,
                     'lockedTimeRaw': locked_time.isoformat() if locked_time else None
                 })
-            
+
             if is_disabled and is_locked:
                 stats['disabled_and_locked']['count'] += 1
                 stats['disabled_and_locked']['accounts'].append({
@@ -857,5 +856,5 @@ class CISODashboardGenerator:
                     'disabledTime': disabled_time_display,
                     'lockedTime': locked_time_display
                 })
-        
+
         return stats

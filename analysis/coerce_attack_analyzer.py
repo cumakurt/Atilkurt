@@ -8,8 +8,8 @@ Identifies NTLM authentication coercion vectors beyond PetitPotam:
 """
 
 import logging
-from typing import List, Dict, Any
-from core.constants import RiskTypes, Severity, MITRETechniques
+from typing import Any
+from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,8 @@ class CoerceAttackAnalyzer:
         self.ldap = ldap_connection
 
     def analyze(
-        self, computers: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, computers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Analyze coercion attack surface.
 
@@ -38,7 +38,7 @@ class CoerceAttackAnalyzer:
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -62,16 +62,16 @@ class CoerceAttackAnalyzer:
     # ── Print Spooler / SpoolSample ─────────────────────────────────────────
 
     def _check_spooler(
-        self, computers: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, computers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Detect servers/DCs likely running Print Spooler.
         Heuristic: all Windows Servers have spooler enabled by default.
         DCs are the highest-value targets.
         """
-        risks: List[Dict[str, Any]] = []
-        dc_targets: List[str] = []
-        server_targets: List[str] = []
+        risks: list[dict[str, Any]] = []
+        dc_targets: list[str] = []
+        server_targets: list[str] = []
 
         for comp in computers:
             os_name = str(comp.get('operatingSystem', '') or '').upper()
@@ -132,13 +132,13 @@ class CoerceAttackAnalyzer:
     def _check_dfs(
         self,
         base_dn: str,
-        computers: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        computers: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Check for DFS Namespace servers (DFSCoerce target).
         Heuristic: search for fTDfs or DFSR objects in AD.
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             # Check for DFS-related objects
@@ -188,15 +188,15 @@ class CoerceAttackAnalyzer:
     # ── WebClient / WebDAV ──────────────────────────────────────────────────
 
     def _check_webclient(
-        self, computers: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, computers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """
         Identify workstations likely running WebClient service.
         WebClient is enabled by default on Windows 10/11 desktops,
         enabling HTTP-based NTLM relay (no SMB signing requirement).
         """
-        risks: List[Dict[str, Any]] = []
-        workstations: List[str] = []
+        risks: list[dict[str, Any]] = []
+        workstations: list[str] = []
 
         for comp in computers:
             os_name = str(comp.get('operatingSystem', '') or '').upper()

@@ -8,7 +8,7 @@ ReplicationMetadataAnalyzer
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from datetime import datetime, timedelta
 
 
@@ -116,6 +116,18 @@ class TestPasswordSprayRiskAnalyzer(unittest.TestCase):
         ]
         risks = self.analyzer.analyze(users)
         self.assertIsInstance(risks, list)
+
+    def test_short_nonzero_lockout_duration_is_reported(self):
+        """A short automatic unlock window should remain visible as a risk."""
+        self.ldap.search.return_value = [{
+            'lockoutThreshold': 5,
+            'lockoutDuration': -5 * 60 * 10_000_000,
+            'lockOutObservationWindow': -30 * 60 * 10_000_000,
+        }]
+
+        risks = self.analyzer._analyze_lockout_policy(self.ldap.base_dn)
+
+        self.assertTrue(any(risk.get('lockout_duration_minutes') == 5 for risk in risks))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

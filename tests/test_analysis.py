@@ -7,13 +7,9 @@ import unittest
 from analysis.user_risks import UserRiskAnalyzer
 from analysis.computer_risks import ComputerRiskAnalyzer
 from analysis.group_risks import GroupRiskAnalyzer
-from analysis.kerberos_delegation import KerberosDelegationAnalyzer
 from analysis.kerberoasting_detector import KerberoastingDetector
-from analysis.service_account_analyzer import ServiceAccountAnalyzer
 from analysis.legacy_os_analyzer import LegacyOSAnalyzer
-from analysis.gpo_abuse_analyzer import GPOAbuseAnalyzer
 from analysis.exploitability_scorer import ExploitabilityScorer
-from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
 
 
 class TestUserRiskAnalyzer(unittest.TestCase):
@@ -58,10 +54,7 @@ class TestUserRiskAnalyzer(unittest.TestCase):
         }]
         risks = self.analyzer.analyze(users)
         self.assertIsInstance(risks, list)
-        # Should find risks for password never expiring
-        risk_types = [r.get('type', '') for r in risks]
-        # May vary by implementation, but we expect at least something
-        self.assertTrue(len(risks) >= 0)
+        self.assertTrue(any(r.get('type') == 'user_password_never_expires' for r in risks))
 
 
 class TestComputerRiskAnalyzer(unittest.TestCase):
@@ -91,6 +84,18 @@ class TestComputerRiskAnalyzer(unittest.TestCase):
         }]
         risks = self.analyzer.analyze(computers)
         self.assertIsInstance(risks, list)
+
+    def test_longest_eol_os_name_matches_first(self):
+        """Windows 8.1 must not be classified as Windows 8."""
+        risks = self.analyzer.analyze([{
+            'name': 'WORKSTATION01',
+            'operatingSystem': 'Windows 8.1 Enterprise',
+            'lastLogonTimestamp': None,
+            'whenCreated': None,
+        }])
+
+        eol_risk = next(risk for risk in risks if risk['type'] == 'eol_operating_system')
+        self.assertEqual(eol_risk['eol_date'], '2023-01-10')
 
 
 class TestGroupRiskAnalyzer(unittest.TestCase):
@@ -180,6 +185,16 @@ class TestLegacyOSAnalyzer(unittest.TestCase):
         }]
         result = self.analyzer.analyze(computers)
         self.assertIsInstance(result, dict)
+
+    def test_longest_eol_os_name_matches_first(self):
+        """Windows 8.1 must use its own EOL date."""
+        result = self.analyzer.analyze([{
+            'name': 'WORKSTATION01',
+            'operatingSystem': 'Windows 8.1 Enterprise',
+            'operatingSystemVersion': '6.3',
+        }])
+
+        self.assertEqual(result['legacy_computers'][0]['legacyOSInfo']['eol_date'], '2023-01-10')
 
 
 class TestExploitabilityScorer(unittest.TestCase):

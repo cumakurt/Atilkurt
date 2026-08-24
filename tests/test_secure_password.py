@@ -3,7 +3,6 @@ Tests for Secure Password Manager
 Validates memory clearing, deprecation warnings, and input handling
 """
 
-import sys
 import unittest
 import warnings
 from core.secure_password import SecurePasswordManager
@@ -48,6 +47,31 @@ class TestSecurePasswordManager(unittest.TestCase):
         pm = SecurePasswordManager()
         pm.clear_password()  # Should not raise
         self.assertIsNone(pm.get_password())
+
+    def test_clear_password_does_not_mutate_shared_string(self):
+        """Clearing the manager must never mutate an immutable source string."""
+        shared_password = "shared-password-漢字"
+        same_reference = shared_password
+        pm = SecurePasswordManager()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pm.get_password_from_arg(shared_password)
+
+        pm.clear_password()
+
+        self.assertEqual(shared_password, "shared-password-漢字")
+        self.assertEqual(same_reference, "shared-password-漢字")
+
+    def test_set_password_replaces_and_clears_owned_buffer(self):
+        """Replacing a password clears the previous owned byte buffer."""
+        pm = SecurePasswordManager()
+        pm.set_password("first")
+        previous_buffer = pm._password_buffer
+
+        pm.set_password("second")
+
+        self.assertEqual(previous_buffer, bytearray(b"\x00" * 5))
+        self.assertEqual(pm.get_password(), "second")
 
     def test_get_password_returns_stored(self):
         """get_password() returns stored value."""

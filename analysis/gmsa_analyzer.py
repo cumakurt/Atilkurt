@@ -5,7 +5,7 @@ and over-permissive password retrieval ACLs.
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any
 from core.constants import RiskTypes, Severity, MITRETechniques, ServiceAccountPatterns
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,8 @@ class GMSAAnalyzer:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze gMSA and service account security posture.
 
@@ -36,7 +36,7 @@ class GMSAAnalyzer:
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -60,7 +60,7 @@ class GMSAAnalyzer:
 
     # ── gMSA Retrieval ──────────────────────────────────────────────────────
 
-    def _get_gmsa_accounts(self, base_dn: str) -> List[Dict[str, Any]]:
+    def _get_gmsa_accounts(self, base_dn: str) -> list[dict[str, Any]]:
         """Retrieve all gMSA accounts from the domain."""
         try:
             results = self.ldap.search(
@@ -83,10 +83,10 @@ class GMSAAnalyzer:
     # ── gMSA Configuration Checks ──────────────────────────────────────────
 
     def _check_gmsa_config(
-        self, gmsa: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, gmsa: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Check a single gMSA account for misconfigurations."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         sam = gmsa.get('sAMAccountName', '?')
 
         # Check if gMSA is disabled
@@ -160,16 +160,16 @@ class GMSAAnalyzer:
 
     def _find_legacy_service_accounts(
         self,
-        users: List[Dict[str, Any]],
-        gmsa_accounts: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        gmsa_accounts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Identify traditional service accounts that should migrate to gMSA."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         gmsa_names = {
             g.get('sAMAccountName', '').lower() for g in gmsa_accounts
         }
 
-        legacy_svc: List[str] = []
+        legacy_svc: list[str] = []
 
         for user in users:
             sam = user.get('sAMAccountName', '')

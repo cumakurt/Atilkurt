@@ -12,7 +12,7 @@ Extends the existing certificate_analyzer.py with additional ESC vectors:
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class ADCSExtendedAnalyzer:
         self.ldap = ldap_connection
 
     @staticmethod
-    def _as_list(value: Any) -> List[Any]:
+    def _as_list(value: Any) -> list[Any]:
         """Normalize LDAP attribute values to a list."""
         if value is None:
             return []
@@ -51,8 +51,8 @@ class ADCSExtendedAnalyzer:
         except (TypeError, ValueError):
             return None
 
-    def analyze(self) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def analyze(self) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         try:
             config_dn = self._get_config_dn()
             if not config_dn:
@@ -103,7 +103,7 @@ class ADCSExtendedAnalyzer:
         dc_parts = [p for p in base_dn.split(',') if p.upper().startswith('DC=')]
         return 'CN=Configuration,' + ','.join(dc_parts) if dc_parts else None
 
-    def _get_enrollment_services(self, pki_dn: str) -> List[Dict[str, Any]]:
+    def _get_enrollment_services(self, pki_dn: str) -> list[dict[str, Any]]:
         try:
             results = self.ldap.search(
                 search_base=f"CN=Enrollment Services,{pki_dn}",
@@ -119,7 +119,7 @@ class ADCSExtendedAnalyzer:
             logger.debug(f"Could not get enrollment services: {e}")
             return []
 
-    def _get_certificate_templates(self, pki_dn: str) -> List[Dict[str, Any]]:
+    def _get_certificate_templates(self, pki_dn: str) -> list[dict[str, Any]]:
         try:
             results = self.ldap.search(
                 search_base=f"CN=Certificate Templates,{pki_dn}",
@@ -139,8 +139,8 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC5 — CA ACL abuse ─────────────────────────────────────────────────
 
-    def _check_esc5(self, cas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def _check_esc5(self, cas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         for ca in cas:
             ca_name = ca.get('cn', '?')
             # We flag the existence of CAs and recommend ACL review
@@ -167,8 +167,8 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC7 — CA Officer abuse ─────────────────────────────────────────────
 
-    def _check_esc7(self, cas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def _check_esc7(self, cas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         for ca in cas:
             ca_name = ca.get('cn', '?')
             risks.append({
@@ -192,8 +192,8 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC9 — CT_FLAG_NO_SECURITY_EXTENSION ────────────────────────────────
 
-    def _check_esc9(self, templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def _check_esc9(self, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         for tmpl in templates:
             name = tmpl.get('cn') or tmpl.get('displayName', '?')
             enroll_flag = self._as_int(tmpl.get('msPKI-Enrollment-Flag'))
@@ -224,8 +224,8 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC11 — ICertPassage RPC relay ──────────────────────────────────────
 
-    def _check_esc11(self, cas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def _check_esc11(self, cas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         for ca in cas:
             ca_name = ca.get('cn', '?')
             host = ca.get('dNSHostName', '?')
@@ -252,8 +252,8 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC13 — OID Group Link ──────────────────────────────────────────────
 
-    def _check_esc13(self, templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        risks: List[Dict[str, Any]] = []
+    def _check_esc13(self, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
         for tmpl in templates:
             name = tmpl.get('cn') or tmpl.get('displayName', '?')
             app_policies = self._as_list(tmpl.get('msPKI-Certificate-Application-Policy'))
@@ -294,9 +294,9 @@ class ADCSExtendedAnalyzer:
 
     # ── Certifried (CVE-2022-26923) ─────────────────────────────────────────
 
-    def _check_certifried(self) -> List[Dict[str, Any]]:
+    def _check_certifried(self) -> list[dict[str, Any]]:
         """Check for Certifried vulnerability (machine account SPN abuse)."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         try:
             base_dn = self.ldap.base_dn
             # Check ms-DS-MachineAccountQuota (needed for Certifried)
@@ -336,9 +336,9 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC10 / ESC14 — altSecurityIdentities ───────────────────────────────
 
-    def _check_esc10_esc14(self) -> List[Dict[str, Any]]:
+    def _check_esc10_esc14(self) -> list[dict[str, Any]]:
         """Check for weak certificate mapping and writable altSecurityIdentities."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         try:
             base_dn = self.ldap.base_dn
             results = self.ldap.search(

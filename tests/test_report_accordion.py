@@ -54,7 +54,7 @@ class TestReportAccordionRendering(unittest.TestCase):
                 executive_summary=executive_summary,
                 output_file=output_file,
             )
-            with open(output_file, "r", encoding="utf-8") as f:
+            with open(output_file, encoding="utf-8") as f:
                 html = f.read()
         finally:
             try:

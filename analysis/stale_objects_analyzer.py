@@ -10,7 +10,7 @@ Detects dormant, orphaned, and hygiene-risk AD objects that expand the attack su
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -42,17 +42,17 @@ class StaleObjectsAnalyzer:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-        computers: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze all AD objects for staleness and hygiene issues.
 
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         risks.extend(self._check_inactive_users(users))
         risks.extend(self._check_ancient_passwords(users))
@@ -66,11 +66,11 @@ class StaleObjectsAnalyzer:
     # ── Inactive Enabled Users ──────────────────────────────────────────────
 
     def _check_inactive_users(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect enabled accounts that have not logged in for a long time."""
-        risks: List[Dict[str, Any]] = []
-        inactive: List[str] = []
+        risks: list[dict[str, Any]] = []
+        inactive: list[str] = []
         now = datetime.now(timezone.utc)
 
         for user in users:
@@ -121,11 +121,11 @@ class StaleObjectsAnalyzer:
     # ── Ancient Passwords ───────────────────────────────────────────────────
 
     def _check_ancient_passwords(
-        self, users: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, users: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect enabled accounts whose passwords haven't been changed in >1 year."""
-        risks: List[Dict[str, Any]] = []
-        ancient: List[str] = []
+        risks: list[dict[str, Any]] = []
+        ancient: list[str] = []
         now = datetime.now(timezone.utc)
 
         for user in users:
@@ -175,12 +175,12 @@ class StaleObjectsAnalyzer:
 
     def _check_description_leaks(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Detect objects whose description/info fields contain credential hints."""
-        risks: List[Dict[str, Any]] = []
-        leaks: List[Dict[str, str]] = []
+        risks: list[dict[str, Any]] = []
+        leaks: list[dict[str, str]] = []
 
         for obj in list(users) + list(groups):
             name = obj.get('sAMAccountName') or obj.get('name', '?')
@@ -205,7 +205,7 @@ class StaleObjectsAnalyzer:
                     'Any domain user can read these fields via LDAP.'
                 ),
                 'affected_object': ', '.join(
-                    f"{l['name']} ({l['field']})" for l in leaks[:10]
+                    f"{leak['name']} ({leak['field']})" for leak in leaks[:10]
                 ),
                 'object_type': 'configuration',
                 'impact': (
@@ -233,11 +233,11 @@ class StaleObjectsAnalyzer:
     # ── Stale Computers ─────────────────────────────────────────────────────
 
     def _check_stale_computers(
-        self, computers: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, computers: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Detect computer accounts that haven't contacted AD in a long time."""
-        risks: List[Dict[str, Any]] = []
-        stale: List[str] = []
+        risks: list[dict[str, Any]] = []
+        stale: list[str] = []
         now = datetime.now(timezone.utc)
 
         for comp in computers:
@@ -279,14 +279,14 @@ class StaleObjectsAnalyzer:
 
     def _check_orphan_sids(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Detect group members whose DNs reference non-existent objects
         (orphaned SIDs / deleted accounts still in group membership).
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         # Build set of all known DNs
         known_dns = set()
@@ -295,7 +295,7 @@ class StaleObjectsAnalyzer:
             if dn:
                 known_dns.add(str(dn).lower())
 
-        orphan_groups: List[str] = []
+        orphan_groups: list[str] = []
         for group in groups:
             members = group.get('member', []) or []
             if isinstance(members, str):
@@ -333,7 +333,7 @@ class StaleObjectsAnalyzer:
     # ── Utility ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _is_disabled(user: Dict[str, Any]) -> bool:
+    def _is_disabled(user: dict[str, Any]) -> bool:
         """Check whether a user account is disabled via UAC flag."""
         uac = user.get('userAccountControl')
         if uac is None:

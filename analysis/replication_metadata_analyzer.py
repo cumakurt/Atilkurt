@@ -6,9 +6,8 @@ rogue DC indicators.
 """
 
 import logging
-import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -37,16 +36,16 @@ class ReplicationMetadataAnalyzer:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze replication metadata for suspicious changes.
 
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -69,16 +68,16 @@ class ReplicationMetadataAnalyzer:
     def _check_recent_sensitive_changes(
         self,
         base_dn: str,
-        users: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Check for recent changes to sensitive attributes on privileged accounts.
         Uses whenChanged as a proxy since msDS-ReplAttributeMetaData requires
         special parsing.
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_CHANGE_DAYS)
-        recently_changed: List[Dict[str, Any]] = []
+        recently_changed: list[dict[str, Any]] = []
 
         for user in users:
             # Only check accounts with adminCount=1
@@ -138,9 +137,9 @@ class ReplicationMetadataAnalyzer:
 
     # ── Tombstone Lifetime ──────────────────────────────────────────────────
 
-    def _check_tombstone_lifetime(self) -> List[Dict[str, Any]]:
+    def _check_tombstone_lifetime(self) -> list[dict[str, Any]]:
         """Check AD tombstone lifetime configuration."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             config_dn = self._get_config_dn()

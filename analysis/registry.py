@@ -4,8 +4,9 @@ Single source of truth for analysis steps and risk keys.
 Enables adding new analyzers without editing the main entry point.
 """
 
+import json
 import time
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Optional
 
 # ---------------------------------------------------------------------------
 # Risk keys: single source for consolidation and export
@@ -14,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 # Keys in analysis results that are lists of risks (for consolidated risk list).
 # Order matters for consistency; shadow_admin_risks and acl_escalation_risks
 # are built in score_and_consolidate from shadow_admins and acl_escalation_paths.
-CONSOLIDATION_RISK_KEYS: Tuple[str, ...] = (
+CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "user_risks",
     "computer_risks",
     "group_risks",
@@ -57,7 +58,7 @@ CONSOLIDATION_RISK_KEYS: Tuple[str, ...] = (
 
 # Mapping: export_data key -> analysis key (for JSON export).
 # Covers all analysis-derived keys in the JSON export; renames use different export key.
-EXPORT_KEY_TO_ANALYSIS_KEY: Dict[str, str] = {
+EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
     "misconfig_findings": "misconfig_findings",
     "kerberoasting_targets": "kerberoasting_targets",
     "asrep_targets": "asrep_targets",
@@ -94,14 +95,37 @@ EXPORT_KEY_TO_ANALYSIS_KEY: Dict[str, str] = {
 }
 
 
-def get_consolidated_risk_lists(analysis: Dict[str, Any]) -> List[Any]:
+def get_consolidated_risk_lists(analysis: dict[str, Any]) -> list[Any]:
     """Return risk lists from analysis in registry order for consolidation."""
     return [analysis.get(k, []) for k in CONSOLIDATION_RISK_KEYS]
 
 
-def build_export_analysis_slice(analysis: Dict[str, Any]) -> Dict[str, Any]:
+def deduplicate_risks(risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove exact duplicates and duplicate EOL findings for the same object."""
+    unique_risks: list[dict[str, Any]] = []
+    exact_fingerprints: set[str] = set()
+    eol_objects: set[tuple[Any, Any]] = set()
+
+    for risk in risks:
+        fingerprint = json.dumps(risk, sort_keys=True, default=str, separators=(",", ":"))
+        if fingerprint in exact_fingerprints:
+            continue
+
+        if risk.get("type") == "eol_operating_system":
+            eol_key = (risk.get("object_type"), risk.get("affected_object"))
+            if eol_key in eol_objects:
+                continue
+            eol_objects.add(eol_key)
+
+        exact_fingerprints.add(fingerprint)
+        unique_risks.append(risk)
+
+    return unique_risks
+
+
+def build_export_analysis_slice(analysis: dict[str, Any]) -> dict[str, Any]:
     """Build the analysis portion of JSON export from analysis dict."""
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     dict_only_keys = {"legacy_os_data", "acl_security_data", "tier_data"}
     for export_key, analysis_key in EXPORT_KEY_TO_ANALYSIS_KEY.items():
         default: Any = None if export_key in dict_only_keys else []
@@ -114,53 +138,53 @@ def build_export_analysis_slice(analysis: Dict[str, Any]) -> Dict[str, Any]:
 # Runner: (ldap_conn, data) -> dict to merge into results
 # ---------------------------------------------------------------------------
 
-def _run_user_risks(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_user_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.user_risks import UserRiskAnalyzer
     users = data["users"]
     analyzer = UserRiskAnalyzer()
     return {"user_risks": analyzer.analyze(users)}
 
 
-def _run_computer_risks(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_computer_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.computer_risks import ComputerRiskAnalyzer
     analyzer = ComputerRiskAnalyzer()
     return {"computer_risks": analyzer.analyze(data["computers"])}
 
 
-def _run_legacy_os(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_legacy_os(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.legacy_os_analyzer import LegacyOSAnalyzer
     analyzer = LegacyOSAnalyzer()
     res = analyzer.analyze(data["computers"])
     return {"legacy_os_results": res, "legacy_os_risks": res.get("risks", [])}
 
 
-def _run_group_risks(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_group_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.group_risks import GroupRiskAnalyzer
     analyzer = GroupRiskAnalyzer()
     return {"group_risks": analyzer.analyze(data["groups"], data["users"])}
 
 
-def _run_kerberos(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_kerberos(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.kerberos_delegation import KerberosDelegationAnalyzer
     analyzer = KerberosDelegationAnalyzer()
     risks = analyzer.analyze(data["users"], data["computers"])
     return {"kerberos_risks": risks}
 
 
-def _run_escalation(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_escalation(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
     analyzer = PrivilegeEscalationAnalyzer()
     return {"escalation_paths": analyzer.analyze(data["users"], data["groups"], data["computers"])}
 
 
-def _run_acl_legacy(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_acl_legacy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from core.collectors.acl_collector import ACLCollector
     collector = ACLCollector(ldap_conn)
     risks = collector.collect_acl_risks(data["users"], data["groups"], data["computers"])
     return {"acl_risks": risks}
 
 
-def _run_acl_security(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_acl_security(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.acl_security_analyzer import ACLSecurityAnalyzer
     analyzer = ACLSecurityAnalyzer(ldap_conn)
     res = analyzer.analyze(data["users"], data["groups"], data["computers"])
@@ -173,7 +197,7 @@ def _run_acl_security(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run_misconfig(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_misconfig(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.misconfiguration_checklist import MisconfigurationChecker
     checker = MisconfigurationChecker()
     return {"misconfig_findings": checker.check(
@@ -181,7 +205,7 @@ def _run_misconfig(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     )}
 
 
-def _run_kerberoasting(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_kerberoasting(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.kerberoasting_detector import KerberoastingDetector
     detector = KerberoastingDetector()
     return {
@@ -190,55 +214,55 @@ def _run_kerberoasting(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run_service_accounts(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_service_accounts(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.service_account_analyzer import ServiceAccountAnalyzer
     analyzer = ServiceAccountAnalyzer()
     return {"service_risks": analyzer.analyze_service_accounts(data["users"])}
 
 
-def _run_gpo_abuse(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_gpo_abuse(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.gpo_abuse_analyzer import GPOAbuseAnalyzer
     analyzer = GPOAbuseAnalyzer()
     return {"gpo_abuse_risks": analyzer.analyze_gpo_risks(data["gpos"], data["users"], data["groups"])}
 
 
-def _run_dcsync(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_dcsync(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.dcsync_analyzer import DCSyncAnalyzer
     analyzer = DCSyncAnalyzer(ldap_conn)
     return {"dcsync_risks": analyzer.analyze_dcsync_rights(data["users"], data["groups"])}
 
 
-def _run_password_policy(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_password_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.password_policy_analyzer import PasswordPolicyAnalyzer
     analyzer = PasswordPolicyAnalyzer(ldap_conn)
     return {"password_policy_risks": analyzer.analyze_password_policy()}
 
 
-def _run_trust(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_trust(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.trust_analyzer import TrustAnalyzer
     analyzer = TrustAnalyzer(ldap_conn)
     return {"trust_risks": analyzer.analyze_trusts()}
 
 
-def _run_certificate(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_certificate(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.certificate_analyzer import CertificateAnalyzer
     analyzer = CertificateAnalyzer(ldap_conn)
     return {"certificate_risks": analyzer.analyze_certificate_services()}
 
 
-def _run_gpp(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_gpp(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.gpp_password_extractor import GPPPasswordExtractor
     extractor = GPPPasswordExtractor(ldap_conn)
     return {"gpp_risks": extractor.analyze_gpp_passwords(data["gpos"])}
 
 
-def _run_laps(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_laps(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.laps_analyzer import LAPSAnalyzer
     analyzer = LAPSAnalyzer(ldap_conn)
     return {"laps_risks": analyzer.analyze_laps(data["computers"], data["users"], data["groups"])}
 
 
-def _run_vulnerability(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_vulnerability(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.vulnerability_scanner import VulnerabilityScanner
     scanner = VulnerabilityScanner(ldap_conn)
     return {
@@ -250,13 +274,13 @@ def _run_vulnerability(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run_domain_security(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_domain_security(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.domain_security_analyzer import DomainSecurityAnalyzer
     analyzer = DomainSecurityAnalyzer(ldap_conn)
     return {"domain_security_risks": analyzer.analyze_domain_security(gpos=data["gpos"])}
 
 
-def _run_extended_ldap(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_extended_ldap(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.extended_ldap_analyzer import ExtendedLDAPAnalyzer
     analyzer = ExtendedLDAPAnalyzer(ldap_conn)
     return {"extended_ldap_risks": analyzer.analyze_all(
@@ -264,92 +288,92 @@ def _run_extended_ldap(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
     )}
 
 
-def _run_tier(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_tier(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.tier_analyzer import TierAnalyzer
     analyzer = TierAnalyzer()
     return {"tier_data": analyzer.analyze_tiers(data["users"], data["computers"], data["groups"])}
 
 
-def _run_password_spray(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_password_spray(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.password_spray_risk_analyzer import PasswordSprayRiskAnalyzer
     analyzer = PasswordSprayRiskAnalyzer(ldap_conn)
     return {"password_spray_risks": analyzer.analyze(data["users"])}
 
 
-def _run_golden_gmsa(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_golden_gmsa(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.golden_gmsa_analyzer import GoldenGMSAAnalyzer
     analyzer = GoldenGMSAAnalyzer(ldap_conn)
     return {"golden_gmsa_risks": analyzer.analyze()}
 
 
-def _run_honeypot(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_honeypot(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.honeypot_detector import HoneypotDetector
     detector = HoneypotDetector()
     return {"honeypot_risks": detector.analyze(data["users"], data["groups"])}
 
 
-def _run_stale_objects(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_stale_objects(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.stale_objects_analyzer import StaleObjectsAnalyzer
     analyzer = StaleObjectsAnalyzer(ldap_conn)
     return {"stale_objects_risks": analyzer.analyze(data["users"], data["computers"], data["groups"])}
 
 
-def _run_adcs_extended(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_adcs_extended(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.ad_cs_extended_analyzer import ADCSExtendedAnalyzer
     analyzer = ADCSExtendedAnalyzer(ldap_conn)
     return {"adcs_extended_risks": analyzer.analyze()}
 
 
-def _run_audit_policy(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_audit_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.audit_policy_analyzer import AuditPolicyAnalyzer
     analyzer = AuditPolicyAnalyzer(ldap_conn)
     return {"audit_policy_risks": analyzer.analyze(data["groups"])}
 
 
-def _run_backup_operator(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_backup_operator(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.backup_operator_analyzer import BackupOperatorAnalyzer
     analyzer = BackupOperatorAnalyzer()
     return {"backup_operator_risks": analyzer.analyze(data["users"], data["groups"])}
 
 
-def _run_coerce(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_coerce(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.coerce_attack_analyzer import CoerceAttackAnalyzer
     analyzer = CoerceAttackAnalyzer(ldap_conn)
     return {"coercion_risks": analyzer.analyze(data["computers"])}
 
 
-def _run_gmsa(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_gmsa(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.gmsa_analyzer import GMSAAnalyzer
     analyzer = GMSAAnalyzer(ldap_conn)
     return {"gmsa_risks": analyzer.analyze(data["users"])}
 
 
-def _run_krbtgt(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_krbtgt(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.krbtgt_health_analyzer import KRBTGTHealthAnalyzer
     analyzer = KRBTGTHealthAnalyzer(ldap_conn)
     return {"krbtgt_risks": analyzer.analyze()}
 
 
-def _run_lateral_movement(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_lateral_movement(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.lateral_movement_analyzer import LateralMovementAnalyzer
     analyzer = LateralMovementAnalyzer()
     return {"lateral_movement_risks": analyzer.analyze(data["users"], data["computers"], data["groups"])}
 
 
-def _run_machine_quota(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_machine_quota(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.machine_quota_analyzer import MachineQuotaAnalyzer
     analyzer = MachineQuotaAnalyzer(ldap_conn)
     return {"machine_quota_risks": analyzer.analyze()}
 
 
-def _run_replication(ldap_conn: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+def _run_replication(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.replication_metadata_analyzer import ReplicationMetadataAnalyzer
     analyzer = ReplicationMetadataAnalyzer(ldap_conn)
     return {"replication_risks": analyzer.analyze(data["users"], data["groups"])}
 
 
 # (key, description, runner) for each analysis step.
-ANALYSIS_STEP_REGISTRY: List[Tuple[str, str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]] = [
+ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dict[str, Any]]]] = [
     ("user_risks", "User risk analysis", _run_user_risks),
     ("computer_risks", "Computer risk analysis", _run_computer_risks),
     ("legacy_os", "Legacy OS analysis", _run_legacy_os),
@@ -388,11 +412,11 @@ ANALYSIS_STEP_REGISTRY: List[Tuple[str, str, Callable[[Any, Dict[str, Any]], Dic
 ]
 
 # Backward-compatible view used by existing tests and external imports.
-ANALYSIS_STEPS: List[Tuple[str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]] = [
+ANALYSIS_STEPS: list[tuple[str, Callable[[Any, dict[str, Any]], dict[str, Any]]]] = [
     (description, runner) for _, description, runner in ANALYSIS_STEP_REGISTRY
 ]
 
-ANALYSIS_STEP_DEFAULTS: Dict[str, Dict[str, Any]] = {
+ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
     "user_risks": {"user_risks": []},
     "computer_risks": {"computer_risks": []},
     "legacy_os": {
@@ -453,7 +477,7 @@ ANALYSIS_STEP_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "replication_metadata": {"replication_risks": []},
 }
 
-FAST_PROFILE_EXCLUDED: Set[str] = {
+FAST_PROFILE_EXCLUDED: set[str] = {
     "acl_security",
     "extended_ldap",
     "adcs_extended",
@@ -462,15 +486,15 @@ FAST_PROFILE_EXCLUDED: Set[str] = {
 }
 
 
-def get_analysis_step_keys() -> Tuple[str, ...]:
+def get_analysis_step_keys() -> tuple[str, ...]:
     """Return valid analysis step keys for CLI validation."""
     return tuple(key for key, _, _ in ANALYSIS_STEP_REGISTRY)
 
 
 def _selected_analysis_steps(
     profile: str,
-    skip_keys: Optional[List[str]],
-) -> List[Tuple[str, str, Callable[[Any, Dict[str, Any]], Dict[str, Any]]]]:
+    skip_keys: Optional[list[str]],
+) -> list[tuple[str, str, Callable[[Any, dict[str, Any]], dict[str, Any]]]]:
     """Return analysis steps selected by profile and explicit skip keys."""
     skip_set = set(skip_keys or [])
     if profile == "fast":
@@ -483,10 +507,10 @@ def _selected_analysis_steps(
 
 
 def _defaults_for_skipped_steps(
-    selected_keys: Set[str],
-) -> Dict[str, Any]:
+    selected_keys: set[str],
+) -> dict[str, Any]:
     """Return empty result values for skipped analysis steps."""
-    defaults: Dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     for key, _, _ in ANALYSIS_STEP_REGISTRY:
         if key not in selected_keys:
             defaults.update(ANALYSIS_STEP_DEFAULTS.get(key, {}))
@@ -495,20 +519,20 @@ def _defaults_for_skipped_steps(
 
 def run_all_analyses(
     ldap_conn: Any,
-    data: Dict[str, Any],
+    data: dict[str, Any],
     *,
-    progress_callback: Optional[Callable[[str, Dict[str, Any], Optional[float]], None]] = None,
+    progress_callback: Optional[Callable[[str, dict[str, Any], Optional[float]], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
     profile: str = "full",
-    skip_keys: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    skip_keys: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """
     Run all registered analysis steps and return merged results.
     Optionally call progress_callback(description, step_result) after each step.
     """
     selected_steps = _selected_analysis_steps(profile, skip_keys)
     selected_keys = {key for key, _, _ in selected_steps}
-    results: Dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
+    results: dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
 
     for _, description, runner in selected_steps:
         if status_callback:

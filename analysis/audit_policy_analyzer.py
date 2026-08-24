@@ -5,7 +5,7 @@ GPO-defined audit policies and SACL coverage on sensitive objects.
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,8 @@ class AuditPolicyAnalyzer:
 
     def analyze(
         self,
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze audit policy configuration.
 
@@ -50,7 +50,7 @@ class AuditPolicyAnalyzer:
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -78,9 +78,9 @@ class AuditPolicyAnalyzer:
 
     def _check_audit_gpos(
         self, base_dn: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Check for GPOs that configure audit policies."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             results = self.ldap.search(
@@ -154,9 +154,9 @@ class AuditPolicyAnalyzer:
 
     def _check_adminsdholder_sacl(
         self, base_dn: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Check if AdminSDHolder has SACL auditing configured."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             admin_dn = f"CN=AdminSDHolder,CN=System,{base_dn}"
@@ -199,7 +199,7 @@ class AuditPolicyAnalyzer:
 
     def _check_domain_root_sacl(
         self, base_dn: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Recommend SACL on domain root for replication rights monitoring."""
         return [{
             'type': RiskTypes.AUDIT_SACL_MISSING,
@@ -222,7 +222,7 @@ class AuditPolicyAnalyzer:
 
     # ── Monitoring Recommendations ──────────────────────────────────────────
 
-    def _recommend_monitoring(self) -> List[Dict[str, Any]]:
+    def _recommend_monitoring(self) -> list[dict[str, Any]]:
         """Provide minimum SIEM monitoring event ID list."""
         event_list = '\n'.join(
             f'  • {eid}: {desc}'

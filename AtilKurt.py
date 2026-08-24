@@ -5,17 +5,16 @@ Main execution file
 """
 
 import argparse
+import itertools
 import json
+import math
 import os
 import re
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-logger = logging.getLogger(__name__)
+from typing import Any, Optional
 
 from core.ldap_connection import LDAPConnection
 from core.validators import validate_output_file
@@ -24,11 +23,11 @@ from core.collectors.user_collector import UserCollector
 from core.collectors.computer_collector import ComputerCollector
 from core.collectors.group_collector import GroupCollector
 from core.collectors.gpo_collector import GPOCollector
-from core.collectors.acl_collector import ACLCollector
 from core.stealth_mode import create_stealth_mode
 from analysis.registry import (
     run_all_analyses,
     get_consolidated_risk_lists,
+    deduplicate_risks,
     build_export_analysis_slice,
     CONSOLIDATION_RISK_KEYS,
     get_analysis_step_keys,
@@ -43,12 +42,74 @@ from reporting.export_formats import ExportFormats
 from reporting.compliance_reporter import ComplianceReporter
 from core.secure_password import SecurePasswordManager
 from core.progress_persistence import ProgressPersistence, IncrementalScanner
+from core.secure_file import atomic_text_writer
 from risk.risk_manager import RiskManager
+
+logger = logging.getLogger(__name__)
+
+
+class _PrivateFileHandler(logging.StreamHandler):
+    """Write logs through an owner-only file descriptor opened without symlinks."""
+
+    def __init__(self, filename: str) -> None:
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        if not hasattr(os, "O_NOFOLLOW") and os.path.islink(filename):
+            raise OSError("Refusing to write logs through a symbolic link")
+
+        descriptor = os.open(filename, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            stream = os.fdopen(descriptor, "a", encoding="utf-8")
+        except Exception:
+            os.close(descriptor)
+            raise
+        super().__init__(stream)
+
+    def close(self) -> None:
+        """Flush and close the owned file stream."""
+        try:
+            self.stream.close()
+        finally:
+            super().close()
 
 
 # ---------------------------------------------------------------------------
 # CLI argument parsing
 # ---------------------------------------------------------------------------
+
+def _positive_int(value: str) -> int:
+    """Parse a strictly positive integer for argparse."""
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _finite_positive_float(value: str) -> float:
+    """Parse a finite, strictly positive float for argparse."""
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
+
+
+def _finite_nonnegative_float(value: str) -> float:
+    """Parse a finite, non-negative float for argparse."""
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite non-negative number")
+    return parsed
 
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser."""
@@ -62,29 +123,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('-p', '--password',
                         help='[DEPRECATED] LDAP password via CLI — use env var '
                              'ATILKURT_PASS or interactive prompt instead')
-    parser.add_argument('--dc-ip', required=True,
-                        help='Domain Controller IP address')
+    parser.add_argument('--dc-ip',
+                        help='Domain Controller IP address or hostname '
+                             '(default: domain name)')
     parser.add_argument('--output', default='report.html',
                         help='Output HTML report file')
-    parser.add_argument('--single-file-report', action='store_true', default=True,
-                        help='Embed all report assets into the HTML file (default)')
+    parser.add_argument(
+        '--single-file-report',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Embed all report assets into the HTML file (default: enabled)',
+    )
     parser.add_argument('--json-export',
                         help='Optional JSON export file path')
     parser.add_argument('--ssl', action='store_true',
-                        help='Enable SSL/TLS (default: disabled, will auto-detect)')
+                        help='Use LDAPS on port 636 (default: plaintext LDAP on port 389)')
     parser.add_argument('--stealth', action='store_true',
                         help='Enable stealth mode (enhanced rate limiting)')
-    parser.add_argument('--rate-limit', type=float, default=None,
+    parser.add_argument('--rate-limit', type=_finite_nonnegative_float, default=None,
                         help='Minimum seconds between LDAP network queries '
                              '(default: 0; stealth default: 0.5)')
-    parser.add_argument('--random-delay', type=float, nargs=2,
+    parser.add_argument('--random-delay', type=_finite_nonnegative_float, nargs=2,
                         metavar=('MIN', 'MAX'),
                         help='Random delay range in seconds (e.g., --random-delay 1 5)')
-    parser.add_argument('--page-size', type=int, default=5000,
+    parser.add_argument('--page-size', type=_positive_int, default=5000,
                         help='LDAP page size for large result sets (default: 5000)')
-    parser.add_argument('--timeout', type=int, default=30,
+    parser.add_argument('--timeout', type=_positive_int, default=30,
                         help='Base LDAP timeout in seconds (default: 30)')
-    parser.add_argument('--max-retries', type=int, default=3,
+    parser.add_argument('--max-retries', type=_positive_int, default=3,
                         help='Maximum retry attempts for failed queries (default: 3)')
     parser.add_argument('--no-progress', action='store_true',
                         help='Disable progress tracking output')
@@ -96,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Performance optimization arguments
     parser.add_argument('--parallel', action='store_true',
                         help='Enable parallel LDAP queries')
-    parser.add_argument('--max-workers', type=int, default=5,
+    parser.add_argument('--max-workers', type=_positive_int, default=5,
                         help='Maximum parallel workers (default: 5)')
     parser.add_argument('--analysis-profile', choices=['full', 'fast'], default='full',
                         help='Analysis profile to run (default: full)')
@@ -113,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Enable incremental scanning')
 
     # Risk management arguments
-    parser.add_argument('--hourly-rate', type=float, default=100.0,
+    parser.add_argument('--hourly-rate', type=_finite_positive_float, default=100.0,
                         help='Hourly rate for cost calculations (default: 100.0)')
 
     # Certificate validation — default is now True in LDAPConnection,
@@ -140,6 +206,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Validate relationships and upper bounds that argparse types cannot express."""
+    if not args.dc_ip:
+        args.dc_ip = args.domain
+    if args.random_delay and args.random_delay[0] > args.random_delay[1]:
+        parser.error("--random-delay MIN must not exceed MAX")
+    if args.timeout > 300:
+        parser.error("--timeout must be between 1 and 300 seconds")
+    if args.page_size > 5000:
+        parser.error("--page-size must be between 1 and 5000")
+    if args.max_workers > 64:
+        parser.error("--max-workers must be between 1 and 64")
+
+
 def setup_logging(args: argparse.Namespace) -> None:
     """Configure logging level and optional log file from CLI args."""
     level = logging.WARNING
@@ -155,7 +235,7 @@ def setup_logging(args: argparse.Namespace) -> None:
     log_file = getattr(args, "log_file", None)
     if log_file:
         try:
-            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh = _PrivateFileHandler(log_file)
             fh.setLevel(level)
             fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
             logging.getLogger().addHandler(fh)
@@ -184,7 +264,7 @@ def validate_output_paths(args: argparse.Namespace) -> None:
 # Password resolution
 # ---------------------------------------------------------------------------
 
-def resolve_password(args: argparse.Namespace) -> Tuple[str, SecurePasswordManager]:
+def resolve_password(args: argparse.Namespace) -> tuple[str, SecurePasswordManager]:
     """Resolve password from env var, CLI arg (deprecated), or interactive prompt.
 
     Returns:
@@ -195,9 +275,7 @@ def resolve_password(args: argparse.Namespace) -> Tuple[str, SecurePasswordManag
     # 1. Prefer environment variable
     env_pass = os.environ.get('ATILKURT_PASS')
     if env_pass:
-        password_manager._password = env_pass
-        password_manager._password_set = True
-        return env_pass, password_manager
+        return password_manager.set_password(env_pass), password_manager
 
     # 2. CLI argument (deprecated)
     if args.password:
@@ -220,8 +298,8 @@ def collect_data(
     show_progress: bool,
     use_parallel: bool = False,
     max_workers: int = 5,
-    stealth_settings: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    stealth_settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Collect all AD objects via LDAP.
 
     Returns:
@@ -275,7 +353,7 @@ def _clone_ldap_connection(ldap_conn: LDAPConnection) -> LDAPConnection:
     )
 
 
-def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: Optional[Dict[str, Any]]) -> None:
+def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: Optional[dict[str, Any]]) -> None:
     """Attach rate limiting to a connection's search method when requested."""
     if not stealth_settings:
         return
@@ -288,8 +366,8 @@ def _collect_with_new_connection(
     base_conn: LDAPConnection,
     collector_cls: Any,
     show_progress: bool,
-    stealth_settings: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    stealth_settings: Optional[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Run one collector with an isolated LDAP connection."""
     conn = _clone_ldap_connection(base_conn)
     try:
@@ -305,8 +383,8 @@ def _collect_data_parallel(
     ldap_conn: LDAPConnection,
     show_progress: bool,
     max_workers: int,
-    stealth_settings: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    stealth_settings: Optional[dict[str, Any]],
+) -> dict[str, Any]:
     """Collect top-level AD object sets concurrently with isolated connections."""
     collectors = {
         "users": UserCollector,
@@ -317,7 +395,7 @@ def _collect_data_parallel(
     worker_count = max(1, min(int(max_workers or 1), len(collectors)))
     print(f"[*] Parallel collection enabled ({worker_count} workers)")
 
-    collected: Dict[str, Any] = {}
+    collected: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_key = {
             executor.submit(
@@ -348,10 +426,10 @@ def _collect_data_parallel(
 
 def run_security_analysis(
     ldap_conn: LDAPConnection,
-    data: Dict[str, Any],
+    data: dict[str, Any],
     analysis_profile: str = "full",
-    skip_analyses: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    skip_analyses: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """Run all security analyzers and return consolidated results.
 
     Args:
@@ -361,7 +439,7 @@ def run_security_analysis(
     Returns:
         Dictionary with all analysis results.
     """
-    def progress_callback(description: str, step_result: Dict[str, Any], duration: Optional[float] = None) -> None:
+    def progress_callback(description: str, step_result: dict[str, Any], duration: Optional[float] = None) -> None:
         duration_suffix = f" in {duration:.1f}s" if duration is not None else ""
         counts = [len(v) for v in step_result.values() if isinstance(v, list)]
         if counts:
@@ -403,18 +481,6 @@ def run_security_analysis(
         skip_keys=skip_analyses or [],
     )
 
-    # Exploitability scoring (mutates risk dicts in-place)
-    print("[*] Calculating exploitability scores...")
-    exploitability_scorer = ExploitabilityScorer()
-    scored_categories = (
-        results.get("user_risks", [])
-        + results.get("computer_risks", [])
-        + results.get("group_risks", [])
-        + results.get("kerberos_risks", [])
-    )
-    for risk in scored_categories:
-        risk["exploitability"] = exploitability_scorer.score_risk(risk)
-
     return results
 
 
@@ -423,9 +489,9 @@ def run_security_analysis(
 # ---------------------------------------------------------------------------
 
 def score_and_consolidate(
-    analysis: Dict[str, Any],
-    data: Dict[str, Any],
-) -> Dict[str, Any]:
+    analysis: dict[str, Any],
+    data: dict[str, Any],
+) -> dict[str, Any]:
     """Score risks, generate executive summary, and produce consolidated risk list.
 
     Args:
@@ -444,7 +510,7 @@ def score_and_consolidate(
     groups = data['groups']
 
     # Convert shadow admins to risk format
-    shadow_admin_risks: List[Dict[str, Any]] = []
+    shadow_admin_risks: list[dict[str, Any]] = []
     for sa in analysis.get('shadow_admins', []):
         shadow_admin_risks.append({
             'type': 'shadow_admin',
@@ -461,7 +527,7 @@ def score_and_consolidate(
             'dangerous_permissions': sa.get('dangerous_permissions', []),
         })
 
-    acl_escalation_risks: List[Dict[str, Any]] = []
+    acl_escalation_risks: list[dict[str, Any]] = []
     for path in analysis.get('acl_escalation_paths', []):
         acl_escalation_risks.append({
             'type': 'acl_privilege_escalation_path',
@@ -478,14 +544,18 @@ def score_and_consolidate(
             'attack_scenario': path.get('attack_scenario'),
         })
 
-    import itertools
     risk_lists = get_consolidated_risk_lists(analysis)
     all_risks_iter = itertools.chain(
         *risk_lists,
         shadow_admin_risks,
         acl_escalation_risks,
     )
-    all_risks = list(all_risks_iter)
+    all_risks = deduplicate_risks(list(all_risks_iter))
+
+    print("[*] Calculating exploitability scores...")
+    exploitability_scorer = ExploitabilityScorer()
+    for risk in all_risks:
+        risk["exploitability"] = exploitability_scorer.score_risk(risk)
 
     scored_risks = scorer.score_risks(all_risks, users=users, groups=groups,
                                        computers=computers)
@@ -512,10 +582,10 @@ def score_and_consolidate(
 
 def generate_compliance_and_risk(
     ldap_conn: LDAPConnection,
-    scored_risks: List[Dict[str, Any]],
-    data: Dict[str, Any],
+    scored_risks: list[dict[str, Any]],
+    data: dict[str, Any],
     hourly_rate: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate compliance reports and risk management data.
 
     Returns:
@@ -588,12 +658,12 @@ def generate_compliance_and_risk(
 
 def generate_reports(
     args: argparse.Namespace,
-    data: Dict[str, Any],
-    analysis: Dict[str, Any],
-    scoring: Dict[str, Any],
-    compliance: Dict[str, Any],
+    data: dict[str, Any],
+    analysis: dict[str, Any],
+    scoring: dict[str, Any],
+    compliance: dict[str, Any],
     ldap_conn: LDAPConnection,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Generate HTML report, JSON export, and baseline comparison.
 
     Returns:
@@ -676,11 +746,11 @@ def generate_reports(
 
 def _export_json(
     path: str,
-    data: Dict[str, Any],
-    analysis: Dict[str, Any],
-    scoring: Dict[str, Any],
-    compliance: Dict[str, Any],
-    baseline_comparison: Optional[Dict[str, Any]],
+    data: dict[str, Any],
+    analysis: dict[str, Any],
+    scoring: dict[str, Any],
+    compliance: dict[str, Any],
+    baseline_comparison: Optional[dict[str, Any]],
 ) -> None:
     """Write full results to a JSON file."""
     export_data = {
@@ -696,7 +766,7 @@ def _export_json(
         "baseline_comparison": baseline_comparison,
     }
     export_data.update(build_export_analysis_slice(analysis))
-    with open(path, "w", encoding="utf-8") as f:
+    with atomic_text_writer(path, encoding="utf-8") as f:
         json.dump(export_data, f, indent=2, default=str)
     print(f"[+] JSON export saved: {path}")
 
@@ -707,7 +777,7 @@ def _export_json(
 
 def check_privilege_escalation(
     username: str,
-    data: Dict[str, Any],
+    data: dict[str, Any],
 ) -> None:
     """Check if a specific user can escalate to Domain Admin."""
     print(f"[*] Checking if user '{username}' can become Domain Admin...")
@@ -725,9 +795,9 @@ def check_privilege_escalation(
 def calculate_incremental_diff(
     persistence: ProgressPersistence,
     domain: str,
-    current_data: Dict[str, Any],
+    current_data: dict[str, Any],
     current_checkpoint_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Compare current collection data with the latest compatible checkpoint."""
     checkpoints = persistence.list_checkpoints(domain)
     previous_checkpoint = None
@@ -755,7 +825,7 @@ def calculate_incremental_diff(
         "groups": ["name"],
         "gpos": ["name"],
     }
-    diff: Dict[str, Any] = {
+    diff: dict[str, Any] = {
         "baseline_checkpoint": previous_checkpoint["checkpoint_id"],
         "collections": {},
     }
@@ -770,13 +840,10 @@ def calculate_incremental_diff(
         }
         diff["collections"][collection_name] = collection_diff
         print(
-            "[+] Incremental %s: %d new, %d changed, %d deleted"
-            % (
-                collection_name,
-                len(collection_diff["new"]),
-                len(collection_diff["changed"]),
-                len(collection_diff["deleted"]),
-            )
+            f"[+] Incremental {collection_name}: "
+            f"{len(collection_diff['new'])} new, "
+            f"{len(collection_diff['changed'])} changed, "
+            f"{len(collection_diff['deleted'])} deleted"
         )
 
     return diff
@@ -784,11 +851,11 @@ def calculate_incremental_diff(
 
 def build_checkpoint_payload(
     args: argparse.Namespace,
-    data: Dict[str, Any],
-    analysis: Dict[str, Any],
-    scoring: Dict[str, Any],
-    compliance: Dict[str, Any],
-) -> Dict[str, Any]:
+    data: dict[str, Any],
+    analysis: dict[str, Any],
+    scoring: dict[str, Any],
+    compliance: dict[str, Any],
+) -> dict[str, Any]:
     """Build a full checkpoint payload that can be resumed without recollection."""
     return {
         "domain": args.domain,
@@ -814,6 +881,7 @@ def main() -> None:
     """AtilKurt — Active Directory Security Health Check Tool."""
     parser = build_parser()
     args = parser.parse_args()
+    validate_cli_arguments(parser, args)
 
     validate_output_paths(args)
     setup_logging(args)

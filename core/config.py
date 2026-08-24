@@ -4,7 +4,7 @@ Centralized configuration for the application
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Optional
 import os
 
 
@@ -22,8 +22,8 @@ class LDAPConfig:
 @dataclass
 class RiskScoringConfig:
     """Risk scoring configuration."""
-    base_scores: Dict[str, int] = None
-    
+    base_scores: dict[str, int] = None
+
     def __post_init__(self):
         if self.base_scores is None:
             self.base_scores = {
@@ -81,7 +81,7 @@ class AppConfig:
     risk_scoring: RiskScoringConfig = None
     stealth: StealthConfig = None
     analysis: AnalysisConfig = None
-    
+
     def __post_init__(self):
         if self.ldap is None:
             self.ldap = LDAPConfig()
@@ -91,14 +91,14 @@ class AppConfig:
             self.stealth = StealthConfig()
         if self.analysis is None:
             self.analysis = AnalysisConfig()
-    
+
     @classmethod
     def from_env(cls) -> 'AppConfig':
         """Load configuration from environment variables."""
         import logging
         _logger = logging.getLogger(__name__)
         config = cls()
-        
+
         # LDAP config from env
         if os.getenv('LDAP_TIMEOUT'):
             try:
@@ -115,7 +115,7 @@ class AppConfig:
                 config.ldap.page_size = int(os.getenv('LDAP_PAGE_SIZE'))
             except ValueError:
                 _logger.warning(f"Invalid LDAP_PAGE_SIZE value: {os.getenv('LDAP_PAGE_SIZE')!r}, using default")
-        
+
         # Stealth config from env
         if os.getenv('STEALTH_ENABLED'):
             config.stealth.enabled = os.getenv('STEALTH_ENABLED').lower() == 'true'
@@ -124,9 +124,9 @@ class AppConfig:
                 config.stealth.rate_limit = float(os.getenv('RATE_LIMIT'))
             except ValueError:
                 _logger.warning(f"Invalid RATE_LIMIT value: {os.getenv('RATE_LIMIT')!r}, using default")
-        
+
         return config
-    
+
     @classmethod
     def default(cls) -> 'AppConfig':
         """Get default configuration."""

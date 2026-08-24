@@ -6,8 +6,6 @@ This module is the main entry point. All section-specific HTML generation
 is delegated to mixin classes in the report_sections/ package.
 """
 
-import html as html_stdlib
-import json
 import logging
 import base64
 import mimetypes
@@ -17,6 +15,7 @@ import shutil
 from datetime import datetime
 
 from core.constants import DEVELOPER_INFO
+from core.secure_file import atomic_write_text
 from reporting.ciso_dashboard import CISODashboardGenerator
 from reporting.saas_report_template import build_saas_report
 
@@ -41,7 +40,7 @@ class HTMLReportGenerator(
     RiskTabBuilderMixin,
 ):
     """Generates interactive HTML security reports.
-    
+
     HTML generation is split across mixins in reporting/report_sections/:
       - RiskSectionsMixin:      Risk list rendering, grouping, severity helpers
       - PurpleTeamMixin:        Red Team Playbook & Blue Team Checklist
@@ -51,7 +50,7 @@ class HTMLReportGenerator(
       - ComplianceSectionMixin: CIS, NIST, ISO, GDPR compliance & risk management
       - RiskTabBuilderMixin:    Main risk sections tab orchestration
     """
-    
+
     def __init__(self):
         """Initialize HTML report generator."""
         pass
@@ -111,15 +110,14 @@ class HTMLReportGenerator(
             compliance_data, risk_management_data, domain, dc_ip,
             kerberoasting_targets, asrep_targets, analysis_summary_counts, inline_assets
         )
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
+
+        atomic_write_text(output_file, html_content)
+
         # Copy vendor assets next to report so the report works offline (file://)
         # Skipped when assets are fully inlined into the HTML.
         if not inline_assets:
             self._copy_vendor_to_output(output_file)
-        
+
         logger.info(f"HTML report generated: {output_file}")
 
     def _generate_html(self, users, computers, groups, gpos, risks,
@@ -152,17 +150,17 @@ class HTMLReportGenerator(
                         break
                 except Exception as e:
                     logger.warning(f"Could not load logo from {logo_path}: {e}")
-        
+
         # Calculate statistics
         stats = self._calculate_statistics(users, computers, groups, risks)
-        
+
         # Generate CISO dashboard data (includes enhanced Executive Summary + all analyses overview)
         ciso_generator = CISODashboardGenerator()
         ciso_data = ciso_generator.generate_dashboard_data(
             risks, users, computers, groups, domain_score, executive_summary,
             analysis_summary_counts=analysis_summary_counts
         )
-        
+
         # Update KPIs with domain score - ensure it's a valid number
         if domain_score is None:
             domain_score = 0.0
@@ -173,16 +171,16 @@ class HTMLReportGenerator(
             domain_score = round(domain_score, 1)
         except (ValueError, TypeError):
             domain_score = 0.0
-        
+
         ciso_data['kpis']['overall_score']['value'] = domain_score
         ciso_data['kpis']['overall_score']['color'] = self._get_score_color(domain_score)
-        
+
         # Generate charts data
         charts_data = self._generate_charts_data(risks)
-        
+
         # Generate CISO dashboard HTML
         ciso_dashboard_html = self._generate_ciso_dashboard_html(ciso_data, stats)
-        
+
         # Generate risk sections (with dashboard)
         password_stats = ciso_data.get('password_stats', {})
         risk_sections = self._generate_risk_sections(
@@ -191,7 +189,7 @@ class HTMLReportGenerator(
             compliance_data, risk_management_data,
             domain, dc_ip, kerberoasting_targets, asrep_targets
         )
-        
+
         # Inline vendor CSS/JS so the HTML file is completely self-contained.
         inline_css = None
         inline_js = None
@@ -204,19 +202,19 @@ class HTMLReportGenerator(
                 for name in ("bootstrap.min.css", "fontawesome.min.css", "google-fonts.css"):
                     path = os.path.join(vendor_dir, name)
                     if os.path.exists(path):
-                        with open(path, "r", encoding="utf-8") as f:
+                        with open(path, encoding="utf-8") as f:
                             css_parts.append(self._inline_css_asset_urls(f.read(), path, vendor_dir))
                 # JS assets (order matters: bootstrap, chart, lucide)
                 for name in ("bootstrap.bundle.min.js", "chart.umd.min.js", "lucide.min.js"):
                     path = os.path.join(vendor_dir, name)
                     if os.path.exists(path):
-                        with open(path, "r", encoding="utf-8") as f:
+                        with open(path, encoding="utf-8") as f:
                             js_parts.append(f.read())
             except Exception as e:
                 logger.warning("Could not inline vendor assets into HTML report: %s", e)
             inline_css = "\n\n".join(css_parts) if css_parts else None
             inline_js = "\n\n".join(js_parts) if js_parts else None
-        
+
         report_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         html = build_saas_report(
             logo_base64 or '',

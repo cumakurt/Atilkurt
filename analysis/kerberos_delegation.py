@@ -10,43 +10,43 @@ logger = logging.getLogger(__name__)
 
 class KerberosDelegationAnalyzer:
     """Analyzes Kerberos and delegation configurations for security risks."""
-    
+
     def __init__(self):
         """Initialize Kerberos delegation analyzer."""
         self.risks = []
-    
+
     def analyze(self, users, computers):
         """
         Analyze users and computers for Kerberos/delegation risks.
-        
+
         Args:
             users: List of user dictionaries
             computers: List of computer dictionaries
-        
+
         Returns:
             list: List of risk dictionaries
         """
         risks = []
-        
+
         # Check unconstrained delegation
         risks.extend(self._check_unconstrained_delegation(users, computers))
-        
+
         # Check constrained delegation
         risks.extend(self._check_constrained_delegation(users, computers))
-        
+
         # Check resource-based constrained delegation
         risks.extend(self._check_rbcd(users, computers))
-        
+
         # Check SPN misuse
         risks.extend(self._check_spn_misuse(users, computers))
-        
+
         logger.info(f"Found {len(risks)} Kerberos/Delegation risks")
         return risks
-    
+
     def _check_unconstrained_delegation(self, users, computers):
         """Check for unconstrained delegation on users and computers."""
         risks = []
-        
+
         # Check computers
         for computer in computers:
             if computer.get('unconstrainedDelegation'):
@@ -63,7 +63,7 @@ class KerberosDelegationAnalyzer:
                     'cis_reference': 'CIS Benchmark recommends disabling unconstrained delegation',
                     'mitre_attack': 'T1558.001 - Steal or Forge Kerberos Tickets: Golden Ticket'
                 })
-        
+
         # Check users (less common but possible)
         for user in users:
             uac = user.get('userAccountControl', 0)
@@ -72,7 +72,7 @@ class KerberosDelegationAnalyzer:
                     uac = int(uac)
                 except ValueError:
                     continue
-            
+
             if uac & 524288:  # TRUSTED_FOR_DELEGATION
                 risks.append({
                     'type': 'unconstrained_delegation_user',
@@ -87,17 +87,17 @@ class KerberosDelegationAnalyzer:
                     'cis_reference': 'CIS Benchmark prohibits unconstrained delegation for user accounts',
                     'mitre_attack': 'T1558.001 - Steal or Forge Kerberos Tickets: Golden Ticket'
                 })
-        
+
         return risks
-    
+
     def _check_constrained_delegation(self, users, computers):
         """Check for constrained delegation configurations."""
         risks = []
-        
+
         # Note: Constrained delegation requires checking msDS-AllowedToDelegateTo attribute
         # This is a simplified check - full implementation would need to query this attribute
         # For now, we'll flag computers/users with delegation flags but note this is a limitation
-        
+
         for computer in computers:
             uac = computer.get('userAccountControl', 0)
             # TRUSTED_TO_AUTH_FOR_DELEGATION = 16777216 (0x1000000)
@@ -115,27 +115,27 @@ class KerberosDelegationAnalyzer:
                     'cis_reference': 'CIS Benchmark recommends reviewing all delegation configurations',
                     'mitre_attack': 'T1558.002 - Steal or Forge Kerberos Tickets: Silver Ticket'
                 })
-        
+
         return risks
-    
+
     def _check_rbcd(self, users, computers):
         """Check for resource-based constrained delegation risks."""
         risks = []
-        
+
         # Note: Full RBCD analysis requires checking msDS-AllowedToActOnBehalfOfOtherIdentity
         # This is a placeholder - in a full implementation, you would query this attribute
         # and analyze the relationships
-        
+
         # For now, we'll provide a general risk note
         # In production, this would analyze actual RBCD configurations
-        
+
         return risks
-    
+
     def _check_spn_misuse(self, users, computers):
         """Check for SPN misuse and duplicate SPNs."""
         risks = []
         spn_map = {}
-        
+
         # Collect all SPNs from users
         for user in users:
             spns = user.get('servicePrincipalName') or []
@@ -151,7 +151,7 @@ class KerberosDelegationAnalyzer:
                         'type': 'user',
                         'name': user.get('sAMAccountName')
                     })
-        
+
         # Collect all SPNs from computers
         for computer in computers:
             spns = computer.get('servicePrincipalName') or []
@@ -167,7 +167,7 @@ class KerberosDelegationAnalyzer:
                         'type': 'computer',
                         'name': computer.get('name')
                     })
-        
+
         # Check for duplicate SPNs
         for spn, objects in spn_map.items():
             if len(objects) > 1:
@@ -185,5 +185,5 @@ class KerberosDelegationAnalyzer:
                     'cis_reference': 'CIS Benchmark requires unique SPN assignments',
                     'mitre_attack': 'T1558.003 - Steal or Forge Kerberos Tickets: Kerberoasting'
                 })
-        
+
         return risks

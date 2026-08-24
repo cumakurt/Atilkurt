@@ -21,10 +21,10 @@ class RiskSectionsMixin:
         exploitability = risk.get('exploitability')
         if not exploitability:
             return ""
-        
+
         score = exploitability.get('exploitability_score', 0)
         difficulty = exploitability.get('difficulty', 'Unknown')
-        
+
         # Color based on score
         if score >= 9.0:
             color = 'danger'
@@ -34,7 +34,7 @@ class RiskSectionsMixin:
             color = 'info'
         else:
             color = 'secondary'
-        
+
         return f'<span class="badge bg-{color}" title="Exploitability Score: {score}/10, Difficulty: {difficulty}">Exploitability: {score:.1f}/10</span>'
 
     def _generate_exploitability_details(self, risk):
@@ -42,12 +42,12 @@ class RiskSectionsMixin:
         exploitability = risk.get('exploitability')
         if not exploitability:
             return ""
-        
+
         tools = [self._html_escape(tool) for tool in exploitability.get('exploitation_tools', [])]
         public_exploits = [self._html_escape(exploit) for exploit in exploitability.get('public_exploits', [])]
         metasploit_modules = [self._html_escape(module) for module in exploitability.get('metasploit_modules', [])]
         poc = self._html_escape(exploitability.get('proof_of_concept', ''))
-        
+
         html = f"""
         <div class="mt-3 p-3 report-stat-box rounded">
             <h6><i class="fas fa-bug"></i> Exploitability Information</h6>
@@ -56,7 +56,7 @@ class RiskSectionsMixin:
             <p><strong>Complexity:</strong> {exploitability.get('complexity', 'Unknown')}</p>
             <p><strong>Attack Vector:</strong> {exploitability.get('attack_vector', 'Unknown')}</p>
         """
-        
+
         if tools:
             html += f"""
             <p class="mt-2"><strong>Exploitation Tools:</strong></p>
@@ -64,7 +64,7 @@ class RiskSectionsMixin:
                 {''.join([f'<li>{tool}</li>' for tool in tools])}
             </ul>
             """
-        
+
         if public_exploits:
             html += f"""
             <p class="mt-2"><strong>Public Exploits:</strong></p>
@@ -72,7 +72,7 @@ class RiskSectionsMixin:
                 {''.join([f'<li>{exploit}</li>' for exploit in public_exploits])}
             </ul>
             """
-        
+
         if metasploit_modules:
             html += f"""
             <p class="mt-2"><strong>Metasploit Modules:</strong></p>
@@ -80,13 +80,13 @@ class RiskSectionsMixin:
                 {''.join([f'<li><code>{module}</code></li>' for module in metasploit_modules])}
             </ul>
             """
-        
+
         if poc:
             html += f"""
             <p class="mt-2"><strong>Proof of Concept:</strong></p>
             <p class="text-muted small">{poc}</p>
             """
-        
+
         html += "</div>"
         return html
 
@@ -101,7 +101,7 @@ class RiskSectionsMixin:
                 </div>
             </div>
             """
-        
+
         risk_cards = []
         for idx, risk in enumerate(kerberoasting_risks):
             sev = risk.get('severity', 'high')
@@ -109,7 +109,7 @@ class RiskSectionsMixin:
             severity = str(severity).lower() if severity else 'high'
             severity_class = f'risk-{severity}'
             severity_badge_color = self._get_severity_badge_class(severity)
-            
+
             # Get export format info
             export_format = risk.get('export_format', {})
             spns = [self._html_escape(spn) for spn in risk.get('spns', [])]
@@ -128,7 +128,7 @@ class RiskSectionsMixin:
             impacket_command = self._html_escape(export_format.get("impacket_command", ""))
             rubeus_command = self._html_escape(export_format.get("rubeus_command", ""))
             cme_command = self._html_escape(export_format.get("cme_command", ""))
-            
+
             risk_card = f"""
             <div class="card risk-card {severity_class} mb-3">
                 <div class="card-body">
@@ -138,12 +138,12 @@ class RiskSectionsMixin:
                     </div>
                     <p class="text-muted"><strong>Target Account:</strong> {affected}</p>
                     <p class="card-text">{description}</p>
-                    
-                    {f'<p class="mt-2"><strong>Privileged Account:</strong> <span class="badge bg-danger">YES</span></p>' if is_privileged else ''}
+
+                    {'<p class="mt-2"><strong>Privileged Account:</strong> <span class="badge bg-danger">YES</span></p>' if is_privileged else ''}
                     {f'<p class="mt-2"><strong>Privileged Groups:</strong> {", ".join(privileged_groups)}</p>' if privileged_groups else ''}
-                    
+
                     {f'<div class="mt-3"><strong>Service Principal Names:</strong><ul class="mt-2">{"".join([f"<li><code>{spn}</code></li>" for spn in spns])}</ul></div>' if spns else ''}
-                    
+
                     <div class="accordion report-accordion mt-3" id="{accordion_id}">
                         <div class="accordion-item">
                             <h2 class="accordion-header">
@@ -179,7 +179,7 @@ class RiskSectionsMixin:
             </div>
             """
             risk_cards.append(risk_card)
-        
+
         return f"""
         <div class="card">
             <div class="card-header">
@@ -230,20 +230,20 @@ class RiskSectionsMixin:
             'medium': 0,
             'low': 0
         }
-        
+
         for risk in risks:
             severity = risk.get('severity', 'medium').lower()
             if severity in severity_counts:
                 severity_counts[severity] += 1
-        
+
         # Risk type distribution (top 10)
         risk_type_counts = {}
         for risk in risks:
             risk_type = risk.get('type', 'unknown')
             risk_type_counts[risk_type] = risk_type_counts.get(risk_type, 0) + 1
-        
+
         top_risk_types = sorted(risk_type_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        
+
         return {
             'severityLabels': ['Critical', 'High', 'Medium', 'Low'],
             'severityData': [
@@ -278,14 +278,13 @@ class RiskSectionsMixin:
         Uses max severity in group so the same finding type has one consistent level.
         Returns list of grouped risk dicts with affected_objects.
         """
-        from collections import defaultdict
         groups = defaultdict(list)
         for risk in risks:
             key = risk.get('type', 'unknown')
             groups[key].append(risk)
-        
+
         grouped_risks = []
-        for risk_type, risk_list in groups.items():
+        for risk_list in groups.values():
             if not risk_list:
                 continue
             base_risk = risk_list[0].copy()
@@ -349,20 +348,20 @@ class RiskSectionsMixin:
         affected_objects = risk.get('affected_objects', [])
         computers_with_laps = risk.get('computers_with_laps', [])
         affected_computers = risk.get('affected_computers', [])
-        
+
         objects_to_show = affected_objects or computers_with_laps or affected_computers
         if not objects_to_show:
             return ''
-        
+
         label_map = {'user': 'Affected Users', 'computer': 'Affected Computers', 'group': 'Affected Groups', 'configuration': 'Affected Computers', 'foreign_security_principal': 'Security Principal SIDs (not groups)'}
         label = label_map.get(risk.get('object_type', ''), object_type_label)
         acc_base = accordion_id_selector.replace('#', '') if accordion_id_selector else ''
         unique_id = f"aff_{acc_base}_{abs(hash(str(objects_to_show[:3])))}"
-        
+
         items_html = ''.join(f'<span class="affected-item-chip">{html_stdlib.escape(str(obj))}</span>' for obj in objects_to_show[:50])
         if len(objects_to_show) > 50:
             items_html += f'<span class="affected-item-chip text-muted">+{len(objects_to_show) - 50} more</span>'
-        
+
         return f"""
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -381,7 +380,7 @@ class RiskSectionsMixin:
     def _generate_risk_list(self, risks, title, title_key=None, group_by_finding=False):
         """Generate HTML for a list of risks. When group_by_finding=True, groups same findings and shows affected objects."""
         if not risks:
-            title_attr = f'' if title_key else ''
+            title_attr = '' if title_key else ''
             return f"""
             <div class="card">
                 <div class="card-body text-center">
@@ -390,15 +389,16 @@ class RiskSectionsMixin:
                 </div>
             </div>
             """
-        
+
         if group_by_finding:
             risks = self._group_risks_by_finding(risks)
-        
+
         def _esc(s):
             """Escape string for safe HTML output (XSS prevention)."""
-            if s is None: return ''
+            if s is None:
+                return ''
             return html_stdlib.escape(str(s))
-        
+
         risk_cards = []
         for idx, risk in enumerate(risks):
             sev = risk.get('severity') or risk.get('severity_level') or 'medium'
@@ -406,18 +406,18 @@ class RiskSectionsMixin:
             severity = str(severity).lower() if severity else 'medium'
             severity_class = f'risk-{severity}'
             severity_badge_color = self._get_severity_badge_class(severity)
-            
+
             mitigation = _esc(risk.get('mitigation', 'No mitigation provided.'))
             impact = _esc(risk.get('impact', 'No impact description.'))
             attack_scenario = _esc(risk.get('attack_scenario', 'No attack scenario provided.'))
-            
+
             risk_score = risk.get('final_score', risk.get('score', 0))
             if isinstance(risk_score, str):
                 try:
                     risk_score = float(risk_score)
                 except (ValueError, TypeError):
                     risk_score = 0
-            
+
             accordion_id = f"acc_{title_key or 'risk'}_{idx}_{abs(hash(risk.get('type', '')))}"
             esc_title = _esc(risk.get('title', 'Unknown Risk'))
             esc_affected = _esc(risk.get('affected_object', 'Unknown'))
@@ -428,15 +428,15 @@ class RiskSectionsMixin:
             esc_comb = _esc(risk.get('combination_bonus', ''))
             esc_type = _esc(risk.get('type', ''))
             esc_obj_type = _esc(risk.get('object_type', 'unknown'))
-            
+
             comb_badge = f"<span class='badge bg-warning'>{esc_comb}</span>" if risk.get('combination_bonus') else ""
             cis_p = f"<p class='mt-2'><small><strong>CIS Reference:</strong> {esc_cis}</small></p>" if risk.get('cis_reference') else ""
             mitre_p = f"<p class='mt-2'><small><strong>MITRE ATT&CK:</strong> {esc_mitre}</small></p>" if risk.get('mitre_attack') else ""
-            
+
             risk_card = f"""
-            <div class="card risk-card {severity_class}" 
-                 data-severity="{severity}" 
-                 data-type="{esc_obj_type}" 
+            <div class="card risk-card {severity_class}"
+                 data-severity="{severity}"
+                 data-type="{esc_obj_type}"
                  data-score="{risk_score:.1f}"
                  data-risk-id="risk_{idx}_{esc_type}">
                 <div class="risk-card-header">
@@ -458,14 +458,14 @@ class RiskSectionsMixin:
                 </div>
                 <div class="risk-card-body">
                     <p class="card-text">{esc_desc}</p>
-                    
+
                     <div class="mt-2 mb-2">
                         <span class="badge bg-secondary">Base Score: {risk.get('base_score', 'N/A')}</span>
                         <span class="badge bg-info">Final Score: {risk_score:.1f}/100</span>
                         {comb_badge}
                         {self._generate_exploitability_badge(risk)}
                     </div>
-                    
+
                     <div class="accordion report-accordion mt-3" id="{accordion_id}">
                         <div class="accordion-item">
                             <h2 class="accordion-header">
@@ -502,11 +502,11 @@ class RiskSectionsMixin:
             </div>
             """
             risk_cards.append(risk_card)
-        
+
         title_attr = f'id="{title_key}"' if title_key else ''
         search_id = f'search_{title_key}' if title_key else f'search_{hash(title)}'
         container_id = f'risks_container_{title_key}' if title_key else f'risks_container_{hash(title)}'
-        
+
         # Breadcrumb for this section
         breadcrumb_html = f"""
         <nav aria-label="breadcrumb" class="mb-4">
@@ -516,7 +516,7 @@ class RiskSectionsMixin:
             </ol>
         </nav>
         """
-        
+
         return f"""
         {breadcrumb_html}
         <div class="search-filter-bar mb-4">
@@ -524,7 +524,7 @@ class RiskSectionsMixin:
                 <div class="col-md-4">
                     <div class="input-group">
                         <span class="input-group-text"><i class="fas fa-search"></i></span>
-                        <input type="text" class="form-control" id="{search_id}" 
+                        <input type="text" class="form-control" id="{search_id}"
                                placeholder="Search risks..." aria-label="Search risks">
                     </div>
                 </div>
@@ -606,7 +606,7 @@ class RiskSectionsMixin:
             score = float(score) if score is not None else 0.0
         except (ValueError, TypeError):
             score = 0.0
-        
+
         if score >= 80:
             return 'green'
         elif score >= 60:

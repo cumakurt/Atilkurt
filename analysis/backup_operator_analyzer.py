@@ -6,8 +6,7 @@ often overlooked.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -76,9 +75,9 @@ class BackupOperatorAnalyzer:
 
     def analyze(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Analyze sensitive operator group membership.
 
@@ -89,7 +88,7 @@ class BackupOperatorAnalyzer:
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         for group in groups:
             group_name = group.get('sAMAccountName') or group.get('name', '')
@@ -147,7 +146,7 @@ class BackupOperatorAnalyzer:
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _match_sensitive_group(group_name: str) -> Optional[Dict]:
+    def _match_sensitive_group(group_name: str) -> Optional[dict]:
         """Match group name against sensitive group configurations."""
         upper = group_name.upper()
         for name, config in SENSITIVE_GROUPS.items():

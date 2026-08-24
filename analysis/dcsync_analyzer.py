@@ -4,7 +4,7 @@ Detects accounts with DCSync rights (DS-Replication-Get-Changes and DS-Replicati
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from ldap3.utils.conv import escape_filter_chars
 from core.constants import RiskTypes, Severity, MITRETechniques
 from core.security_descriptor_parser import SecurityDescriptorParser, parse_security_descriptor
@@ -14,34 +14,34 @@ logger = logging.getLogger(__name__)
 
 class DCSyncAnalyzer:
     """Analyzes DCSync rights and identifies accounts vulnerable to DCSync attacks."""
-    
+
     # DCSync rights OIDs
     DS_REPLICATION_GET_CHANGES = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
     DS_REPLICATION_GET_CHANGES_ALL = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize DCSync analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
-    
-    def analyze_dcsync_rights(self, users: List[Dict[str, Any]], 
-                            groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def analyze_dcsync_rights(self, users: list[dict[str, Any]],
+                            groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Analyze DCSync rights for users and groups.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
-        
+
         Returns:
             List of risk dictionaries for DCSync rights
         """
         risks = []
-        
+
         try:
             # Get domain root DN
             base_dn = self.ldap.base_dn
@@ -54,7 +54,7 @@ class DCSyncAnalyzer:
                 processed_accounts.add(account_key)
 
                 risks.append(self._create_dcsync_risk(account_info))
-            
+
             # Also check well-known privileged groups that typically have DCSync
             # Use a set to avoid duplicate risks
             processed_users = set()
@@ -66,7 +66,7 @@ class DCSyncAnalyzer:
                     members = group.get('member', []) or []
                     if not isinstance(members, list):
                         members = [members] if members else []
-                    
+
                     for member_dn in members:
                         member_name = self._extract_name_from_dn(member_dn)
                         if member_name and member_name not in processed_users:
@@ -106,20 +106,20 @@ class DCSyncAnalyzer:
                                         ]
                                     })
                                     break
-            
+
             logger.info(f"Found {len(risks)} DCSync rights risks")
             return risks
-            
+
         except Exception as e:
             logger.error(f"Error analyzing DCSync rights: {str(e)}")
             return []
-    
+
     def _get_explicit_dcsync_accounts(
         self,
         target_dn: str,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Parse the domain ACL and return principals with explicit DCSync rights."""
         accounts_with_rights = []
         sid_map = self._build_sid_map(users, groups)
@@ -180,7 +180,7 @@ class DCSyncAnalyzer:
 
         return accounts_with_rights
 
-    def _create_dcsync_risk(self, account_info: Dict[str, Any]) -> Dict[str, Any]:
+    def _create_dcsync_risk(self, account_info: dict[str, Any]) -> dict[str, Any]:
         """Create a normalized DCSync risk dictionary."""
         target_object = account_info.get('target_object', self.ldap.base_dn)
         return {
@@ -224,9 +224,9 @@ class DCSyncAnalyzer:
             ],
         }
 
-    def _build_sid_map(self, users: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+    def _build_sid_map(self, users: list[dict[str, Any]], groups: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
         """Build a SID lookup map for collected users and groups."""
-        sid_map: Dict[str, Dict[str, str]] = {}
+        sid_map: dict[str, dict[str, str]] = {}
         for user in users:
             sid = self._sid_to_string(user.get('objectSid'))
             username = user.get('sAMAccountName')
@@ -258,7 +258,7 @@ class DCSyncAnalyzer:
             return str(raw_sid)
         parser = SecurityDescriptorParser(b'')
         return parser._parse_sid_from_bytes(raw_sid) or ''
-    
+
     def _extract_name_from_dn(self, dn: str) -> Optional[str]:
         """Extract name from distinguished name."""
         if not dn:

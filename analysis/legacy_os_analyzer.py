@@ -5,7 +5,7 @@ Detects and analyzes computers with old/legacy operating systems
 
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import Any
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class LegacyOSAnalyzer:
     """Analyzes computers for legacy/old operating systems."""
-    
+
     # Legacy operating systems with their end-of-life dates
     LEGACY_OS_EOL_DATES = {
         'Windows Server 2003': datetime(2015, 7, 14),
@@ -29,7 +29,7 @@ class LegacyOSAnalyzer:
         'Windows Server 2016': None,  # Still supported but old
         'Windows Server 2019': None,  # Still supported but old
     }
-    
+
     # Operating systems considered legacy (older than 5 years)
     LEGACY_OS_PATTERNS = [
         'Windows Server 2003',
@@ -40,50 +40,50 @@ class LegacyOSAnalyzer:
         'Windows 7',
         'Windows 8',
     ]
-    
+
     def __init__(self):
         """Initialize legacy OS analyzer."""
         pass
-    
-    def analyze(self, computers: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+    def analyze(self, computers: list[dict[str, Any]]) -> dict[str, Any]:
         """
         Analyze computers for legacy operating systems.
-        
+
         Args:
             computers: List of computer dictionaries
-            
+
         Returns:
             dict: Analysis results with legacy computers and risks
         """
         legacy_computers = []
         risks = []
-        
+
         for computer in computers:
             os_name = computer.get('operatingSystem')
             os_version = computer.get('operatingSystemVersion', '')
-            
+
             if not os_name:
                 # Check if operatingSystemVersion contains OS info
                 if os_version:
                     os_name = self._extract_os_from_version(os_version)
-                
+
                 if not os_name:
                     continue
-            
+
             # Check if OS is legacy
             is_legacy, legacy_info = self._check_legacy_os(os_name, os_version)
-            
+
             if is_legacy:
                 computer_copy = computer.copy()
                 computer_copy['legacyOSInfo'] = legacy_info
                 legacy_computers.append(computer_copy)
-                
+
                 # Generate risk entry
                 risk = self._create_legacy_os_risk(computer, legacy_info)
                 risks.append(risk)
-        
+
         logger.info(f"Found {len(legacy_computers)} computers with legacy operating systems")
-        
+
         return {
             'legacy_computers': legacy_computers,
             'risks': risks,
@@ -91,15 +91,15 @@ class LegacyOSAnalyzer:
             'eol_count': sum(1 for c in legacy_computers if c.get('legacyOSInfo', {}).get('is_eol', False)),
             'old_but_supported_count': sum(1 for c in legacy_computers if not c.get('legacyOSInfo', {}).get('is_eol', False))
         }
-    
+
     def _check_legacy_os(self, os_name: str, os_version: str = '') -> tuple:
         """
         Check if operating system is legacy.
-        
+
         Args:
             os_name: Operating system name
             os_version: Operating system version
-            
+
         Returns:
             tuple: (is_legacy, legacy_info_dict)
         """
@@ -112,40 +112,45 @@ class LegacyOSAnalyzer:
             'days_since_eol': None,
             'legacy_reason': None
         }
-        
+
         # Check exact matches in EOL dates
-        for eol_os, eol_date in self.LEGACY_OS_EOL_DATES.items():
+        eol_systems = sorted(
+            self.LEGACY_OS_EOL_DATES.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+        for eol_os, eol_date in eol_systems:
             if eol_os.lower() in os_name_lower:
                 legacy_info['is_eol'] = eol_date is not None
                 legacy_info['eol_date'] = eol_date.strftime('%Y-%m-%d') if eol_date else None
-                
+
                 if eol_date:
                     days_since_eol = (datetime.now() - eol_date).days
                     legacy_info['days_since_eol'] = days_since_eol
                     legacy_info['legacy_reason'] = f"End of Life ({days_since_eol} days ago)"
-                
+
                 return True, legacy_info
-        
+
         # Check for legacy patterns
         for pattern in self.LEGACY_OS_PATTERNS:
             if pattern.lower() in os_name_lower:
                 legacy_info['legacy_reason'] = "Legacy operating system pattern detected"
                 return True, legacy_info
-        
+
         # Check Windows Server 2016/2019 (old but still supported)
         if 'Windows Server 2016' in os_name or 'Windows Server 2019' in os_name:
             legacy_info['legacy_reason'] = "Older Windows Server version (consider upgrading)"
             return True, legacy_info
-        
+
         return False, None
-    
+
     def _extract_os_from_version(self, os_version: str) -> str:
         """
         Extract OS name from version string.
-        
+
         Args:
             os_version: Operating system version string
-            
+
         Returns:
             str: Extracted OS name or empty string
         """
@@ -157,21 +162,21 @@ class LegacyOSAnalyzer:
             '6.3': 'Windows 8.1 / Server 2012 R2',
             '10.0': 'Windows 10 / Server 2016',
         }
-        
+
         for version, os_name in version_patterns.items():
             if version in os_version:
                 return os_name
-        
+
         return ''
-    
-    def _create_legacy_os_risk(self, computer: Dict[str, Any], legacy_info: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _create_legacy_os_risk(self, computer: dict[str, Any], legacy_info: dict[str, Any]) -> dict[str, Any]:
         """
         Create risk entry for legacy OS computer.
-        
+
         Args:
             computer: Computer dictionary
             legacy_info: Legacy OS information dictionary
-            
+
         Returns:
             dict: Risk dictionary
         """
@@ -179,7 +184,7 @@ class LegacyOSAnalyzer:
         is_eol = legacy_info.get('is_eol', False)
         eol_date = legacy_info.get('eol_date')
         days_since_eol = legacy_info.get('days_since_eol')
-        
+
         # Determine severity
         if is_eol and days_since_eol and days_since_eol > 365:
             severity = Severity.CRITICAL
@@ -187,7 +192,7 @@ class LegacyOSAnalyzer:
             severity = Severity.HIGH
         else:
             severity = Severity.MEDIUM
-        
+
         # Create description
         if is_eol and eol_date:
             description = f"Computer '{computer.get('name')}' is running {os_name} which reached end of life on {eol_date}"
@@ -195,9 +200,13 @@ class LegacyOSAnalyzer:
                 description += f" ({days_since_eol} days ago)"
         else:
             description = f"Computer '{computer.get('name')}' is running legacy operating system: {os_name}"
-        
+
         return {
-            'type': RiskTypes.EOL_OPERATING_SYSTEM,
+            'type': (
+                RiskTypes.EOL_OPERATING_SYSTEM
+                if is_eol
+                else RiskTypes.LEGACY_OPERATING_SYSTEM
+            ),
             'severity': severity,
             'title': 'Legacy Operating System Detected',
             'description': description,

@@ -8,6 +8,7 @@ from analysis.registry import (
     CONSOLIDATION_RISK_KEYS,
     EXPORT_KEY_TO_ANALYSIS_KEY,
     get_consolidated_risk_lists,
+    deduplicate_risks,
     build_export_analysis_slice,
     ANALYSIS_STEPS,
 )
@@ -67,3 +68,35 @@ class TestBuildExportAnalysisSlice(unittest.TestCase):
         out = build_export_analysis_slice(analysis)
         self.assertEqual(out["shadow_credentials_risks"], [{"x": 1}])
         self.assertEqual(out["legacy_os_data"], {"total_count": 5})
+
+
+class TestRiskDeduplication(unittest.TestCase):
+    """Test consolidation-level duplicate removal."""
+
+    def test_duplicate_eol_findings_for_one_computer_are_removed(self):
+        risks = [
+            {
+                "type": "eol_operating_system",
+                "object_type": "computer",
+                "affected_object": "SERVER01",
+                "title": "Primary finding",
+            },
+            {
+                "type": "eol_operating_system",
+                "object_type": "computer",
+                "affected_object": "SERVER01",
+                "title": "Legacy analyzer finding",
+            },
+        ]
+
+        result = deduplicate_risks(risks)
+
+        self.assertEqual(result, [risks[0]])
+
+    def test_distinct_findings_for_one_object_are_preserved(self):
+        risks = [
+            {"type": "acl_generic_all", "affected_object": "user1", "trustee": "group1"},
+            {"type": "acl_write_dacl", "affected_object": "user1", "trustee": "group1"},
+        ]
+
+        self.assertEqual(deduplicate_risks(risks), risks)

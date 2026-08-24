@@ -6,8 +6,7 @@ Enables parallel LDAP queries with multi-threading support
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional, Callable
-from queue import Queue
+from typing import Any, Optional, Callable
 import time
 
 logger = logging.getLogger(__name__)
@@ -17,11 +16,11 @@ class ParallelLDAPExecutor:
     """
     Executes LDAP queries in parallel using thread pool.
     """
-    
+
     def __init__(self, ldap_connection, max_workers: int = 5, rate_limit: float = 0.5):
         """
         Initialize parallel LDAP executor.
-        
+
         Args:
             ldap_connection: LDAPConnection instance (will create per-thread connections)
             max_workers: Maximum number of parallel threads
@@ -42,7 +41,7 @@ class ParallelLDAPExecutor:
         self.rate_limit = rate_limit
         self.executor: Optional[ThreadPoolExecutor] = None
         self._thread_local = threading.local()
-    
+
     def _get_ldap_connection(self):
         """Get or create LDAP connection for current thread."""
         if not hasattr(self._thread_local, 'ldap_conn'):
@@ -55,18 +54,18 @@ class ParallelLDAPExecutor:
                 logger.error(f"Failed to create LDAP connection in thread: {str(e)}")
                 raise
         return self._thread_local.ldap_conn
-    
+
     def execute_query(self, search_filter: str, search_base: Optional[str] = None,
-                     attributes: Optional[List[str]] = None, size_limit: int = 0) -> List[Dict[str, Any]]:
+                     attributes: Optional[list[str]] = None, size_limit: int = 0) -> list[dict[str, Any]]:
         """
         Execute single LDAP query in current thread.
-        
+
         Args:
             search_filter: LDAP search filter
             search_base: Base DN for search
             attributes: Attributes to retrieve
             size_limit: Maximum results
-            
+
         Returns:
             List of query results
         """
@@ -79,23 +78,23 @@ class ParallelLDAPExecutor:
             size_limit=size_limit,
             use_cache=True
         )
-    
-    def execute_parallel(self, queries: List[Dict[str, Any]], 
-                        progress_callback: Optional[Callable] = None) -> Dict[str, List[Dict[str, Any]]]:
+
+    def execute_parallel(self, queries: list[dict[str, Any]],
+                        progress_callback: Optional[Callable] = None) -> dict[str, list[dict[str, Any]]]:
         """
         Execute multiple LDAP queries in parallel.
-        
+
         Args:
             queries: List of query dicts with keys: 'filter', 'base', 'attributes', 'size_limit', 'id'
             progress_callback: Optional callback function(current, total)
-            
+
         Returns:
             Dict mapping query IDs to results
         """
         results = {}
         completed = 0
         total = len(queries)
-        
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all queries
             future_to_query = {}
@@ -109,7 +108,7 @@ class ParallelLDAPExecutor:
                     query.get('size_limit', 0)
                 )
                 future_to_query[future] = query_id
-            
+
             # Collect results as they complete
             for future in as_completed(future_to_query):
                 query_id = future_to_query[future]
@@ -122,9 +121,9 @@ class ParallelLDAPExecutor:
                 except Exception as e:
                     logger.error(f"Query {query_id} failed: {str(e)}")
                     results[query_id] = []
-        
+
         return results
-    
+
     def cleanup(self):
         """Cleanup thread-local connections."""
         if hasattr(self._thread_local, 'ldap_conn'):
@@ -139,35 +138,35 @@ class ParallelCollector:
     """
     Base class for parallel data collection.
     """
-    
+
     def __init__(self, parallel_executor: ParallelLDAPExecutor, show_progress: bool = True):
         """
         Initialize parallel collector.
-        
+
         Args:
             parallel_executor: ParallelLDAPExecutor instance
             show_progress: Whether to show progress
         """
         self.executor = parallel_executor
         self.show_progress = show_progress
-    
-    def collect_parallel(self, queries: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+
+    def collect_parallel(self, queries: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         """
         Collect data using parallel queries.
-        
+
         Args:
             queries: List of query dictionaries
-            
+
         Returns:
             Dict mapping query IDs to results
         """
         from core.progress_tracker import create_progress_callback
-        
+
         progress_callback = None
         if self.show_progress:
             progress_callback = create_progress_callback(
                 operation_name="Parallel collection",
                 total_items=len(queries)
             )
-        
+
         return self.executor.execute_parallel(queries, progress_callback)

@@ -3,8 +3,8 @@ Mixin for CISO dashboard, executive summary, password stats, account activity, a
 """
 
 import html as html_stdlib
-import json
-import re
+
+from reporting.html_safety import json_for_html_script
 
 
 
@@ -13,8 +13,7 @@ class DashboardSectionMixin:
 
     def _generate_ciso_dashboard_html(self, ciso_data, stats):
         """Generate CISO-focused executive dashboard HTML."""
-        import json
-        
+
         kpis = ciso_data['kpis']
         risk_dist = ciso_data['risk_distribution']
         risk_categories = ciso_data['risk_by_category']
@@ -23,7 +22,7 @@ class DashboardSectionMixin:
         all_analyses_summary = ciso_data.get('all_analyses_summary', [])
         action_priorities = ciso_data['action_priorities']
         password_stats = ciso_data.get('password_stats', {})
-        
+
         # KPI Cards with clickable navigation
         kpi_cards = []
         for kpi_key, kpi_data in kpis.items():
@@ -33,34 +32,29 @@ class DashboardSectionMixin:
                 'orange': 'warning',
                 'red': 'danger'
             }.get(kpi_data['color'], 'secondary')
-            
+
             # Determine target tab for each KPI
-            target_tab = None
             onclick_handler = ""
             cursor_style = ""
             if kpi_key == 'critical_risks':
-                target_tab = 'critical-risks'
                 onclick_handler = 'onclick="navigateToTab(\'critical-risks-tab\')"'
                 cursor_style = 'cursor: pointer;'
             elif kpi_key == 'high_risks':
-                target_tab = 'high-risks'
                 onclick_handler = 'onclick="navigateToTab(\'high-risks-tab\')"'
                 cursor_style = 'cursor: pointer;'
             elif kpi_key == 'privileged_accounts':
-                target_tab = 'privileged-accounts'
                 onclick_handler = 'onclick="navigateToTab(\'privileged-accounts-tab\')"'
                 cursor_style = 'cursor: pointer;'
             elif kpi_key == 'delegation_risks':
-                target_tab = 'delegation-risks'
                 onclick_handler = 'onclick="navigateToTab(\'delegation-risks-tab\')"'
                 cursor_style = 'cursor: pointer;'
-            
+
             # Add hover effect for clickable cards
             hover_style = ""
             if onclick_handler:
                 hover_style += "transition: all 0.2s ease;"
                 hover_style += "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
-            
+
             # Create click handler with proper event handling
             click_handler_attr = ""
             if onclick_handler:
@@ -70,42 +64,42 @@ class DashboardSectionMixin:
                 if match:
                     tab_id = match.group(1)
                     click_handler_attr = f'data-tab-target="{tab_id}" onclick="if(typeof window.navigateToTab !== \'undefined\'){{window.navigateToTab(\'{tab_id}\');}}else{{console.warn(\'navigateToTab not loaded yet\');}}"'
-            
+
             kpi_cards.append(f"""
             <div class="col-md-2 col-sm-6 mb-3">
                 <div class="card text-center h-100 border-{color_class}" style="border-width: 1px !important; {cursor_style} {hover_style}" {click_handler_attr} onmouseover="if(this.style.cursor=='pointer'){{this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.15)';}}" onmouseout="if(this.style.cursor=='pointer'){{this.style.transform=''; this.style.boxShadow='';}}">
                     <div class="card-body" style="pointer-events: none;">
                         <h6 class="card-title text-muted mb-2" style="font-size: 0.8125rem;">{kpi_data['label']}</h6>
                         <h2 class="mb-0 text-{color_class}" style="font-size: 1.75rem;">{f"{kpi_data['value']:.1f}" if kpi_key == 'overall_score' and isinstance(kpi_data['value'], (int, float)) else kpi_data['value']}</h2>
-                        {f"<small class='text-muted' style='font-size: 0.75rem;'>/100</small>" if kpi_key == 'overall_score' else ""}
+                        {"<small class='text-muted' style='font-size: 0.75rem;'>/100</small>" if kpi_key == 'overall_score' else ""}
                     </div>
                 </div>
             </div>
             """)
-        
+
         # Executive Summary: enhanced block (paragraph + key metrics + complete analysis table)
         summary_card = self._generate_executive_summary_block(
             ciso_summary, risk_dist, kpis, all_analyses_summary
         )
-        
+
         # Password Statistics Section (define before charts_html)
         password_stats = ciso_data.get('password_stats', {})
         password_stats_html = self._generate_password_stats_html(password_stats)
-        
+
         # Account Activity Statistics
         account_activity_stats = ciso_data.get('account_activity_stats', {})
         account_activity_html = self._generate_account_activity_html(account_activity_stats)
-        
+
         # Admin Group Statistics
         admin_group_stats = ciso_data.get('admin_group_stats', {})
         admin_group_html = self._generate_admin_group_html(admin_group_stats)
-        
+
         # Account Status Statistics
         account_status_stats = ciso_data.get('account_status_stats', {})
         account_status_html = self._generate_account_status_html(account_status_stats)
-        
+
         # Charts HTML (OpenVAS style)
-        charts_html = f"""
+        charts_html = """
         <div class="row mb-3">
             <div class="col-md-4">
                 <div class="card">
@@ -129,7 +123,7 @@ class DashboardSectionMixin:
             </div>
         </div>
         """
-        
+
         # Top Risky Objects Table
         risky_objects_rows = []
         for i, obj in enumerate(top_objects, 1):
@@ -138,7 +132,7 @@ class DashboardSectionMixin:
                 'computer': 'info',
                 'group': 'secondary'
             }.get(obj['type'].lower(), 'secondary')
-            
+
             esc_name = html_stdlib.escape(str(obj['name']))
             esc_type = html_stdlib.escape(str(obj['type']))
             risky_objects_rows.append(f"""
@@ -150,7 +144,7 @@ class DashboardSectionMixin:
                 <td>{obj['risk_count']}</td>
             </tr>
             """)
-        
+
         risky_objects_table = f"""
         <div class="card mb-3">
             <div class="card-header">
@@ -176,12 +170,12 @@ class DashboardSectionMixin:
             </div>
         </div>
         """
-        
+
         # Action Priorities
         quick_wins_html = self._generate_action_items_html(action_priorities['quick_wins'], 'Quick Wins (0-30 Days)', 'success')
         medium_term_html = self._generate_action_items_html(action_priorities['medium_term'], 'Medium-Term Actions (30-90 Days)', 'warning')
         long_term_html = self._generate_action_items_html(action_priorities['long_term'], 'Long-Term Improvements (90+ Days)', 'info')
-        
+
         # Charts data for JavaScript
         charts_data_json = {
             'risk_distribution': {
@@ -193,10 +187,21 @@ class DashboardSectionMixin:
                 'data': list(risk_categories.values())
             }
         }
-        
+
         return f"""
         <!-- CISO Dashboard -->
         <script>
+        if (typeof window.escapeReportHtml === 'undefined') {{
+            window.escapeReportHtml = function(value) {{
+                if (value === null || value === undefined) return '';
+                return String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            }};
+        }}
         // navigateToTab is already defined in the SaaS report template.
         // This block ensures backward-compat if the function isn't loaded yet.
         if (typeof window.navigateToTab === 'undefined') {{
@@ -207,25 +212,25 @@ class DashboardSectionMixin:
             }};
         }}
         </script>
-        
+
         <div class="row mb-4">
             {''.join(kpi_cards)}
         </div>
-        
+
         {summary_card}
-        
+
         {charts_html}
-        
+
         {password_stats_html}
-        
+
         {account_activity_html}
-        
+
         {admin_group_html}
-        
+
         {account_status_html}
-        
+
         {risky_objects_table}
-        
+
         <div class="row">
             <div class="col-md-4">
                 {quick_wins_html}
@@ -237,12 +242,12 @@ class DashboardSectionMixin:
                 {long_term_html}
             </div>
         </div>
-        
+
         <script>
         // CISO Dashboard Charts - Initialize after DOM ready
         document.addEventListener('DOMContentLoaded', function() {{
-            const cisoChartsData = {json.dumps(charts_data_json, default=str)};
-            
+            const cisoChartsData = {json_for_html_script(charts_data_json)};
+
             // Risk Distribution Chart
             const cisoRiskDistCtx = document.getElementById('cisoRiskDistributionChart');
             if (cisoRiskDistCtx) {{
@@ -290,7 +295,7 @@ class DashboardSectionMixin:
                     }}
                 }});
             }}
-            
+
             // Risk Category Chart
             const cisoCategoryCtx = document.getElementById('cisoRiskCategoryChart');
             if (cisoCategoryCtx) {{
@@ -368,14 +373,13 @@ class DashboardSectionMixin:
                 </div>
             </div>
             """
-        
-        import json
+
         all_details = password_stats.get('details', [])
         total_count = len(all_details)
-        
+
         # Store all details in JavaScript variable
-        all_details_json = json.dumps(all_details, default=str)
-        
+        all_details_json = json_for_html_script(all_details)
+
         return f"""
         <div class="card">
             <div class="card-header bg-warning text-white">
@@ -433,20 +437,20 @@ class DashboardSectionMixin:
             window.passwordIssuesFullCurrentPage = 1;
             window.passwordIssuesFullPageSize = 10;
         }}
-        
+
         function changePasswordIssuesFullPage(direction) {{
             const data = window.passwordIssuesFullData;
             const totalPages = Math.ceil(data.length / window.passwordIssuesFullPageSize);
             const newPage = window.passwordIssuesFullCurrentPage + direction;
-            
+
             if (newPage < 1 || newPage > totalPages) {{
                 return;
             }}
-            
+
             window.passwordIssuesFullCurrentPage = newPage;
             updatePasswordIssuesFullTable();
         }}
-        
+
         function updatePasswordIssuesFullTable() {{
             const data = window.passwordIssuesFullData;
             const page = window.passwordIssuesFullCurrentPage;
@@ -454,44 +458,44 @@ class DashboardSectionMixin:
             const start = (page - 1) * pageSize;
             const end = start + pageSize;
             const pageData = data.slice(start, end);
-            
+
             const tbody = document.getElementById('passwordIssuesFullTableBody');
             if (!tbody) return;
-            
+
             tbody.innerHTML = '';
             pageData.forEach(detail => {{
                 let daysBadge = '';
                 if (detail.days !== null && detail.days !== undefined) {{
                     const days = detail.days;
                     if (days > 365) {{
-                        daysBadge = `<span class="badge bg-danger">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-danger">${{escapeReportHtml(days)}}</span>`;
                     }} else if (days > 180) {{
-                        daysBadge = `<span class="badge bg-warning">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-warning">${{escapeReportHtml(days)}}</span>`;
                     }} else if (days > 90) {{
-                        daysBadge = `<span class="badge bg-info">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-info">${{escapeReportHtml(days)}}</span>`;
                     }} else {{
-                        daysBadge = `<span class="badge bg-secondary">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-secondary">${{escapeReportHtml(days)}}</span>`;
                     }}
                 }} else {{
                     daysBadge = '<span class="badge bg-danger">N/A</span>';
                 }}
-                
+
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td><strong>${{detail.username || 'Unknown'}}</strong></td>
-                    <td>${{detail.issue || 'N/A'}}</td>
+                    <td><strong>${{escapeReportHtml(detail.username || 'Unknown')}}</strong></td>
+                    <td>${{escapeReportHtml(detail.issue || 'N/A')}}</td>
                     <td>${{daysBadge}}</td>
                 `;
                 tbody.appendChild(row);
             }});
-            
+
             // Update pagination controls
             const totalPages = Math.ceil(data.length / pageSize);
             const prevBtn = document.getElementById('passwordIssuesFullPrev');
             const nextBtn = document.getElementById('passwordIssuesFullNext');
             const pageInfo = document.getElementById('passwordIssuesFullPageInfo');
             const info = document.getElementById('passwordIssuesFullInfo');
-            
+
             if (prevBtn) {{
                 prevBtn.classList.toggle('disabled', page === 1);
             }}
@@ -505,7 +509,7 @@ class DashboardSectionMixin:
                 info.textContent = `Showing ${{start + 1}}-${{Math.min(end, data.length)}} of ${{data.length}} issues`;
             }}
         }}
-        
+
         // Initialize table when tab is shown
         document.addEventListener('DOMContentLoaded', function() {{
             const passwordIssuesTab = document.getElementById('password-issues-tab');
@@ -535,21 +539,21 @@ class DashboardSectionMixin:
                 </div>
             </div>
             """
-        
+
         items_html = []
         for item in action_items[:5]:
             items_html.append(f"""
             <div class="card mb-2">
                 <div class="card-body">
-                    <h6 class="card-title">{item.get('action', 'Unknown Action')}</h6>
-                    <p class="mb-1"><small class="text-muted">Impact: <span class="badge bg-warning">{item.get('impact', 'Medium')}</span></small></p>
+                    <h6 class="card-title">{html_stdlib.escape(str(item.get('action', 'Unknown Action')))}</h6>
+                    <p class="mb-1"><small class="text-muted">Impact: <span class="badge bg-warning">{html_stdlib.escape(str(item.get('impact', 'Medium')))}</span></small></p>
                     <p class="mb-1"><small class="text-muted">Affected: {item.get('affected_count', 0)} objects</small></p>
-                    <p class="mb-1"><small class="text-muted">Risk Reduction: {item.get('estimated_risk_reduction', 'N/A')}</small></p>
-                    <p class="mb-0 text-muted small">{item.get('description', '')[:100]}...</p>
+                    <p class="mb-1"><small class="text-muted">Risk Reduction: {html_stdlib.escape(str(item.get('estimated_risk_reduction', 'N/A')))}</small></p>
+                    <p class="mb-0 text-muted small">{html_stdlib.escape(str(item.get('description', ''))[:100])}...</p>
                 </div>
             </div>
             """)
-        
+
         return f"""
         <div class="card mb-4">
             <div class="card-header bg-{badge_color} text-white">
@@ -565,21 +569,21 @@ class DashboardSectionMixin:
         """Generate executive summary section for dashboard."""
         if not executive_summary:
             return ""
-        
+
         # Top critical risks
         top_risks_html = ""
         for i, risk in enumerate(executive_summary.get('top_critical_risks', [])[:5], 1):
             top_risks_html += f"""
             <div class="card risk-card risk-high mb-2">
                 <div class="card-body">
-                    <h6 class="card-title">#{i}. {risk.get('title', 'Unknown Risk')}</h6>
+                    <h6 class="card-title">#{i}. {html_stdlib.escape(str(risk.get('title', 'Unknown Risk')))}</h6>
                     <p class="mb-1"><strong>Score</strong>:</strong> {risk.get('score', 0):.1f}/100</p>
-                    <p class="mb-1"><strong>Affected</strong>:</strong> {risk.get('affected_object', 'Unknown')}</p>
-                    <p class="mb-0 text-muted small">{risk.get('executive_description', '')}</p>
+                    <p class="mb-1"><strong>Affected</strong>:</strong> {html_stdlib.escape(str(risk.get('affected_object', 'Unknown')))}</p>
+                    <p class="mb-0 text-muted small">{html_stdlib.escape(str(risk.get('executive_description', '')))}</p>
                 </div>
             </div>
             """
-        
+
         # Most risky object
         most_risky_html = ""
         most_risky = executive_summary.get('most_risky_object')
@@ -588,42 +592,42 @@ class DashboardSectionMixin:
             <div class="card">
                 <div class="card-body">
                     <h6 class="card-title"><i class="fas fa-exclamation-circle text-danger"></i> <span>Most Risky Object</span></h6>
-                    <p><strong>Object</strong>:</strong> {most_risky.get('object', 'Unknown')}</p>
+                    <p><strong>Object</strong>:</strong> {html_stdlib.escape(str(most_risky.get('object', 'Unknown')))}</p>
                     <p><strong>Total Risk Score</strong>:</strong> {most_risky.get('total_risk_score', 0):.1f}</p>
                     <p><strong>Number of Risks</strong>:</strong> {most_risky.get('risk_count', 0)}</p>
                 </div>
             </div>
             """
-        
+
         # Quick wins
         quick_wins_html = ""
         for win in executive_summary.get('quick_wins', [])[:5]:
             quick_wins_html += f"""
             <div class="card mb-2">
                 <div class="card-body">
-                    <h6 class="card-title">{win.get('action', 'Unknown Action')}</h6>
-                    <p class="mb-1"><strong>Impact</strong>:</strong> <span class="badge bg-warning">{win.get('impact', 'Medium')}</span></p>
-                    <p class="mb-1"><strong>Effort</strong>:</strong> <span class="badge bg-success">{win.get('effort', 'Low')}</span></p>
+                    <h6 class="card-title">{html_stdlib.escape(str(win.get('action', 'Unknown Action')))}</h6>
+                    <p class="mb-1"><strong>Impact</strong>:</strong> <span class="badge bg-warning">{html_stdlib.escape(str(win.get('impact', 'Medium')))}</span></p>
+                    <p class="mb-1"><strong>Effort</strong>:</strong> <span class="badge bg-success">{html_stdlib.escape(str(win.get('effort', 'Low')))}</span></p>
                     <p class="mb-1"><strong>Affected</strong>:</strong> {win.get('affected_count', 0)} <span>object(s)</span></p>
-                    <p class="mb-0 text-muted small">{win.get('description', '')}</p>
+                    <p class="mb-0 text-muted small">{html_stdlib.escape(str(win.get('description', '')))}</p>
                 </div>
             </div>
             """
-        
+
         # Long-term improvements
         long_term_html = ""
         for improvement in executive_summary.get('long_term_improvements', []):
             long_term_html += f"""
             <div class="card mb-2">
                 <div class="card-body">
-                    <h6 class="card-title">{improvement.get('action', 'Unknown Action')}</h6>
-                    <p class="mb-1"><strong>Timeline</strong>:</strong> {improvement.get('timeline', 'Unknown')}</p>
-                    <p class="mb-1"><strong>Impact</strong>:</strong> <span class="badge bg-danger">{improvement.get('impact', 'High')}</span></p>
-                    <p class="mb-0 text-muted small">{improvement.get('description', '')}</p>
+                    <h6 class="card-title">{html_stdlib.escape(str(improvement.get('action', 'Unknown Action')))}</h6>
+                    <p class="mb-1"><strong>Timeline</strong>:</strong> {html_stdlib.escape(str(improvement.get('timeline', 'Unknown')))}</p>
+                    <p class="mb-1"><strong>Impact</strong>:</strong> <span class="badge bg-danger">{html_stdlib.escape(str(improvement.get('impact', 'High')))}</span></p>
+                    <p class="mb-0 text-muted small">{html_stdlib.escape(str(improvement.get('description', '')))}</p>
                 </div>
             </div>
             """
-        
+
         return f"""
         <div class="row mt-4">
             <div class="col-md-6">
@@ -640,7 +644,7 @@ class DashboardSectionMixin:
                 {most_risky_html}
             </div>
         </div>
-        
+
         <div class="row mt-4">
             <div class="col-md-6">
                 <div class="card">
@@ -750,15 +754,14 @@ class DashboardSectionMixin:
         """Generate HTML for password statistics section."""
         if not password_stats or password_stats.get('total_users', 0) == 0:
             return ""
-        
-        import json
+
         stats = password_stats
         all_details = stats.get('details', [])
         total_count = len(all_details)
-        
+
         # First 10 for preview
         preview_details = all_details[:10]
-        
+
         # Build preview details HTML with pagination
         preview_details_html = ""
         if preview_details:
@@ -777,16 +780,16 @@ class DashboardSectionMixin:
                         days_badge = f'<span class="badge bg-secondary">{days}</span>'
                 else:
                     days_badge = '<span class="badge bg-danger">N/A</span>'
-                
+
                 preview_details_html += f"""
                 <tr>
-                    <td><strong>{detail.get('username', 'Unknown')}</strong></td>
-                    <td>{detail.get('issue', 'N/A')}</td>
+                    <td><strong>{html_stdlib.escape(str(detail.get('username', 'Unknown')))}</strong></td>
+                    <td>{html_stdlib.escape(str(detail.get('issue', 'N/A')))}</td>
                     <td>{days_badge}</td>
                 </tr>
                 """
             preview_details_html += '</tbody></table></div>'
-            
+
             # Pagination controls
             total_pages = (total_count + 9) // 10  # Round up division
             pagination_html = ""
@@ -811,7 +814,7 @@ class DashboardSectionMixin:
                     </nav>
                 </div>
                 """
-            
+
             # View all button
             view_all_button = f"""
             <div class="mt-2">
@@ -824,10 +827,10 @@ class DashboardSectionMixin:
             preview_details_html = '<p class="text-muted">No password issues found.</p>'
             pagination_html = ""
             view_all_button = ""
-        
+
         # Store all details in JavaScript variable for pagination
-        all_details_json = json.dumps(all_details, default=str)
-        
+        all_details_json = json_for_html_script(all_details)
+
         return f"""
         <div class="row mb-4">
             <div class="col-12">
@@ -889,19 +892,19 @@ class DashboardSectionMixin:
         window.passwordIssuesData = {all_details_json};
         window.passwordIssuesCurrentPage = 1;
         window.passwordIssuesPageSize = 10;
-        
+
         function changePasswordIssuesPage(direction) {{
             const totalPages = Math.ceil(window.passwordIssuesData.length / window.passwordIssuesPageSize);
             const newPage = window.passwordIssuesData.currentPage + direction;
-            
+
             if (newPage < 1 || newPage > totalPages) {{
                 return;
             }}
-            
+
             window.passwordIssuesCurrentPage = newPage;
             updatePasswordIssuesTable();
         }}
-        
+
         function updatePasswordIssuesTable() {{
             const data = window.passwordIssuesData;
             const page = window.passwordIssuesCurrentPage;
@@ -909,43 +912,43 @@ class DashboardSectionMixin:
             const start = (page - 1) * pageSize;
             const end = start + pageSize;
             const pageData = data.slice(start, end);
-            
+
             const tbody = document.querySelector('#passwordIssuesPreviewTable tbody');
             if (!tbody) return;
-            
+
             tbody.innerHTML = '';
             pageData.forEach(detail => {{
                 let daysBadge = '';
                 if (detail.days !== null && detail.days !== undefined) {{
                     const days = detail.days;
                     if (days > 365) {{
-                        daysBadge = `<span class="badge bg-danger">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-danger">${{escapeReportHtml(days)}}</span>`;
                     }} else if (days > 180) {{
-                        daysBadge = `<span class="badge bg-warning">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-warning">${{escapeReportHtml(days)}}</span>`;
                     }} else if (days > 90) {{
-                        daysBadge = `<span class="badge bg-info">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-info">${{escapeReportHtml(days)}}</span>`;
                     }} else {{
-                        daysBadge = `<span class="badge bg-secondary">${{days}}</span>`;
+                        daysBadge = `<span class="badge bg-secondary">${{escapeReportHtml(days)}}</span>`;
                     }}
                 }} else {{
                     daysBadge = '<span class="badge bg-danger">N/A</span>';
                 }}
-                
+
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td><strong>${{detail.username || 'Unknown'}}</strong></td>
-                    <td>${{detail.issue || 'N/A'}}</td>
+                    <td><strong>${{escapeReportHtml(detail.username || 'Unknown')}}</strong></td>
+                    <td>${{escapeReportHtml(detail.issue || 'N/A')}}</td>
                     <td>${{daysBadge}}</td>
                 `;
                 tbody.appendChild(row);
             }});
-            
+
             // Update pagination controls
             const totalPages = Math.ceil(data.length / pageSize);
             const prevBtn = document.getElementById('passwordIssuesPrev');
             const nextBtn = document.getElementById('passwordIssuesNext');
             const pageInfo = document.getElementById('passwordIssuesPageInfo');
-            
+
             if (prevBtn) {{
                 prevBtn.classList.toggle('disabled', page === 1);
             }}
@@ -955,7 +958,7 @@ class DashboardSectionMixin:
             if (pageInfo) {{
                 pageInfo.textContent = `Page ${{page}} of ${{totalPages}}`;
             }}
-            
+
             // Update showing info
             const showingInfo = document.querySelector('.d-flex.justify-content-between.align-items-center.mt-2 small');
             if (showingInfo) {{
@@ -969,19 +972,18 @@ class DashboardSectionMixin:
         """Generate HTML for account activity statistics."""
         if not account_activity_stats:
             return ""
-        
-        import json
+
         recently_created = account_activity_stats.get('recently_created', {})
         recently_group_changed = account_activity_stats.get('recently_group_changed', {})
-        
+
         # Recently created accounts table
         created_details = recently_created.get('details', [])
-        created_details_json = json.dumps(created_details, default=str)
+        created_details_json = json_for_html_script(created_details)
         created_details_html = ""
         created_pagination_html = ""
         created_total = len(created_details)
         created_page_size = 10
-        
+
         if created_details:
             # First page
             preview_created = created_details[:created_page_size]
@@ -989,13 +991,13 @@ class DashboardSectionMixin:
             for detail in preview_created:
                 created_details_html += f"""
                 <tr>
-                    <td><strong>{detail.get('username', 'Unknown')}</strong></td>
-                    <td><span class="badge bg-info">{detail.get('days_ago', 0)}</span></td>
-                    <td><span class="badge bg-warning">{detail.get('period', 'N/A')}</span></td>
+                    <td><strong>{html_stdlib.escape(str(detail.get('username', 'Unknown')))}</strong></td>
+                    <td><span class="badge bg-info">{html_stdlib.escape(str(detail.get('days_ago', 0)))}</span></td>
+                    <td><span class="badge bg-warning">{html_stdlib.escape(str(detail.get('period', 'N/A')))}</span></td>
                 </tr>
                 """
             created_details_html += '</tbody></table></div>'
-            
+
             # Pagination
             if created_total > created_page_size:
                 total_pages = (created_total + created_page_size - 1) // created_page_size
@@ -1021,15 +1023,15 @@ class DashboardSectionMixin:
                 """
         else:
             created_details_html = '<p class="text-muted">No recently created accounts found.</p>'
-        
+
         # Recently group changed accounts table
         group_changed_details = recently_group_changed.get('details', [])
-        group_changed_details_json = json.dumps(group_changed_details, default=str)
+        group_changed_details_json = json_for_html_script(group_changed_details)
         group_changed_details_html = ""
         group_changed_pagination_html = ""
         group_changed_total = len(group_changed_details)
         group_changed_page_size = 10
-        
+
         if group_changed_details:
             # First page
             preview_group_changed = group_changed_details[:group_changed_page_size]
@@ -1037,12 +1039,12 @@ class DashboardSectionMixin:
             for detail in preview_group_changed:
                 group_changed_details_html += f"""
                 <tr>
-                    <td><strong>{detail.get('username', 'Unknown')}</strong></td>
-                    <td><span class="badge bg-warning">{detail.get('period', 'N/A')}</span></td>
+                    <td><strong>{html_stdlib.escape(str(detail.get('username', 'Unknown')))}</strong></td>
+                    <td><span class="badge bg-warning">{html_stdlib.escape(str(detail.get('period', 'N/A')))}</span></td>
                 </tr>
                 """
             group_changed_details_html += '</tbody></table></div>'
-            
+
             # Pagination
             if group_changed_total > group_changed_page_size:
                 total_pages = (group_changed_total + group_changed_page_size - 1) // group_changed_page_size
@@ -1068,7 +1070,7 @@ class DashboardSectionMixin:
                 """
         else:
             group_changed_details_html = '<p class="text-muted">No recently modified group memberships found.</p>'
-        
+
         return f"""
         <div class="row mb-4">
             <div class="col-md-6">
@@ -1157,14 +1159,14 @@ class DashboardSectionMixin:
         window.recentlyCreatedData = {created_details_json};
         window.recentlyCreatedCurrentPage = 1;
         window.recentlyCreatedPageSize = {created_page_size};
-        
+
         window.recentlyGroupChangedData = {group_changed_details_json};
         window.recentlyGroupChangedCurrentPage = 1;
         window.recentlyGroupChangedPageSize = {group_changed_page_size};
-        
+
         function changePage(tableType, direction) {{
             let data, currentPage, pageSize, tableId, prevId, nextId, pageInfoId, paginationId;
-            
+
             if (tableType === 'recentlyCreated') {{
                 data = window.recentlyCreatedData;
                 currentPage = window.recentlyCreatedCurrentPage;
@@ -1184,58 +1186,58 @@ class DashboardSectionMixin:
             }} else {{
                 return;
             }}
-            
+
             const totalPages = Math.ceil(data.length / pageSize);
             const newPage = currentPage + direction;
-            
+
             if (newPage < 1 || newPage > totalPages) {{
                 return;
             }}
-            
+
             if (tableType === 'recentlyCreated') {{
                 window.recentlyCreatedCurrentPage = newPage;
             }} else {{
                 window.recentlyGroupChangedCurrentPage = newPage;
             }}
-            
+
             updateTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, newPage, pageSize);
         }}
-        
+
         function updateTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, page, pageSize) {{
             const start = (page - 1) * pageSize;
             const end = start + pageSize;
             const pageData = data.slice(start, end);
-            
+
             const table = document.getElementById(tableId);
             if (!table) return;
-            
+
             const tbody = table.querySelector('tbody');
             if (!tbody) return;
-            
+
             tbody.innerHTML = '';
             pageData.forEach(detail => {{
                 const row = document.createElement('tr');
                 if (tableType === 'recentlyCreated') {{
                     row.innerHTML = `
-                        <td><strong>${{detail.username || 'Unknown'}}</strong></td>
-                        <td><span class="badge bg-info">${{detail.days_ago || 0}}</span></td>
-                        <td><span class="badge bg-warning">${{detail.period || 'N/A'}}</span></td>
+                        <td><strong>${{escapeReportHtml(detail.username || 'Unknown')}}</strong></td>
+                        <td><span class="badge bg-info">${{escapeReportHtml(detail.days_ago || 0)}}</span></td>
+                        <td><span class="badge bg-warning">${{escapeReportHtml(detail.period || 'N/A')}}</span></td>
                     `;
                 }} else if (tableType === 'recentlyGroupChanged') {{
                     row.innerHTML = `
-                        <td><strong>${{detail.username || 'Unknown'}}</strong></td>
-                        <td><span class="badge bg-warning">${{detail.period || 'N/A'}}</span></td>
+                        <td><strong>${{escapeReportHtml(detail.username || 'Unknown')}}</strong></td>
+                        <td><span class="badge bg-warning">${{escapeReportHtml(detail.period || 'N/A')}}</span></td>
                     `;
                 }}
                 tbody.appendChild(row);
             }});
-            
+
             // Update pagination controls
             const totalPages = Math.ceil(data.length / pageSize);
             const prevBtn = document.getElementById(prevId);
             const nextBtn = document.getElementById(nextId);
             const pageInfo = document.getElementById(pageInfoId);
-            
+
             if (prevBtn) {{
                 prevBtn.classList.toggle('disabled', page === 1);
             }}
@@ -1245,7 +1247,7 @@ class DashboardSectionMixin:
             if (pageInfo) {{
                 pageInfo.textContent = `Page ${{page}} of ${{totalPages}}`;
             }}
-            
+
             // Update showing info
             const showingInfo = document.querySelector(`#${{tableId.replace('Table', 'Pagination')}}`).parentElement.previousElementSibling;
             if (showingInfo) {{
@@ -1259,20 +1261,19 @@ class DashboardSectionMixin:
         """Generate HTML for admin group membership statistics."""
         if not admin_group_stats:
             return ""
-        
-        import json
+
         domain_admins = admin_group_stats.get('domain_admins', {})
         enterprise_admins = admin_group_stats.get('enterprise_admins', {})
         schema_admins = admin_group_stats.get('schema_admins', {})
-        
+
         # Domain Admins table
         da_members = domain_admins.get('members', [])
-        da_members_json = json.dumps(da_members, default=str)
+        da_members_json = json_for_html_script(da_members)
         da_members_html = ""
         da_pagination_html = ""
         da_total = len(da_members)
         da_page_size = 10
-        
+
         if da_members:
             preview_da = da_members[:da_page_size]
             da_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="domainAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'domainAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
@@ -1282,14 +1283,14 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 da_members_html += f"""
                 <tr>
-                    <td><strong>{member.get('username', 'Unknown')}</strong></td>
-                    <td><span class="badge bg-danger">{groups_str}</span></td>
-                    <td><small class="text-muted">{account_created}</small></td>
-                    <td><small class="text-muted">{group_added}</small></td>
+                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
                 </tr>
                 """
             da_members_html += '</tbody></table></div>'
-            
+
             if da_total > da_page_size:
                 total_pages = (da_total + da_page_size - 1) // da_page_size
                 da_pagination_html = f"""
@@ -1314,15 +1315,15 @@ class DashboardSectionMixin:
                 """
         else:
             da_members_html = '<p class="text-muted">No Domain Admin members found.</p>'
-        
+
         # Enterprise Admins table
         ea_members = enterprise_admins.get('members', [])
-        ea_members_json = json.dumps(ea_members, default=str)
+        ea_members_json = json_for_html_script(ea_members)
         ea_members_html = ""
         ea_pagination_html = ""
         ea_total = len(ea_members)
         ea_page_size = 10
-        
+
         if ea_members:
             preview_ea = ea_members[:ea_page_size]
             ea_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="enterpriseAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
@@ -1332,14 +1333,14 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 ea_members_html += f"""
                 <tr>
-                    <td><strong>{member.get('username', 'Unknown')}</strong></td>
-                    <td><span class="badge bg-danger">{groups_str}</span></td>
-                    <td><small class="text-muted">{account_created}</small></td>
-                    <td><small class="text-muted">{group_added}</small></td>
+                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
                 </tr>
                 """
             ea_members_html += '</tbody></table></div>'
-            
+
             if ea_total > ea_page_size:
                 total_pages = (ea_total + ea_page_size - 1) // ea_page_size
                 ea_pagination_html = f"""
@@ -1364,15 +1365,15 @@ class DashboardSectionMixin:
                 """
         else:
             ea_members_html = '<p class="text-muted">No Enterprise Admin members found.</p>'
-        
+
         # Schema Admins table
         sa_members = schema_admins.get('members', [])
-        sa_members_json = json.dumps(sa_members, default=str)
+        sa_members_json = json_for_html_script(sa_members)
         sa_members_html = ""
         sa_pagination_html = ""
         sa_total = len(sa_members)
         sa_page_size = 10
-        
+
         if sa_members:
             preview_sa = sa_members[:sa_page_size]
             sa_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="schemaAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
@@ -1382,14 +1383,14 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 sa_members_html += f"""
                 <tr>
-                    <td><strong>{member.get('username', 'Unknown')}</strong></td>
-                    <td><span class="badge bg-danger">{groups_str}</span></td>
-                    <td><small class="text-muted">{account_created}</small></td>
-                    <td><small class="text-muted">{group_added}</small></td>
+                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
                 </tr>
                 """
             sa_members_html += '</tbody></table></div>'
-            
+
             if sa_total > sa_page_size:
                 total_pages = (sa_total + sa_page_size - 1) // sa_page_size
                 sa_pagination_html = f"""
@@ -1414,7 +1415,7 @@ class DashboardSectionMixin:
                 """
         else:
             sa_members_html = '<p class="text-muted">No Schema Admin members found.</p>'
-        
+
         return f"""
         <div class="row mb-4">
             <div class="col-12">
@@ -1487,21 +1488,21 @@ class DashboardSectionMixin:
         window.domainAdminData = {da_members_json};
         window.domainAdminCurrentPage = 1;
         window.domainAdminPageSize = {da_page_size};
-        
+
         window.enterpriseAdminData = {ea_members_json};
         window.enterpriseAdminCurrentPage = 1;
         window.enterpriseAdminPageSize = {ea_page_size};
-        
+
         window.schemaAdminData = {sa_members_json};
         window.schemaAdminCurrentPage = 1;
         window.schemaAdminPageSize = {sa_page_size};
-        
+
         // Extend changePage function for admin groups
         const originalChangePage = window.changePage;
         window.changePage = function(tableType, direction) {{
             if (tableType === 'domainAdmin' || tableType === 'enterpriseAdmin' || tableType === 'schemaAdmin') {{
                 let data, currentPage, pageSize, tableId, prevId, nextId, pageInfoId;
-                
+
                 if (tableType === 'domainAdmin') {{
                     data = window.domainAdminData;
                     currentPage = window.domainAdminCurrentPage;
@@ -1527,14 +1528,14 @@ class DashboardSectionMixin:
                     nextId = 'schemaAdminNext';
                     pageInfoId = 'schemaAdminPageInfo';
                 }}
-                
+
                 const totalPages = Math.ceil(data.length / pageSize);
                 const newPage = currentPage + direction;
-                
+
                 if (newPage < 1 || newPage > totalPages) {{
                     return;
                 }}
-                
+
                 if (tableType === 'domainAdmin') {{
                     window.domainAdminCurrentPage = newPage;
                 }} else if (tableType === 'enterpriseAdmin') {{
@@ -1542,7 +1543,7 @@ class DashboardSectionMixin:
                 }} else if (tableType === 'schemaAdmin') {{
                     window.schemaAdminCurrentPage = newPage;
                 }}
-                
+
                 updateAdminTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, newPage, pageSize);
             }} else {{
                 if (originalChangePage) {{
@@ -1550,37 +1551,37 @@ class DashboardSectionMixin:
                 }}
             }}
         }};
-        
+
         function updateAdminTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, page, pageSize) {{
             const start = (page - 1) * pageSize;
             const end = start + pageSize;
             const pageData = data.slice(start, end);
-            
+
             const table = document.getElementById(tableId);
             if (!table) return;
-            
+
             const tbody = table.querySelector('tbody');
             if (!tbody) return;
-            
+
             tbody.innerHTML = '';
             pageData.forEach(member => {{
                 const row = document.createElement('tr');
                 const groups_str = (member.groups || []).join(', ');
                 row.innerHTML = `
-                    <td><strong>${{member.username || 'Unknown'}}</strong></td>
-                    <td><span class="badge bg-danger">${{groups_str}}</span></td>
-                    <td><small class="text-muted">${{member.accountCreated || 'N/A'}}</small></td>
-                    <td><small class="text-muted">${{member.groupAdded || 'N/A'}}</small></td>
+                    <td><strong>${{escapeReportHtml(member.username || 'Unknown')}}</strong></td>
+                    <td><span class="badge bg-danger">${{escapeReportHtml(groups_str)}}</span></td>
+                    <td><small class="text-muted">${{escapeReportHtml(member.accountCreated || 'N/A')}}</small></td>
+                    <td><small class="text-muted">${{escapeReportHtml(member.groupAdded || 'N/A')}}</small></td>
                 `;
                 tbody.appendChild(row);
             }});
-            
+
             // Update pagination controls
             const totalPages = Math.ceil(data.length / pageSize);
             const prevBtn = document.getElementById(prevId);
             const nextBtn = document.getElementById(nextId);
             const pageInfo = document.getElementById(pageInfoId);
-            
+
             if (prevBtn) {{
                 prevBtn.classList.toggle('disabled', page === 1);
             }}
@@ -1590,7 +1591,7 @@ class DashboardSectionMixin:
             if (pageInfo) {{
                 pageInfo.textContent = `Page ${{page}} of ${{totalPages}}`;
             }}
-            
+
             // Update showing info
             const pagination = document.getElementById(tableId.replace('Table', 'Pagination'));
             if (pagination) {{
@@ -1607,20 +1608,19 @@ class DashboardSectionMixin:
         """Generate HTML for account status statistics (disabled, locked)."""
         if not account_status_stats:
             return ""
-        
-        import json
+
         disabled = account_status_stats.get('disabled', {})
         locked = account_status_stats.get('locked', {})
         disabled_and_locked = account_status_stats.get('disabled_and_locked', {})
-        
+
         # Disabled accounts table
         disabled_accounts = disabled.get('accounts', [])
-        disabled_accounts_json = json.dumps(disabled_accounts, default=str)
+        disabled_accounts_json = json_for_html_script(disabled_accounts)
         disabled_html = ""
         disabled_pagination_html = ""
         disabled_total = len(disabled_accounts)
         disabled_page_size = 10
-        
+
         if disabled_accounts:
             preview_disabled = disabled_accounts[:disabled_page_size]
             disabled_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="disabledAccountsTable"><thead><tr><th class="sortable" onclick="sortTable(\'disabledAccountsTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'disabledAccountsTable\', 1)">Display Name <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'disabledAccountsTable\', 2)">Disabled Time <i class="fas fa-sort"></i></th></thead><tbody>'
@@ -1628,13 +1628,13 @@ class DashboardSectionMixin:
                 disabled_time = account.get('disabledTime', 'N/A')
                 disabled_html += f"""
                 <tr>
-                    <td><strong>{account.get('username', 'Unknown')}</strong></td>
-                    <td>{account.get('displayName', 'N/A')}</td>
-                    <td><small class="text-muted">{disabled_time}</small></td>
+                    <td><strong>{html_stdlib.escape(str(account.get('username', 'Unknown')))}</strong></td>
+                    <td>{html_stdlib.escape(str(account.get('displayName', 'N/A')))}</td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(disabled_time))}</small></td>
                 </tr>
                 """
             disabled_html += '</tbody></table></div>'
-            
+
             if disabled_total > disabled_page_size:
                 total_pages = (disabled_total + disabled_page_size - 1) // disabled_page_size
                 disabled_pagination_html = f"""
@@ -1659,15 +1659,15 @@ class DashboardSectionMixin:
                 """
         else:
             disabled_html = '<p class="text-muted">No disabled accounts found.</p>'
-        
+
         # Locked accounts table
         locked_accounts = locked.get('accounts', [])
-        locked_accounts_json = json.dumps(locked_accounts, default=str)
+        locked_accounts_json = json_for_html_script(locked_accounts)
         locked_html = ""
         locked_pagination_html = ""
         locked_total = len(locked_accounts)
         locked_page_size = 10
-        
+
         if locked_accounts:
             preview_locked = locked_accounts[:locked_page_size]
             locked_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="lockedAccountsTable"><thead><tr><th class="sortable" onclick="sortTable(\'lockedAccountsTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'lockedAccountsTable\', 1)">Display Name <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'lockedAccountsTable\', 2)">Locked Time <i class="fas fa-sort"></i></th></thead><tbody>'
@@ -1675,13 +1675,13 @@ class DashboardSectionMixin:
                 locked_time = account.get('lockedTime', 'N/A')
                 locked_html += f"""
                 <tr>
-                    <td><strong>{account.get('username', 'Unknown')}</strong></td>
-                    <td>{account.get('displayName', 'N/A')}</td>
-                    <td><small class="text-muted">{locked_time}</small></td>
+                    <td><strong>{html_stdlib.escape(str(account.get('username', 'Unknown')))}</strong></td>
+                    <td>{html_stdlib.escape(str(account.get('displayName', 'N/A')))}</td>
+                    <td><small class="text-muted">{html_stdlib.escape(str(locked_time))}</small></td>
                 </tr>
                 """
             locked_html += '</tbody></table></div>'
-            
+
             if locked_total > locked_page_size:
                 total_pages = (locked_total + locked_page_size - 1) // locked_page_size
                 locked_pagination_html = f"""
@@ -1706,7 +1706,7 @@ class DashboardSectionMixin:
                 """
         else:
             locked_html = '<p class="text-muted">No locked accounts found.</p>'
-        
+
         return f"""
         <div class="row mb-4">
             <div class="col-md-6">
@@ -1752,17 +1752,17 @@ class DashboardSectionMixin:
         window.disabledAccountsData = {disabled_accounts_json};
         window.disabledAccountsCurrentPage = 1;
         window.disabledAccountsPageSize = {disabled_page_size};
-        
+
         window.lockedAccountsData = {locked_accounts_json};
         window.lockedAccountsCurrentPage = 1;
         window.lockedAccountsPageSize = {locked_page_size};
-        
+
         // Extend changePage function for account status
         const originalChangePage2 = window.changePage;
         window.changePage = function(tableType, direction) {{
             if (tableType === 'disabledAccounts' || tableType === 'lockedAccounts') {{
                 let data, currentPage, pageSize, tableId, prevId, nextId, pageInfoId;
-                
+
                 if (tableType === 'disabledAccounts') {{
                     data = window.disabledAccountsData;
                     currentPage = window.disabledAccountsCurrentPage;
@@ -1780,20 +1780,20 @@ class DashboardSectionMixin:
                     nextId = 'lockedAccountsNext';
                     pageInfoId = 'lockedAccountsPageInfo';
                 }}
-                
+
                 const totalPages = Math.ceil(data.length / pageSize);
                 const newPage = currentPage + direction;
-                
+
                 if (newPage < 1 || newPage > totalPages) {{
                     return;
                 }}
-                
+
                 if (tableType === 'disabledAccounts') {{
                     window.disabledAccountsCurrentPage = newPage;
                 }} else if (tableType === 'lockedAccounts') {{
                     window.lockedAccountsCurrentPage = newPage;
                 }}
-                
+
                 updateAccountStatusTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, newPage, pageSize);
             }} else {{
                 if (originalChangePage2) {{
@@ -1801,43 +1801,43 @@ class DashboardSectionMixin:
                 }}
             }}
         }};
-        
+
         function updateAccountStatusTablePage(tableType, tableId, prevId, nextId, pageInfoId, data, page, pageSize) {{
             const start = (page - 1) * pageSize;
             const end = start + pageSize;
             const pageData = data.slice(start, end);
-            
+
             const table = document.getElementById(tableId);
             if (!table) return;
-            
+
             const tbody = table.querySelector('tbody');
             if (!tbody) return;
-            
+
             tbody.innerHTML = '';
             pageData.forEach(account => {{
                 const row = document.createElement('tr');
                 if (tableType === 'disabledAccounts') {{
                     row.innerHTML = `
-                        <td><strong>${{account.username || 'Unknown'}}</strong></td>
-                        <td>${{account.displayName || 'N/A'}}</td>
-                        <td><small class="text-muted">${{account.disabledTime || 'N/A'}}</small></td>
+                        <td><strong>${{escapeReportHtml(account.username || 'Unknown')}}</strong></td>
+                        <td>${{escapeReportHtml(account.displayName || 'N/A')}}</td>
+                        <td><small class="text-muted">${{escapeReportHtml(account.disabledTime || 'N/A')}}</small></td>
                     `;
                 }} else if (tableType === 'lockedAccounts') {{
                     row.innerHTML = `
-                        <td><strong>${{account.username || 'Unknown'}}</strong></td>
-                        <td>${{account.displayName || 'N/A'}}</td>
-                        <td><small class="text-muted">${{account.lockedTime || 'N/A'}}</small></td>
+                        <td><strong>${{escapeReportHtml(account.username || 'Unknown')}}</strong></td>
+                        <td>${{escapeReportHtml(account.displayName || 'N/A')}}</td>
+                        <td><small class="text-muted">${{escapeReportHtml(account.lockedTime || 'N/A')}}</small></td>
                     `;
                 }}
                 tbody.appendChild(row);
             }});
-            
+
             // Update pagination controls
             const totalPages = Math.ceil(data.length / pageSize);
             const prevBtn = document.getElementById(prevId);
             const nextBtn = document.getElementById(nextId);
             const pageInfo = document.getElementById(pageInfoId);
-            
+
             if (prevBtn) {{
                 prevBtn.classList.toggle('disabled', page === 1);
             }}
@@ -1847,7 +1847,7 @@ class DashboardSectionMixin:
             if (pageInfo) {{
                 pageInfo.textContent = `Page ${{page}} of ${{totalPages}}`;
             }}
-            
+
             // Update showing info
             const pagination = document.getElementById(tableId.replace('Table', 'Pagination'));
             if (pagination) {{

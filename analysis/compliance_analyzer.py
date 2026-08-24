@@ -4,7 +4,7 @@ Performs LDAP-based compliance checks for CIS Benchmark, NIST CSF, ISO 27001, an
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -15,35 +15,35 @@ class ComplianceAnalyzer:
     """
     Advanced compliance analyzer that performs LDAP queries to check compliance.
     """
-    
+
     def __init__(self, ldap_connection):
         """
         Initialize compliance analyzer.
-        
+
         Args:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
         self.base_dn = ldap_connection.base_dn
-    
-    def analyze_cis_benchmark(self, users: List[Dict[str, Any]], 
-                              groups: List[Dict[str, Any]], 
-                              computers: List[Dict[str, Any]],
-                              password_policy_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def analyze_cis_benchmark(self, users: list[dict[str, Any]],
+                              groups: list[dict[str, Any]],
+                              computers: list[dict[str, Any]],
+                              password_policy_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """
         Perform CIS Benchmark compliance checks using LDAP queries.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             password_policy_data: Optional password policy data
-            
+
         Returns:
             Dict with CIS Benchmark compliance analysis
         """
         controls = []
-        
+
         # CIS 2.3.1.1 - Ensure 'Password never expires' is set to 'False' for all users
         password_never_expires_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x10000)
         controls.append({
@@ -57,7 +57,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536))',
             'recommendation': 'Set password expiration for all user accounts'
         })
-        
+
         # CIS 2.3.1.2 - Ensure 'Password not required' is set to 'False' for all users
         password_not_required_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
         controls.append({
@@ -71,7 +71,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))',
             'recommendation': 'Require passwords for all user accounts'
         })
-        
+
         # CIS 2.3.1.3 - Ensure 'Kerberos preauthentication' is enabled for all users
         preauth_disabled_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x400000)
         controls.append({
@@ -85,7 +85,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))',
             'recommendation': 'Enable Kerberos preauthentication for all user accounts'
         })
-        
+
         # CIS 2.3.1.4 - Ensure unconstrained delegation is disabled
         unconstrained_delegation_count = sum(1 for c in computers if c.get('userAccountControl', 0) & 0x80000)
         controls.append({
@@ -99,7 +99,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=computer)(userAccountControl:1.2.840.113556.1.4.803:=524288))',
             'recommendation': 'Disable unconstrained delegation on all computer accounts'
         })
-        
+
         # CIS 2.3.1.5 - Ensure Domain Admins group has minimal members
         domain_admins = next((g for g in groups if 'DOMAIN ADMINS' in (g.get('name', '') or '').upper()), None)
         domain_admin_count = len(domain_admins.get('member', [])) if domain_admins and domain_admins.get('member') else 0
@@ -114,14 +114,14 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=group)(name=Domain Admins))',
             'recommendation': 'Limit Domain Admins group to 2 or fewer members'
         })
-        
+
         # CIS 2.3.2.1 - Password policy checks
         if password_policy_data:
             min_length = password_policy_data.get('minPwdLength', 0)
             max_age_raw = password_policy_data.get('maxPwdAge', 0)
             pwd_properties = password_policy_data.get('pwdProperties', 0)
             complexity_enabled = bool(pwd_properties & 1)
-            
+
             # Convert maxPwdAge from Windows timestamp (100-nanosecond intervals) to days
             # Use same conversion logic as password_policy_analyzer
             max_age_days = 0
@@ -139,7 +139,7 @@ class ComplianceAnalyzer:
                             max_age_days = 999999  # Never expires (bad)
                 except (ValueError, TypeError):
                     max_age_days = 0
-            
+
             controls.append({
                 'control_id': 'CIS 2.3.2.1',
                 'control_name': 'Password policy strength',
@@ -153,18 +153,18 @@ class ComplianceAnalyzer:
                 'ldap_query': '(objectClass=domainDNS)',
                 'recommendation': 'Set minimum password length to 14+, maximum age to 90 days or less, enable complexity'
             })
-        
+
         # CIS 2.3.2.2 - Account lockout policy
         if password_policy_data:
             lockout_threshold = password_policy_data.get('lockoutThreshold', 0)
             lockout_duration_raw = password_policy_data.get('lockoutDuration', 0)
             lockout_observation_window_raw = password_policy_data.get('lockoutObservationWindow', 0)
-            
+
             # Convert lockout duration and observation window from Windows timestamp to minutes
             # Using same conversion logic: divide by 864000000000 to get days, then convert to minutes
             lockout_duration_minutes = 0
             lockout_observation_window_minutes = 0
-            
+
             if lockout_duration_raw:
                 try:
                     if isinstance(lockout_duration_raw, (int, str)):
@@ -175,7 +175,7 @@ class ComplianceAnalyzer:
                             lockout_duration_minutes = int(days * 24 * 60)
                 except (ValueError, TypeError):
                     pass
-            
+
             if lockout_observation_window_raw:
                 try:
                     if isinstance(lockout_observation_window_raw, (int, str)):
@@ -186,7 +186,7 @@ class ComplianceAnalyzer:
                             lockout_observation_window_minutes = int(days * 24 * 60)
                 except (ValueError, TypeError):
                     pass
-            
+
             controls.append({
                 'control_id': 'CIS 2.3.2.2',
                 'control_name': 'Account lockout policy',
@@ -199,10 +199,10 @@ class ComplianceAnalyzer:
                 'ldap_query': '(objectClass=domainDNS)',
                 'recommendation': 'Enable account lockout with threshold of 5-10 failed attempts'
             })
-        
+
         # CIS 2.3.3.1 - EOL operating systems
-        eol_count = sum(1 for c in computers if c.get('operatingSystem') and 
-                       any(eol in (c.get('operatingSystem', '') or '').upper() 
+        eol_count = sum(1 for c in computers if c.get('operatingSystem') and
+                       any(eol in (c.get('operatingSystem', '') or '').upper()
                            for eol in ['WINDOWS SERVER 2008', 'WINDOWS SERVER 2012', 'WINDOWS XP', 'WINDOWS VISTA']))
         controls.append({
             'control_id': 'CIS 2.3.3.1',
@@ -210,32 +210,32 @@ class ComplianceAnalyzer:
             'status': 'passed' if eol_count == 0 else 'failed',
             'details': {
                 'count': eol_count,
-                'affected_computers': [c.get('name') for c in computers if c.get('operatingSystem') and 
-                                      any(eol in (c.get('operatingSystem', '') or '').upper() 
+                'affected_computers': [c.get('name') for c in computers if c.get('operatingSystem') and
+                                      any(eol in (c.get('operatingSystem', '') or '').upper()
                                           for eol in ['WINDOWS SERVER 2008', 'WINDOWS SERVER 2012', 'WINDOWS XP', 'WINDOWS VISTA'])][:10]
             },
             'ldap_query': '(&(objectClass=computer)(operatingSystem=*))',
             'recommendation': 'Upgrade or remove End-of-Life operating systems'
         })
-        
+
         # CIS 2.3.4.1 - LAPS configuration
         # Check LAPS by examining existing computer objects for LAPS attributes
         # Instead of querying ms-Mcs-AdmPwd directly (which may not exist), check computers we already have
         try:
             laps_configured_count = 0
             total_computers = len(computers)
-            
+
             # Check if any computers have LAPS-related attributes
             # LAPS attributes: ms-Mcs-AdmPwdExpirationTime, msMcs-AdmPwdExpirationTime
             laps_attribute_names = ['ms-Mcs-AdmPwdExpirationTime', 'msMcs-AdmPwdExpirationTime', 'msMcsAdmPwdExpirationTime']
-            
+
             for computer in computers:
                 # Check if computer has any LAPS expiration time attribute
                 for attr_name in laps_attribute_names:
                     if computer.get(attr_name):
                         laps_configured_count += 1
                         break
-            
+
             # Alternative: Try a safe LDAP query if attribute might exist
             # Only query if we have no computers with LAPS attributes from our existing data
             if laps_configured_count == 0 and total_computers > 0:
@@ -251,9 +251,9 @@ class ComplianceAnalyzer:
                 except Exception:
                     # If query fails, continue with count from existing data
                     pass
-            
+
             laps_percentage = (laps_configured_count / total_computers * 100) if total_computers > 0 else 0
-            
+
             controls.append({
                 'control_id': 'CIS 2.3.4.1',
                 'control_name': 'LAPS configuration',
@@ -279,7 +279,7 @@ class ComplianceAnalyzer:
                 'ldap_query': '(&(objectClass=computer)(|(ms-Mcs-AdmPwdExpirationTime=*)(msMcs-AdmPwdExpirationTime=*)))',
                 'recommendation': 'Check LAPS installation status'
             })
-        
+
         # CIS 2.3.5.1 - GPP passwords
         try:
             gpp_results = self.ldap.search(
@@ -302,7 +302,7 @@ class ComplianceAnalyzer:
             })
         except Exception as e:
             logger.debug(f"Error checking GPP: {e}")
-        
+
         # CIS 2.3.6.1 - DCSync rights
         try:
             # Check for DCSync rights by examining ACLs on domain root
@@ -326,7 +326,7 @@ class ComplianceAnalyzer:
                 })
         except Exception as e:
             logger.debug(f"Error checking DCSync: {e}")
-        
+
         # CIS 2.3.7.1 - Trust SID filtering
         try:
             trusts = self.ldap.search(
@@ -352,7 +352,7 @@ class ComplianceAnalyzer:
                                 sid_filtering_disabled.append(trust.get('name', 'Unknown'))
                         except (ValueError, TypeError):
                             logger.debug(f"Could not parse trustAttributes: {trust_attrs}")
-            
+
             controls.append({
                 'control_id': 'CIS 2.3.7.1',
                 'control_name': 'Trust SID filtering',
@@ -367,13 +367,13 @@ class ComplianceAnalyzer:
             })
         except Exception as e:
             logger.debug(f"Error checking trusts: {e}")
-        
+
         # Calculate compliance score
         passed = sum(1 for c in controls if c.get('status') == 'passed')
         failed = sum(1 for c in controls if c.get('status') == 'failed')
         total = len(controls)
         compliance_score = (passed / total * 100) if total > 0 else 0.0
-        
+
         return {
             'framework': 'CIS Benchmark',
             'total_controls': total,
@@ -384,20 +384,20 @@ class ComplianceAnalyzer:
             'controls': controls,
             'timestamp': datetime.now().isoformat()
         }
-    
-    def analyze_nist_csf(self, users: List[Dict[str, Any]], 
-                        groups: List[Dict[str, Any]], 
-                        computers: List[Dict[str, Any]],
-                        password_policy_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def analyze_nist_csf(self, users: list[dict[str, Any]],
+                        groups: list[dict[str, Any]],
+                        computers: list[dict[str, Any]],
+                        password_policy_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """
         Perform NIST Cybersecurity Framework compliance checks using LDAP queries.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             password_policy_data: Optional password policy data
-            
+
         Returns:
             Dict with NIST CSF compliance analysis
         """
@@ -408,7 +408,7 @@ class ComplianceAnalyzer:
             'RC': {'name': 'Recover', 'controls': [], 'status': 'partial'},
             'ID': {'name': 'Identify', 'controls': [], 'status': 'partial'}
         }
-        
+
         # PR.AC-1: Identity and access management
         # Check for accounts with password never expires
         password_never_expires = sum(1 for u in users if u.get('userAccountControl', 0) & 0x10000)
@@ -422,7 +422,7 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536))'
         })
-        
+
         # PR.AC-1: Check for accounts without passwords
         password_not_required = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
         functions['PR']['controls'].append({
@@ -434,7 +434,7 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))'
         })
-        
+
         # PR.AC-7: Unsuccessful logon attempts
         if password_policy_data:
             lockout_threshold = password_policy_data.get('lockoutThreshold', 0)
@@ -447,11 +447,11 @@ class ComplianceAnalyzer:
                 },
                 'ldap_query': '(objectClass=domainDNS)'
             })
-        
+
         # PR.DS-2: Data-at-rest protection
         # Check for EOL systems
-        eol_count = sum(1 for c in computers if c.get('operatingSystem') and 
-                       any(eol in (c.get('operatingSystem', '') or '').upper() 
+        eol_count = sum(1 for c in computers if c.get('operatingSystem') and
+                       any(eol in (c.get('operatingSystem', '') or '').upper()
                            for eol in ['WINDOWS SERVER 2008', 'WINDOWS SERVER 2012']))
         functions['PR']['controls'].append({
             'control_id': 'PR.DS-2',
@@ -463,7 +463,7 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=computer)(operatingSystem=*))'
         })
-        
+
         # DE.AE: Anomalies and events
         # Check for inactive accounts (potential security risk)
         inactive_threshold = datetime.now() - timedelta(days=90)
@@ -482,7 +482,7 @@ class ComplianceAnalyzer:
                     except (ValueError, AttributeError):
                         # If parsing fails, skip this user
                         continue
-                
+
                 if logon_dt and isinstance(logon_dt, datetime):
                     # Compare datetime objects
                     try:
@@ -501,44 +501,44 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=user)(lastLogonTimestamp<=*))'
         })
-        
+
         # Calculate scores per function
-        for func_id, func_data in functions.items():
+        for func_data in functions.values():
             if func_data['controls']:
                 passed = sum(1 for c in func_data['controls'] if c.get('status') == 'passed')
                 total = len(func_data['controls'])
                 func_data['score'] = (passed / total * 100) if total > 0 else 0.0
                 func_data['status'] = 'passed' if func_data['score'] >= 80 else 'partial' if func_data['score'] >= 50 else 'failed'
-        
+
         # Calculate overall compliance score
         total_score = sum(f.get('score', 0) for f in functions.values() if f.get('controls'))
         compliance_score = total_score / len([f for f in functions.values() if f.get('controls')]) if functions else 0.0
-        
+
         return {
             'framework': 'NIST Cybersecurity Framework',
             'compliance_score': compliance_score,
             'functions': functions,
             'timestamp': datetime.now().isoformat()
         }
-    
-    def analyze_iso_27001(self, users: List[Dict[str, Any]], 
-                          groups: List[Dict[str, Any]], 
-                          computers: List[Dict[str, Any]],
-                          password_policy_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def analyze_iso_27001(self, users: list[dict[str, Any]],
+                          groups: list[dict[str, Any]],
+                          computers: list[dict[str, Any]],
+                          password_policy_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """
         Perform ISO 27001 compliance checks using LDAP queries.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             password_policy_data: Optional password policy data
-            
+
         Returns:
             Dict with ISO 27001 compliance analysis
         """
         domains = defaultdict(list)
-        
+
         # A.9.2.1: User registration and de-registration
         # Check for disabled accounts that should be removed
         disabled_accounts = [u for u in users if u.get('userAccountControl', 0) & 0x2]
@@ -552,7 +552,7 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=2))'
         })
-        
+
         # A.9.4.2: Secure log-on procedures
         preauth_disabled = sum(1 for u in users if u.get('userAccountControl', 0) & 0x400000)
         domains['A.9.4'].append({
@@ -564,14 +564,14 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))'
         })
-        
+
         # A.9.4.3: Password management system
         if password_policy_data:
             min_length = password_policy_data.get('minPwdLength', 0)
             max_age_raw = password_policy_data.get('maxPwdAge', 0)
             pwd_properties = password_policy_data.get('pwdProperties', 0)
             complexity_enabled = bool(pwd_properties & 1)
-            
+
             # Convert maxPwdAge to days
             # Use same conversion logic as password_policy_analyzer
             max_age_days = 0
@@ -585,7 +585,7 @@ class ComplianceAnalyzer:
                             max_age_days = 999999  # Never expires
                 except (ValueError, TypeError):
                     max_age_days = 0
-            
+
             domains['A.9.4'].append({
                 'control_id': 'A.9.4.3',
                 'control_name': 'Password management system',
@@ -597,10 +597,10 @@ class ComplianceAnalyzer:
                 },
                 'ldap_query': '(objectClass=domainDNS)'
             })
-        
+
         # A.12.6.1: Management of technical vulnerabilities
-        eol_count = sum(1 for c in computers if c.get('operatingSystem') and 
-                       any(eol in (c.get('operatingSystem', '') or '').upper() 
+        eol_count = sum(1 for c in computers if c.get('operatingSystem') and
+                       any(eol in (c.get('operatingSystem', '') or '').upper()
                            for eol in ['WINDOWS SERVER 2008', 'WINDOWS SERVER 2012']))
         domains['A.12.6'].append({
             'control_id': 'A.12.6.1',
@@ -611,7 +611,7 @@ class ComplianceAnalyzer:
             },
             'ldap_query': '(&(objectClass=computer)(operatingSystem=*))'
         })
-        
+
         # Calculate scores per domain
         domain_scores = {}
         for domain, controls in domains.items():
@@ -619,9 +619,9 @@ class ComplianceAnalyzer:
                 passed = sum(1 for c in controls if c.get('status') == 'passed')
                 total = len(controls)
                 domain_scores[domain] = (passed / total * 100) if total > 0 else 0.0
-        
+
         overall_score = sum(domain_scores.values()) / len(domain_scores) if domain_scores else 0.0
-        
+
         return {
             'framework': 'ISO 27001',
             'compliance_score': overall_score,
@@ -629,31 +629,31 @@ class ComplianceAnalyzer:
             'domain_scores': domain_scores,
             'timestamp': datetime.now().isoformat()
         }
-    
-    def analyze_gdpr(self, users: List[Dict[str, Any]], 
-                    groups: List[Dict[str, Any]], 
-                    computers: List[Dict[str, Any]],
-                    password_policy_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def analyze_gdpr(self, users: list[dict[str, Any]],
+                    groups: list[dict[str, Any]],
+                    computers: list[dict[str, Any]],
+                    password_policy_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """
         Perform GDPR compliance checks using LDAP queries.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             password_policy_data: Optional password policy data
-            
+
         Returns:
             Dict with GDPR compliance analysis
         """
         articles = defaultdict(list)
-        
+
         # Article 32: Security of processing
         # Check password policy strength
         if password_policy_data:
             min_length = password_policy_data.get('minPwdLength', 0)
             complexity_enabled = bool(password_policy_data.get('pwdProperties', 0) & 1)
-            
+
             articles['Article 32'].append({
                 'control_id': 'Article 32',
                 'control_name': 'Security of processing - Password strength',
@@ -665,7 +665,7 @@ class ComplianceAnalyzer:
                 'ldap_query': '(objectClass=domainDNS)',
                 'description': 'Ensure strong password policies to protect personal data'
             })
-        
+
         # Article 32: Account lockout
         if password_policy_data:
             lockout_threshold = password_policy_data.get('lockoutThreshold', 0)
@@ -679,7 +679,7 @@ class ComplianceAnalyzer:
                 'ldap_query': '(objectClass=domainDNS)',
                 'description': 'Enable account lockout to prevent unauthorized access to personal data'
             })
-        
+
         # Article 32: Check for accounts without passwords
         password_not_required = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
         articles['Article 32'].append({
@@ -692,7 +692,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))',
             'description': 'Ensure all accounts require passwords to protect personal data'
         })
-        
+
         # Article 32: Check for excessive privileges
         domain_admins = next((g for g in groups if 'DOMAIN ADMINS' in (g.get('name', '') or '').upper()), None)
         domain_admin_count = len(domain_admins.get('member', [])) if domain_admins and domain_admins.get('member') else 0
@@ -706,7 +706,7 @@ class ComplianceAnalyzer:
             'ldap_query': '(&(objectClass=group)(name=Domain Admins))',
             'description': 'Limit privileged access to personal data'
         })
-        
+
         # Calculate scores per article
         article_scores = {}
         for article, controls in articles.items():
@@ -714,9 +714,9 @@ class ComplianceAnalyzer:
                 passed = sum(1 for c in controls if c.get('status') == 'passed')
                 total = len(controls)
                 article_scores[article] = (passed / total * 100) if total > 0 else 0.0
-        
+
         overall_score = sum(article_scores.values()) / len(article_scores) if article_scores else 0.0
-        
+
         return {
             'framework': 'GDPR',
             'compliance_score': overall_score,
@@ -724,20 +724,20 @@ class ComplianceAnalyzer:
             'article_scores': article_scores,
             'timestamp': datetime.now().isoformat()
         }
-    
-    def generate_comprehensive_compliance_report(self, users: List[Dict[str, Any]], 
-                                                groups: List[Dict[str, Any]], 
-                                                computers: List[Dict[str, Any]],
-                                                password_policy_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+
+    def generate_comprehensive_compliance_report(self, users: list[dict[str, Any]],
+                                                groups: list[dict[str, Any]],
+                                                computers: list[dict[str, Any]],
+                                                password_policy_data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """
         Generate comprehensive compliance report for all frameworks using LDAP queries.
-        
+
         Args:
             users: List of user dictionaries
             groups: List of group dictionaries
             computers: List of computer dictionaries
             password_policy_data: Optional password policy data
-            
+
         Returns:
             Dict with all compliance analyses
         """
@@ -767,11 +767,11 @@ class ComplianceAnalyzer:
 
     def _analyze_cis_controls_v8_from_data(
         self,
-        users: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]],
-        computers: List[Dict[str, Any]],
-        password_policy_data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+        password_policy_data: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
         """Derive CIS Controls v8 compliance from LDAP data."""
         failed = []
         # Map CIS controls to checks (simplified)

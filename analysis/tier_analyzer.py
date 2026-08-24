@@ -5,8 +5,7 @@ Based on Microsoft's privileged access tier model
 """
 
 import logging
-from typing import List, Dict, Any, Optional
-from core.constants import PRIVILEGED_GROUPS
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +19,10 @@ class TierAnalyzer:
 
     def analyze_tiers(
         self,
-        users: List[Dict[str, Any]],
-        computers: List[Dict[str, Any]],
-        groups: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        users: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+        groups: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         """
         Categorize users and computers into Tier 0, 1, 2.
         Returns tier breakdown and risk assessment.
@@ -36,7 +35,7 @@ class TierAnalyzer:
             'tier_risks': []
         }
 
-        def _user_tier(user: Dict[str, Any]) -> int:
+        def _user_tier(user: dict[str, Any]) -> int:
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
                 member_of = [member_of]
@@ -48,7 +47,7 @@ class TierAnalyzer:
                     return 1
             return 2
 
-        def _computer_tier(computer: Dict[str, Any]) -> int:
+        def _computer_tier(computer: dict[str, Any]) -> int:
             name = computer.get('name', '')
             os_name = computer.get('operatingSystem', '') or ''
             if 'DC' in name.upper() or 'DOMAIN CONTROLLER' in os_name.upper():

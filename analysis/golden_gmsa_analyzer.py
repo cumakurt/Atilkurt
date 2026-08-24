@@ -6,8 +6,7 @@ computed without touching AD again — a "Golden gMSA" attack.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -25,14 +24,14 @@ class GoldenGMSAAnalyzer:
         """
         self.ldap = ldap_connection
 
-    def analyze(self) -> List[Dict[str, Any]]:
+    def analyze(self) -> list[dict[str, Any]]:
         """
         Analyze KDS Root Keys and gMSA accounts.
 
         Returns:
             List of risk dictionaries
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -64,7 +63,7 @@ class GoldenGMSAAnalyzer:
 
     # ── KDS Root Key Retrieval ──────────────────────────────────────────────
 
-    def _get_kds_root_keys(self) -> List[Dict[str, Any]]:
+    def _get_kds_root_keys(self) -> list[dict[str, Any]]:
         """Retrieve all msKds-ProvRootKey objects in the forest."""
         try:
             config_dn = self._get_config_dn()
@@ -108,7 +107,7 @@ class GoldenGMSAAnalyzer:
 
     # ── gMSA Account Retrieval ──────────────────────────────────────────────
 
-    def _get_gmsa_accounts(self, base_dn: str) -> List[Dict[str, Any]]:
+    def _get_gmsa_accounts(self, base_dn: str) -> list[dict[str, Any]]:
         """Retrieve all gMSA accounts."""
         try:
             results = self.ldap.search(
@@ -131,10 +130,10 @@ class GoldenGMSAAnalyzer:
     # ── Root Key Security Assessment ────────────────────────────────────────
 
     def _assess_root_key_security(
-        self, root_keys: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, root_keys: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Assess the security posture of KDS Root Keys."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         # Multiple root keys increase the attack surface
         if len(root_keys) > 1:
@@ -168,7 +167,7 @@ class GoldenGMSAAnalyzer:
             risks.append({
                 'type': RiskTypes.GOLDEN_GMSA_ROOT_KEY,
                 'severity': Severity.HIGH,
-                'title': f'KDS Root Key found — Golden gMSA attack possible',
+                'title': 'KDS Root Key found — Golden gMSA attack possible',
                 'description': (
                     f'KDS Root Key "{key_cn}" exists '
                     f'(KDF: {kdf_algo}). '
@@ -207,6 +206,7 @@ class GoldenGMSAAnalyzer:
                 'mitre_attack': MITRETechniques.VALID_ACCOUNTS_DOMAIN,
                 'key_cn': key_cn,
                 'kdf_algorithm': str(kdf_algo),
+                'created_at': str(created) if created is not None else None,
             })
 
         return risks
@@ -214,10 +214,10 @@ class GoldenGMSAAnalyzer:
     # ── gMSA Password Reader Assessment ─────────────────────────────────────
 
     def _assess_gmsa_password_readers(
-        self, gmsa_accounts: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, gmsa_accounts: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Check how many principals can read each gMSA password."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         for gmsa in gmsa_accounts:
             sam = gmsa.get('sAMAccountName', '?')

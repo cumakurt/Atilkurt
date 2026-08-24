@@ -6,7 +6,7 @@ accounts to assess Golden Ticket attack exposure.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -35,14 +35,14 @@ class KRBTGTHealthAnalyzer:
         """
         self.ldap = ldap_connection
 
-    def analyze(self) -> List[Dict[str, Any]]:
+    def analyze(self) -> list[dict[str, Any]]:
         """
         Analyze krbtgt account health.
 
         Returns:
             List of risk dictionaries for krbtgt issues
         """
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
 
         try:
             base_dn = self.ldap.base_dn
@@ -67,7 +67,7 @@ class KRBTGTHealthAnalyzer:
 
     # ── Helper Methods ──────────────────────────────────────────────────────
 
-    def _get_krbtgt_account(self, base_dn: str) -> Optional[Dict[str, Any]]:
+    def _get_krbtgt_account(self, base_dn: str) -> Optional[dict[str, Any]]:
         """Retrieve the primary krbtgt account."""
         try:
             results = self.ldap.search(
@@ -85,7 +85,7 @@ class KRBTGTHealthAnalyzer:
             logger.debug(f"Could not retrieve krbtgt account: {e}")
             return None
 
-    def _get_rodc_krbtgt_accounts(self, base_dn: str) -> List[Dict[str, Any]]:
+    def _get_rodc_krbtgt_accounts(self, base_dn: str) -> list[dict[str, Any]]:
         """Retrieve RODC-specific krbtgt accounts (krbtgt_*)."""
         try:
             results = self.ldap.search(
@@ -108,7 +108,7 @@ class KRBTGTHealthAnalyzer:
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
-    def _parse_pwd_last_set(self, account: Dict[str, Any]) -> Optional[datetime]:
+    def _parse_pwd_last_set(self, account: dict[str, Any]) -> Optional[datetime]:
         """Parse pwdLastSet into a timezone-aware datetime, handling various formats."""
         pwd_last_set = account.get('pwdLastSet')
         if not pwd_last_set:
@@ -148,10 +148,10 @@ class KRBTGTHealthAnalyzer:
         return None
 
     def _assess_password_age(
-        self, account: Dict[str, Any], is_rodc: bool = False
-    ) -> List[Dict[str, Any]]:
+        self, account: dict[str, Any], is_rodc: bool = False
+    ) -> list[dict[str, Any]]:
         """Check krbtgt password age and generate risks."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         sam = account.get('sAMAccountName', 'krbtgt')
         label = f"RODC {sam}" if is_rodc else 'krbtgt'
 
@@ -228,10 +228,10 @@ class KRBTGTHealthAnalyzer:
         return risks
 
     def _assess_encryption_types(
-        self, account: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+        self, account: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """Check krbtgt supported encryption types for weak ciphers."""
-        risks: List[Dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
         enc_raw = account.get('msDS-SupportedEncryptionTypes')
 
         if enc_raw is None:

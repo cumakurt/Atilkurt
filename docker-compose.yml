@@ -10,7 +10,7 @@ services:
       ATILKURT_DOMAIN: ${ATILKURT_DOMAIN}
       ATILKURT_USER: ${ATILKURT_USER}
       ATILKURT_PASS: ${ATILKURT_PASS}
-      ATILKURT_DC_IP: ${ATILKURT_DC_IP}
+      ATILKURT_DC_IP: ${ATILKURT_DC_IP:-}
       ATILKURT_OUTPUT: /output/report.html
     volumes:
       - ./output:/output
