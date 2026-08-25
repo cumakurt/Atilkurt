@@ -41,10 +41,15 @@ class RiskTypes:
     ADMIN_COUNT_SET = 'admin_count_set'
     INACTIVE_PRIVILEGED_ACCOUNT = 'inactive_privileged_account'
     DISABLED_USER_ACCOUNT = 'disabled_user_account'
+    DISABLED_DOMAIN_ADMIN = 'disabled_domain_admin'
+    DISABLED_ENTERPRISE_ADMIN = 'disabled_enterprise_admin'
     LOCKED_USER_ACCOUNT = 'locked_user_account'
     SERVICE_ACCOUNT_PASSWORD_NEVER_EXPIRES = 'service_account_password_never_expires'
     RECENTLY_CREATED_ACCOUNT = 'recently_created_account'
     RECENTLY_MODIFIED_GROUP_MEMBERSHIP = 'recently_modified_group_membership'
+    REVERSIBLE_ENCRYPTION_ENABLED = 'reversible_encryption_enabled'
+    PRIVILEGED_USER_OUTSIDE_PROTECTED_USERS = 'privileged_user_outside_protected_users'
+    PRIVILEGED_USER_WITHOUT_SMARTCARD = 'privileged_user_without_smartcard'
 
     # Kerberos & Delegation risks
     UNCONSTRAINED_DELEGATION = 'unconstrained_delegation'
@@ -53,6 +58,8 @@ class RiskTypes:
     COMPUTER_UNCONSTRAINED_DELEGATION = 'computer_unconstrained_delegation'
     COMPUTER_BROAD_CONSTRAINED_DELEGATION = 'computer_broad_constrained_delegation'
     DUPLICATE_SPN = 'duplicate_spn'
+    KERBEROS_LEGACY_ENCRYPTION = 'kerberos_legacy_encryption'
+    PRIVILEGED_ACCOUNT_DELEGATABLE = 'privileged_account_delegatable'
 
     # Computer risks
     EOL_OPERATING_SYSTEM = 'eol_operating_system'
@@ -108,6 +115,7 @@ class RiskTypes:
 
     # Policy risks
     PASSWORD_POLICY_WEAK = 'password_policy_weak'
+    WEAK_FINE_GRAINED_PASSWORD_POLICY = 'weak_fine_grained_password_policy'
 
     # Trust risks
     TRUST_RELATIONSHIP_RISK = 'trust_relationship_risk'
@@ -216,6 +224,46 @@ class RiskTypes:
     REPLICATION_SUSPICIOUS_CHANGE = 'replication_suspicious_change'
     REPLICATION_TOMBSTONE_RISK = 'replication_tombstone_risk'
 
+    # LDAP / directory exposure
+    LDAP_ANONYMOUS_ENABLED = 'ldap_anonymous_enabled'
+    LDAP_PREWIN2K_BROAD_MEMBERSHIP = 'ldap_prewin2k_broad_membership'
+    LDAP_GUEST_ENABLED = 'ldap_guest_enabled'
+    LDAP_LEGACY_FUNCTIONAL_LEVEL = 'ldap_legacy_functional_level'
+
+    # Hidden privilege
+    HIDDEN_PRIMARY_GROUP_PRIVILEGE = 'hidden_primary_group_privilege'
+    PRIVILEGED_COMPUTER_ACCOUNT = 'privileged_computer_account'
+    BUILTIN_ADMIN_RENAMED = 'builtin_admin_renamed'
+
+    # Hybrid identity
+    HYBRID_AZURE_SSO_ACCOUNT = 'hybrid_azure_sso_account'
+    HYBRID_ENTRA_CONNECT_ACCOUNT = 'hybrid_entra_connect_account'
+    HYBRID_ADFS_SERVICE = 'hybrid_adfs_service'
+    HYBRID_JOIN_NOT_OBSERVED = 'hybrid_join_not_observed'
+
+    # RODC
+    RODC_MISSING_NEVER_REVEAL = 'rodc_missing_never_reveal'
+    RODC_PRIVILEGED_REVEAL = 'rodc_privileged_reveal'
+    RODC_BROAD_REVEALED_SECRETS = 'rodc_broad_revealed_secrets'
+    RODC_ALLOWED_GROUP_PRIVILEGED = 'rodc_allowed_group_privileged'
+
+    # dMSA / BadSuccessor
+    DMSA_SCHEMA_ENABLED = 'dmsa_schema_enabled'
+    DMSA_PREDECESSOR_LINK = 'dmsa_predecessor_link'
+    DMSA_OBJECT_PRESENT = 'dmsa_object_present'
+
+    # SCCM
+    SCCM_SYSTEM_MANAGEMENT_PRESENT = 'sccm_system_management_present'
+    SCCM_MANAGEMENT_POINT = 'sccm_management_point'
+
+    # Windows LAPS
+    WINDOWS_LAPS_NOT_DEPLOYED = 'windows_laps_not_deployed'
+    WINDOWS_LAPS_PLAINTEXT = 'windows_laps_plaintext'
+
+    # AD CS ESC15/16
+    CERTIFICATE_ESC15 = 'certificate_esc15'
+    CERTIFICATE_ESC16 = 'certificate_esc16'
+
 
 # Privileged Groups
 PRIVILEGED_GROUPS = [
@@ -260,6 +308,7 @@ class MITRETechniques:
     PRIVILEGE_ESCALATION = 'TA0004'
     UNSECURED_CREDENTIALS = 'T1552'
     EXPLOIT_PUBLIC_FACING_APPLICATION = 'T1190'
+    OS_CREDENTIAL_DUMP = 'T1003'
 
 
 # Time Thresholds (in days)

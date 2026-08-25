@@ -86,6 +86,20 @@ class TestTimedCache(unittest.TestCase):
 
         self.assertEqual(len(errors), 0, f"Thread safety errors: {errors}")
 
+    def test_maxsize_evicts_least_recently_used(self):
+        cache = TimedCache(default_ttl=60, maxsize=2)
+        cache.set("a", 1)
+        cache.set("b", 2)
+        cache.get("a")
+        cache.set("c", 3)
+        self.assertEqual(cache.get("a"), 1)
+        self.assertIsNone(cache.get("b"))
+        self.assertEqual(cache.get("c"), 3)
+
+    def test_maxsize_rejects_non_positive(self):
+        with self.assertRaises(ValueError):
+            TimedCache(maxsize=0)
+
 
 class TestCacheKey(unittest.TestCase):
     """Test cases for cache_key function."""

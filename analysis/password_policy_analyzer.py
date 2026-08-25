@@ -6,6 +6,7 @@ Analyzes domain password policy and account lockout policy
 import logging
 from datetime import timedelta
 from typing import Any
+from core.ad_identity import root_dse_attributes
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class PasswordPolicyAnalyzer:
                     max_age_days_val = None
                     history_length_val = None
                     complexity_enabled_val = None
+                    reversible_encryption_enabled_val = None
                     lockout_threshold_val = None
 
                     # Check minimum password length
@@ -163,11 +165,18 @@ class PasswordPolicyAnalyzer:
                         try:
                             pwd_properties_int = int(pwd_properties) if isinstance(pwd_properties, (int, str)) else 0
                             complexity_enabled_val = bool(pwd_properties_int & 1)  # PASSWORD_COMPLEXITY flag
+                            reversible_encryption_enabled_val = bool(pwd_properties_int & 0x10)
                             if not complexity_enabled_val:
                                 policy_issues.append({
                                     'issue': 'Password complexity is disabled',
                                     'severity': Severity.HIGH,
                                     'recommendation': 'Enable password complexity requirements'
+                                })
+                            if reversible_encryption_enabled_val:
+                                policy_issues.append({
+                                    'issue': 'Reversible password encryption is enabled',
+                                    'severity': Severity.CRITICAL,
+                                    'recommendation': 'Disable reversible password encryption and rotate affected passwords'
                                 })
                         except (ValueError, TypeError) as e:
                             logger.debug(f"Error parsing pwdProperties: {e}")
@@ -205,6 +214,7 @@ class PasswordPolicyAnalyzer:
                                 'max_age_days': max_age_days_val,
                                 'history_length': history_length_val,
                                 'complexity_enabled': complexity_enabled_val,
+                                'reversible_encryption_enabled': reversible_encryption_enabled_val,
                                 'lockout_threshold': lockout_threshold_val
                             },
                             'impact': (
@@ -223,17 +233,16 @@ class PasswordPolicyAnalyzer:
                 # If no domain info found, create a warning risk
                 logger.warning("Could not retrieve domain password policy information. Trying alternative methods...")
 
-                # Try one more approach: query rootDSE for defaultNamingContext
+                # Try one more approach using RootDSE's defaultNamingContext.
                 try:
-                    # Try to get rootDSE
-                    root_results = self.ldap.search(
-                        search_base='',
-                        search_filter='(objectClass=*)',
-                        attributes=['defaultNamingContext']
-                    )
-
-                    if root_results:
-                        default_naming_context = root_results[0].get('defaultNamingContext')
+                    root = root_dse_attributes(self.ldap, ['defaultNamingContext'])
+                    if root:
+                        default_naming_context = root.get('defaultNamingContext')
+                        if isinstance(default_naming_context, (list, tuple)):
+                            default_naming_context = (
+                                default_naming_context[0]
+                                if default_naming_context else None
+                            )
                         if default_naming_context:
                             # Try querying with the naming context
                             results = self.ldap.search(
@@ -264,6 +273,7 @@ class PasswordPolicyAnalyzer:
                                 max_age_days_val = None
                                 history_length_val = None
                                 complexity_enabled_val = None
+                                reversible_encryption_enabled_val = None
                                 lockout_threshold_val = None
 
                                 # Check minimum password length
@@ -316,11 +326,18 @@ class PasswordPolicyAnalyzer:
                                     try:
                                         pwd_properties_int = int(pwd_properties) if isinstance(pwd_properties, (int, str)) else 0
                                         complexity_enabled_val = bool(pwd_properties_int & 1)
+                                        reversible_encryption_enabled_val = bool(pwd_properties_int & 0x10)
                                         if not complexity_enabled_val:
                                             policy_issues.append({
                                                 'issue': 'Password complexity is disabled',
                                                 'severity': Severity.HIGH,
                                                 'recommendation': 'Enable password complexity requirements'
+                                            })
+                                        if reversible_encryption_enabled_val:
+                                            policy_issues.append({
+                                                'issue': 'Reversible password encryption is enabled',
+                                                'severity': Severity.CRITICAL,
+                                                'recommendation': 'Disable reversible password encryption and rotate affected passwords'
                                             })
                                     except (ValueError, TypeError):
                                         pass
@@ -358,6 +375,7 @@ class PasswordPolicyAnalyzer:
                                             'max_age_days': max_age_days_val,
                                             'history_length': history_length_val,
                                             'complexity_enabled': complexity_enabled_val,
+                                            'reversible_encryption_enabled': reversible_encryption_enabled_val,
                                             'lockout_threshold': lockout_threshold_val
                                         },
                                         'impact': (
@@ -398,9 +416,9 @@ class PasswordPolicyAnalyzer:
             logger.info(f"Found {len(risks)} password policy issues")
             return risks
 
-        except Exception as e:
-            logger.error(f"Error in password policy analysis: {str(e)}")
-            return []
+        except Exception:
+            logger.exception("Unexpected error in password policy analysis")
+            raise
 
     def _convert_timespan_to_days(self, timespan) -> int:
         """

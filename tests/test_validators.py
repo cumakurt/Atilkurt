@@ -80,10 +80,13 @@ class TestValidateServerAddress(unittest.TestCase):
 class TestValidateOutputFile(unittest.TestCase):
     """Test cases for validate_output_file - path traversal prevention."""
 
+    def test_double_dot_filename_is_allowed(self):
+        """A filename containing '..' as characters is not path traversal."""
+        self.assertEqual(validate_output_file("report..html"), "report..html")
+
     def test_valid_output_path(self):
         """Test valid output paths return normalized form."""
         self.assertEqual(validate_output_file("report.html"), "report.html")
-        # normpath will produce OS-native path separators
         result = validate_output_file("reports/domain_report.html")
         self.assertEqual(result, os.path.normpath("reports/domain_report.html"))
 
@@ -148,6 +151,26 @@ class TestValidatePassword(unittest.TestCase):
         """Test empty password raises ValidationError."""
         with self.assertRaises(ValidationError):
             validate_password("")
+
+
+class TestAppConfigFromEnv(unittest.TestCase):
+    """Environment configuration must reject out-of-range values."""
+
+    def test_invalid_timeout_keeps_default(self):
+        from unittest.mock import patch
+        from core.config import AppConfig
+
+        with patch.dict("os.environ", {"LDAP_TIMEOUT": "0"}, clear=False):
+            config = AppConfig.from_env()
+        self.assertEqual(config.ldap.default_timeout, 30)
+
+    def test_valid_timeout_is_applied(self):
+        from unittest.mock import patch
+        from core.config import AppConfig
+
+        with patch.dict("os.environ", {"LDAP_TIMEOUT": "45"}, clear=False):
+            config = AppConfig.from_env()
+        self.assertEqual(config.ldap.default_timeout, 45)
 
 
 if __name__ == '__main__':

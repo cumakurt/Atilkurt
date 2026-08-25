@@ -12,7 +12,17 @@ import logging
 from typing import Any, Optional
 from collections import defaultdict
 from ldap3.utils.conv import escape_filter_chars
-from core.constants import Severity, PRIVILEGED_GROUPS
+from core.ad_identity import (
+    ROLE_DOMAIN_ADMINS,
+    ROLE_ENTERPRISE_ADMINS,
+    ROLE_SCHEMA_ADMINS,
+    computer_is_domain_controller,
+    first_ldap_rdn,
+    group_is_role,
+    is_privileged_group_record,
+    membership_names,
+)
+from core.constants import Severity
 from core.security_descriptor_parser import SecurityDescriptorParser, parse_security_descriptor
 
 logger = logging.getLogger(__name__)
@@ -160,7 +170,6 @@ class ACLSecurityAnalyzer:
             ldap_connection: LDAPConnection instance
         """
         self.ldap = ldap_connection
-        self.privileged_groups_set = set(PRIVILEGED_GROUPS)
         self.shadow_admins = []
         self.privilege_escalation_paths = []
         self.acl_risks = []
@@ -293,9 +302,8 @@ class ACLSecurityAnalyzer:
         return [g for g in groups if self._is_privileged_group(g)]
 
     def _is_privileged_group(self, group: dict[str, Any]) -> bool:
-        """Check if group is privileged."""
-        group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
-        return any(priv_group.lower() in group_name for priv_group in self.privileged_groups_set)
+        """Check if group is a well-known privileged group."""
+        return is_privileged_group_record(group)
 
     def _identify_tier0_objects(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
                                 computers: list[dict[str, Any]], domain_dn: str) -> list[dict[str, Any]]:
@@ -304,13 +312,12 @@ class ACLSecurityAnalyzer:
 
         # Domain Admins, Enterprise Admins
         for group in groups:
-            group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
-            if 'domain admin' in group_name or 'enterprise admin' in group_name:
+            if group_is_role(group, ROLE_DOMAIN_ADMINS) or group_is_role(group, ROLE_ENTERPRISE_ADMINS):
                 tier0.append({'type': 'group', 'object': group})
 
         # Domain Controllers
         for computer in computers:
-            if 'DC' in (computer.get('name') or '').upper() or 'CONTROLLER' in (computer.get('name') or '').upper():
+            if computer_is_domain_controller(computer):
                 tier0.append({'type': 'computer', 'object': computer})
 
         return tier0
@@ -821,28 +828,24 @@ class ACLSecurityAnalyzer:
             bool: True if user is already admin
         """
         # Check adminCount flag
-        if user.get('adminCount') == 1 or user.get('adminCount') == '1':
+        if str(user.get("adminCount") or "").strip() in {"1", "true", "True"}:
             return True
 
-        # Check group memberships
-        member_of = user.get('memberOf', [])
-        if isinstance(member_of, str):
-            member_of = [member_of]
-
-        # Build privileged group names set for quick lookup
-        privileged_group_names = set()
+        admin_names: set[str] = set()
         for group in groups:
-            group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
-            if any(priv_name in group_name for priv_name in ['domain admin', 'enterprise admin', 'schema admin']):
-                privileged_group_names.add(group_name)
-
-        # Check if user is member of any privileged group
-        for group_dn in member_of:
-            group_name = self._extract_name_from_dn(group_dn).lower()
-            if group_name in privileged_group_names:
-                return True
-
-        return False
+            if (
+                group_is_role(group, ROLE_DOMAIN_ADMINS)
+                or group_is_role(group, ROLE_ENTERPRISE_ADMINS)
+                or group_is_role(group, ROLE_SCHEMA_ADMINS)
+            ):
+                admin_names.update(
+                    membership_names([
+                        group.get("name"),
+                        group.get("sAMAccountName"),
+                        group.get("distinguishedName"),
+                    ])
+                )
+        return bool(membership_names(user.get("memberOf")) & admin_names)
 
     def _analyze_privilege_escalation_paths(self, users: list[dict[str, Any]],
                                             groups: list[dict[str, Any]],
@@ -1010,15 +1013,8 @@ class ACLSecurityAnalyzer:
 
     # Helper methods
     def _extract_name_from_dn(self, dn: str) -> str:
-        """Extract name from distinguished name."""
-        if not dn:
-            return ''
-        parts = dn.split(',')
-        if parts:
-            cn_part = parts[0]
-            if '=' in cn_part:
-                return cn_part.split('=')[1]
-        return dn
+        """Extract the first RDN from a distinguished name."""
+        return first_ldap_rdn(dn)
 
     def _get_permission_impact(self, perm_name: str, obj_type: str) -> str:
         """Get impact description for permission (what the risk means in practice)."""

@@ -7,6 +7,7 @@ computed without touching AD again — a "Golden gMSA" attack.
 
 import logging
 from typing import Any, Optional
+from core.ad_identity import forest_configuration_dn, schema_supports_object_class
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,8 @@ class GoldenGMSAAnalyzer:
 
     def _get_kds_root_keys(self) -> list[dict[str, Any]]:
         """Retrieve all msKds-ProvRootKey objects in the forest."""
+        if schema_supports_object_class(self.ldap, 'msKds-ProvRootKey') is False:
+            return []
         try:
             config_dn = self._get_config_dn()
             if not config_dn:
@@ -86,29 +89,18 @@ class GoldenGMSAAnalyzer:
             return []
 
     def _get_config_dn(self) -> Optional[str]:
-        """Get the Configuration naming context DN."""
-        try:
-            results = self.ldap.search(
-                search_base='',
-                search_filter='(objectClass=*)',
-                attributes=['configurationNamingContext'],
-                size_limit=1,
-            )
-            if results:
-                return results[0].get('configurationNamingContext')
-        except Exception as e:
-            logger.debug(f"Could not retrieve config DN: {e}")
-            # Fallback: derive from base_dn
-            base_dn = self.ldap.base_dn
-            dc_parts = [p for p in base_dn.split(',') if p.upper().startswith('DC=')]
-            if dc_parts:
-                return 'CN=Configuration,' + ','.join(dc_parts)
-        return None
+        """Return the forest configuration naming context from RootDSE."""
+        return forest_configuration_dn(self.ldap)
 
     # ── gMSA Account Retrieval ──────────────────────────────────────────────
 
     def _get_gmsa_accounts(self, base_dn: str) -> list[dict[str, Any]]:
         """Retrieve all gMSA accounts."""
+        if schema_supports_object_class(
+            self.ldap,
+            'msDS-GroupManagedServiceAccount',
+        ) is False:
+            return []
         try:
             results = self.ldap.search(
                 search_base=base_dn,
@@ -117,7 +109,6 @@ class GoldenGMSAAnalyzer:
                     'sAMAccountName', 'distinguishedName',
                     'msDS-ManagedPasswordInterval',
                     'msDS-GroupMSAMembership',
-                    'PrincipalsAllowedToRetrieveManagedPassword',
                     'whenCreated', 'userAccountControl',
                     'servicePrincipalName',
                 ],
@@ -221,9 +212,7 @@ class GoldenGMSAAnalyzer:
 
         for gmsa in gmsa_accounts:
             sam = gmsa.get('sAMAccountName', '?')
-            readers_raw = gmsa.get(
-                'PrincipalsAllowedToRetrieveManagedPassword'
-            ) or gmsa.get('msDS-GroupMSAMembership')
+            readers_raw = gmsa.get('msDS-GroupMSAMembership')
 
             if readers_raw is None:
                 risks.append({

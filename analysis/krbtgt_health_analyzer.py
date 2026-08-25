@@ -235,25 +235,12 @@ class KRBTGTHealthAnalyzer:
         enc_raw = account.get('msDS-SupportedEncryptionTypes')
 
         if enc_raw is None:
-            # If attribute is missing, RC4 is effectively the default
-            risks.append({
-                'type': RiskTypes.KRBTGT_WEAK_ENCRYPTION,
-                'severity': Severity.MEDIUM,
-                'title': 'krbtgt encryption types not explicitly configured',
-                'description': (
-                    'msDS-SupportedEncryptionTypes is not set on the krbtgt '
-                    'account. Windows defaults to RC4-HMAC which is weaker '
-                    'than AES-256. Explicit AES-256 configuration is recommended.'
-                ),
-                'affected_object': 'krbtgt',
-                'object_type': 'user',
-                'mitigation': (
-                    'Set msDS-SupportedEncryptionTypes on krbtgt to include '
-                    'AES-256 (0x18 = AES128 + AES256). After changing, '
-                    'rotate the krbtgt password for the new enc-type to take effect.'
-                ),
-                'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_GOLDEN,
-            })
+            # The KDC and domain defaults determine behavior when this value is
+            # absent, so absence alone is not evidence of RC4-only operation.
+            logger.info(
+                "krbtgt msDS-SupportedEncryptionTypes is not set; "
+                "account-level encryption cannot be inferred"
+            )
             return risks
 
         try:

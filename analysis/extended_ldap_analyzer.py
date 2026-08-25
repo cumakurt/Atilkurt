@@ -19,6 +19,7 @@ Performs additional LDAP-based security checks:
 
 import logging
 from typing import Any
+from core.ad_identity import forest_configuration_dn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -404,7 +405,9 @@ class ExtendedLDAPAnalyzer:
         risks = []
         results = []
         try:
-            config_dn = f"CN=Configuration,{self.base_dn}"
+            config_dn = forest_configuration_dn(self.ldap)
+            if not config_dn:
+                return risks
             exchange_base = f"CN=Microsoft Exchange,CN=Services,{config_dn}"
             try:
                 results = self.ldap.search(

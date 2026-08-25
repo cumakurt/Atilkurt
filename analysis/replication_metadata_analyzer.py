@@ -8,6 +8,7 @@ rogue DC indicators.
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from core.ad_identity import forest_configuration_dn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -209,18 +210,7 @@ class ReplicationMetadataAnalyzer:
     # ── Utilities ───────────────────────────────────────────────────────────
 
     def _get_config_dn(self) -> Optional[str]:
-        try:
-            results = self.ldap.search(
-                search_base='', search_filter='(objectClass=*)',
-                attributes=['configurationNamingContext'], size_limit=1,
-            )
-            if results:
-                return results[0].get('configurationNamingContext')
-        except Exception:
-            pass
-        base_dn = self.ldap.base_dn
-        dc_parts = [p for p in base_dn.split(',') if p.upper().startswith('DC=')]
-        return 'CN=Configuration,' + ','.join(dc_parts) if dc_parts else None
+        return forest_configuration_dn(self.ldap)
 
     @staticmethod
     def _make_aware(dt: datetime) -> datetime:

@@ -7,6 +7,8 @@ Based on Microsoft's privileged access tier model
 import logging
 from typing import Any
 
+from core.ad_identity import computer_is_domain_controller, first_ldap_rdn
+
 logger = logging.getLogger(__name__)
 
 TIER_0_GROUPS = ['Domain Controllers', 'Enterprise Admins', 'Schema Admins']
@@ -39,18 +41,20 @@ class TierAnalyzer:
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
                 member_of = [member_of]
-            for dn in member_of:
-                group_upper = str(dn).upper()
-                if any(t in group_upper for t in [g.upper() for g in TIER_0_GROUPS]):
-                    return 0
-                if any(t in group_upper for t in [g.upper() for g in TIER_1_GROUPS]):
-                    return 1
+            names = {
+                first_ldap_rdn(dn).casefold()
+                for dn in member_of
+                if dn
+            }
+            if any(name in names for name in (g.casefold() for g in TIER_0_GROUPS)):
+                return 0
+            if any(name in names for name in (g.casefold() for g in TIER_1_GROUPS)):
+                return 1
             return 2
 
         def _computer_tier(computer: dict[str, Any]) -> int:
-            name = computer.get('name', '')
             os_name = computer.get('operatingSystem', '') or ''
-            if 'DC' in name.upper() or 'DOMAIN CONTROLLER' in os_name.upper():
+            if computer_is_domain_controller(computer):
                 return 0
             # Servers typically Tier 1, workstations Tier 2
             if 'SERVER' in os_name.upper():

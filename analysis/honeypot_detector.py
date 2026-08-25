@@ -6,6 +6,7 @@ recommendations for deploying effective deception objects.
 
 import logging
 from typing import Any
+from core.ad_identity import membership_names
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -179,14 +180,8 @@ class HoneypotDetector:
 
     @staticmethod
     def _is_privileged(user: dict[str, Any]) -> bool:
-        member_of = user.get('memberOf', []) or []
-        if isinstance(member_of, str):
-            member_of = [member_of]
-        return any(
-            g in str(dn).upper()
-            for dn in member_of
-            for g in ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'ADMINISTRATORS']
-        )
+        privileged = {"domain admins", "enterprise admins", "administrators"}
+        return bool(membership_names(user.get("memberOf")) & privileged)
 
     @staticmethod
     def _never_logged_in(last_logon) -> bool:

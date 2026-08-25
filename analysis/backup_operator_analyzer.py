@@ -7,6 +7,7 @@ often overlooked.
 
 import logging
 from typing import Any, Optional
+from core.ad_identity import first_ldap_rdn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -147,21 +148,19 @@ class BackupOperatorAnalyzer:
 
     @staticmethod
     def _match_sensitive_group(group_name: str) -> Optional[dict]:
-        """Match group name against sensitive group configurations."""
-        upper = group_name.upper()
-        for name, config in SENSITIVE_GROUPS.items():
-            if name.upper() in upper:
+        """Match a collected group name against well-known sensitive groups."""
+        name = first_ldap_rdn(group_name).casefold()
+        if not name:
+            return None
+        for key, config in SENSITIVE_GROUPS.items():
+            if key.casefold() == name:
                 return config
         return None
 
     @staticmethod
     def _extract_cn(dn: str) -> str:
-        """Extract CN from a distinguished name."""
-        for part in dn.split(','):
-            part = part.strip()
-            if part.upper().startswith('CN='):
-                return part[3:]
-        return dn
+        """Extract the first RDN from a distinguished name."""
+        return first_ldap_rdn(dn) or dn
 
     @staticmethod
     def _get_attack_scenario(group_name: str) -> str:

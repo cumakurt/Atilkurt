@@ -4,6 +4,7 @@ Unit tests for user risk, computer risk, and other analyzers
 """
 
 import unittest
+from datetime import datetime
 from analysis.user_risks import UserRiskAnalyzer
 from analysis.computer_risks import ComputerRiskAnalyzer
 from analysis.group_risks import GroupRiskAnalyzer
@@ -37,7 +38,43 @@ class TestUserRiskAnalyzer(unittest.TestCase):
             'distinguishedName': 'CN=admin,CN=Users,DC=test,DC=com',
         }]
         risks = self.analyzer.analyze(users)
-        self.assertIsInstance(risks, list)
+        types = {risk.get("type") for risk in risks}
+        self.assertIn("disabled_domain_admin", types)
+        self.assertNotIn("disabled_user_account", types)
+        finding = next(risk for risk in risks if risk["type"] == "disabled_domain_admin")
+        self.assertEqual(finding.get("affected_object"), "admin")
+        self.assertEqual(finding.get("severity"), "high")
+
+    def test_disabled_enterprise_admin(self):
+        """Disabled Enterprise Admin accounts are reported separately."""
+        users = [{
+            "sAMAccountName": "ea_old",
+            "userAccountControl": 514,
+            "adminCount": 1,
+            "memberOf": ["CN=Enterprise Admins,CN=Users,DC=test,DC=com"],
+            "pwdLastSet": None,
+            "lastLogonTimestamp": None,
+            "servicePrincipalName": [],
+            "isDisabled": True,
+            "distinguishedName": "CN=ea_old,CN=Users,DC=test,DC=com",
+        }]
+        types = {risk.get("type") for risk in self.analyzer.analyze(users)}
+        self.assertIn("disabled_enterprise_admin", types)
+
+    def test_enabled_domain_admin_is_not_flagged_as_disabled(self):
+        users = [{
+            "sAMAccountName": "da_live",
+            "userAccountControl": 512,
+            "adminCount": 1,
+            "memberOf": ["CN=Domain Admins,CN=Users,DC=test,DC=com"],
+            "pwdLastSet": None,
+            "lastLogonTimestamp": None,
+            "servicePrincipalName": [],
+            "isDisabled": False,
+            "distinguishedName": "CN=da_live,CN=Users,DC=test,DC=com",
+        }]
+        types = {risk.get("type") for risk in self.analyzer.analyze(users)}
+        self.assertNotIn("disabled_domain_admin", types)
 
     def test_user_with_no_password_expiry(self):
         """User with DONT_EXPIRE_PASSWORD flag should be flagged."""
@@ -55,6 +92,36 @@ class TestUserRiskAnalyzer(unittest.TestCase):
         risks = self.analyzer.analyze(users)
         self.assertIsInstance(risks, list)
         self.assertTrue(any(r.get('type') == 'user_password_never_expires' for r in risks))
+
+
+class TestUserCollectorLockout(unittest.TestCase):
+    """Locked-account detection must honor UAC LOCKOUT and non-zero lockoutTime."""
+
+    def test_nonzero_filetime_is_locked(self):
+        from unittest.mock import MagicMock
+        from core.collectors.user_collector import UserCollector
+
+        collector = UserCollector(MagicMock(), show_progress=False)
+        self.assertTrue(collector._is_account_locked(132000000000000000))
+        self.assertFalse(collector._is_account_locked(0))
+        self.assertTrue(collector._is_account_locked(datetime.now()))
+
+    def test_uac_lockout_flag_marks_account_locked(self):
+        from unittest.mock import MagicMock
+        from core.collectors.user_collector import UserCollector
+        from core.constants import UACFlags
+
+        ldap = MagicMock()
+        ldap.search.return_value = [{
+            "sAMAccountName": "locked",
+            "userAccountControl": UACFlags.LOCKOUT | UACFlags.NORMAL_ACCOUNT,
+            "lockoutTime": 0,
+            "memberOf": [],
+            "servicePrincipalName": [],
+        }]
+        users = UserCollector(ldap, show_progress=False).collect()
+        self.assertEqual(len(users), 1)
+        self.assertTrue(users[0]["isLocked"])
 
 
 class TestComputerRiskAnalyzer(unittest.TestCase):
@@ -124,6 +191,52 @@ class TestGroupRiskAnalyzer(unittest.TestCase):
         users = []
         risks = self.analyzer.analyze(groups, users)
         self.assertIsInstance(risks, list)
+
+    def test_disabled_domain_admin_group_member(self):
+        """A disabled user listed on Domain Admins is reported even without memberOf."""
+        groups = [{
+            "name": "Domain Admins",
+            "sAMAccountName": "Domain Admins",
+            "distinguishedName": "CN=Domain Admins,CN=Users,DC=test,DC=com",
+            "member": ["CN=legacyda,CN=Users,DC=test,DC=com"],
+            "memberOf": [],
+            "whenCreated": None,
+            "whenChanged": None,
+            "isPrivileged": True,
+        }]
+        users = [{
+            "sAMAccountName": "legacyda",
+            "userAccountControl": 514,
+            "isDisabled": True,
+            "memberOf": [],
+            "distinguishedName": "CN=legacyda,CN=Users,DC=test,DC=com",
+        }]
+        types = {risk.get("type") for risk in self.analyzer.analyze(groups, users)}
+        self.assertIn("disabled_domain_admin", types)
+
+    def test_group_in_ou_named_domain_admins_is_not_too_many_das(self):
+        groups = [{
+            "name": "Helpdesk",
+            "sAMAccountName": "Helpdesk",
+            "distinguishedName": "CN=Helpdesk,OU=Domain Admins,DC=test,DC=com",
+            "member": [f"CN=user{i},CN=Users,DC=test,DC=com" for i in range(15)],
+            "memberOf": [],
+            "isPrivileged": False,
+        }]
+        types = {risk.get("type") for risk in self.analyzer.analyze(groups, [])}
+        self.assertNotIn("too_many_domain_admins", types)
+
+    def test_hyperv_administrators_is_not_nested_admin_group(self):
+        groups = [{
+            "name": "Hyper-V Administrators",
+            "sAMAccountName": "Hyper-V Administrators",
+            "distinguishedName": "CN=Hyper-V Administrators,CN=Builtin,DC=test,DC=com",
+            "member": [],
+            "memberOf": ["CN=Administrators,CN=Builtin,DC=test,DC=com"],
+            "isPrivileged": False,
+        }]
+        types = {risk.get("type") for risk in self.analyzer.analyze(groups, [])}
+        self.assertNotIn("nested_admin_group", types)
 
 
 class TestKerberoastingDetector(unittest.TestCase):
@@ -215,6 +328,24 @@ class TestExploitabilityScorer(unittest.TestCase):
         }
         score = self.scorer.score_risk(risk)
         self.assertIsInstance(score, dict)
+
+
+class TestPrivilegeEscalationMatching(unittest.TestCase):
+    def test_hyperv_administrators_is_not_a_privileged_group(self):
+        from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+        analyzer = PrivilegeEscalationAnalyzer()
+        self.assertFalse(analyzer._is_privileged_group("Hyper-V Administrators"))
+        self.assertTrue(analyzer._is_privileged_group("Domain Admins"))
+
+    def test_helpdesk_in_ou_named_domain_admins_is_not_extracted_as_da(self):
+        from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+        analyzer = PrivilegeEscalationAnalyzer()
+        self.assertEqual(
+            analyzer._extract_group_name("CN=Helpdesk,OU=Domain Admins,DC=test,DC=com"),
+            "Helpdesk",
+        )
 
 
 if __name__ == '__main__':

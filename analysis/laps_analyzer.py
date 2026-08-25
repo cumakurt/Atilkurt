@@ -5,9 +5,29 @@ Detects LAPS configuration and access rights
 
 import logging
 from typing import Any
+from core.ad_identity import schema_supports_attribute
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
+
+LEGACY_LAPS_EXPIRY_ATTRIBUTES = (
+    "ms-Mcs-AdmPwdExpirationTime",
+    "msMcs-AdmPwdExpirationTime",
+    "msMcsAdmPwdExpirationTime",
+)
+WINDOWS_LAPS_EXPIRY_ATTRIBUTES = (
+    "msLAPS-PasswordExpirationTime",
+    "msLAPS-EncryptedPasswordExpirationTime",
+)
+
+
+def _attribute_is_populated(obj: dict[str, Any], names: tuple[str, ...]) -> bool:
+    """Return True when any named LDAP attribute is present and non-empty."""
+    for name in names:
+        value = obj.get(name)
+        if value not in (None, "", [], ()):
+            return True
+    return False
 
 
 class LAPSAnalyzer:
@@ -39,50 +59,22 @@ class LAPSAnalyzer:
         risks = []
 
         try:
-            # Check if LAPS is installed (ms-Mcs-AdmPwd attribute exists)
-            laps_installed = False
-            computers_with_laps = []
+            computers_with_laps = [
+                str(computer.get("name") or computer.get("sAMAccountName") or "Unknown")
+                for computer in (computers or [])
+                if _attribute_is_populated(computer, LEGACY_LAPS_EXPIRY_ATTRIBUTES)
+            ]
+            computers_with_windows_laps = [
+                computer for computer in (computers or [])
+                if _attribute_is_populated(computer, WINDOWS_LAPS_EXPIRY_ATTRIBUTES)
+            ]
 
-            for computer in computers:
-                computer_name = computer.get('name')
-                if not computer_name:
-                    continue
+            if not computers_with_laps and not computers_with_windows_laps:
+                discovered_legacy, discovered_windows = self._discover_laps_coverage()
+                computers_with_laps.extend(discovered_legacy)
+                computers_with_windows_laps.extend(discovered_windows)
 
-                # Check for LAPS password attribute
-                # Note: We can't read the password without proper permissions, but we can check if attribute exists
-                computer_dn = computer.get('distinguishedName')
-                if computer_dn:
-                    # Try to read LAPS attributes with different name variations
-                    # LAPS attributes may have different names in different AD versions
-                    # If attributes don't exist, that's normal (LAPS not installed or no permissions)
-                    laps_attributes = ['ms-Mcs-AdmPwdExpirationTime', 'msMcs-AdmPwdExpirationTime',
-                                     'msMcsAdmPwdExpirationTime']
-
-                    for attr_name in laps_attributes:
-                        try:
-                            # Use size_limit=1 and disable paging for single object search
-                            # This avoids retry attempts for non-existent attributes
-                            results = self.ldap.search(
-                                search_base=computer_dn,
-                                search_filter='(objectClass=computer)',
-                                attributes=[attr_name],
-                                size_limit=1
-                            )
-
-                            if results and results[0].get(attr_name):
-                                laps_installed = True
-                                computers_with_laps.append(computer_name)
-                                break
-                        except Exception as e:
-                            # Attribute doesn't exist or can't be read - this is normal if LAPS not installed
-                            # Only log at debug level, don't retry
-                            error_msg = str(e).lower()
-                            if 'invalid attribute' in error_msg or 'no such attribute' in error_msg:
-                                # Attribute doesn't exist - this is expected if LAPS not installed
-                                logger.debug(f"LAPS attribute {attr_name} not found for {computer_name} (LAPS may not be installed)")
-                            else:
-                                logger.debug(f"Could not read LAPS attribute {attr_name} for {computer_name}: {str(e)}")
-                            continue
+            laps_installed = bool(computers_with_laps or computers_with_windows_laps)
 
             # Check LAPS configuration
             if not laps_installed:
@@ -151,9 +143,112 @@ class LAPSAnalyzer:
                         'mitre_attack': MITRETechniques.LATERAL_MOVEMENT
                     })
 
+
+            risks.extend(self._analyze_windows_laps(computers, computers_with_windows_laps))
+
             logger.info(f"Found {len(risks)} LAPS-related risks")
             return risks
 
         except Exception as e:
             logger.error(f"Error analyzing LAPS: {str(e)}")
             return []
+
+    def _discover_laps_coverage(self) -> tuple[list[str], list[dict[str, Any]]]:
+        """Find LAPS coverage with bounded searches that never read passwords."""
+        ldap_expiry_attributes = [
+            "ms-Mcs-AdmPwdExpirationTime",
+            *WINDOWS_LAPS_EXPIRY_ATTRIBUTES,
+        ]
+        supported_attributes = [
+            attribute for attribute in ldap_expiry_attributes
+            if schema_supports_attribute(self.ldap, attribute) is not False
+        ]
+        if not supported_attributes:
+            return [], []
+
+        legacy_names: list[str] = []
+        windows_rows: list[dict[str, Any]] = []
+        seen_legacy: set[str] = set()
+        seen_windows: set[str] = set()
+        for attribute in supported_attributes:
+            try:
+                rows = self.ldap.search(
+                    search_base=self.ldap.base_dn,
+                    search_filter=f"({attribute}=*)",
+                    attributes=["name", "sAMAccountName", attribute],
+                ) or []
+            except Exception as exc:
+                logger.debug("LAPS coverage search failed for %s: %s", attribute, exc)
+                continue
+
+            for row in rows:
+                name = str(row.get("name") or row.get("sAMAccountName") or "Unknown")
+                identity = str(row.get("dn") or name).casefold()
+                if attribute == "ms-Mcs-AdmPwdExpirationTime":
+                    if identity not in seen_legacy:
+                        seen_legacy.add(identity)
+                        legacy_names.append(name)
+                elif identity not in seen_windows:
+                    seen_windows.add(identity)
+                    windows_rows.append(row)
+        return legacy_names, windows_rows
+
+    def _plaintext_laps_readable_count(self) -> int:
+        """Count computers whose plaintext LAPS attribute is readable without retrieving the secret."""
+        if schema_supports_attribute(self.ldap, "msLAPS-Password") is False:
+            return 0
+        try:
+            rows = self.ldap.search(
+                search_base=self.ldap.base_dn,
+                search_filter="(msLAPS-Password=*)",
+                attributes=["name"],
+                size_limit=50,
+            ) or []
+        except Exception as exc:
+            logger.debug("Windows LAPS plaintext presence search failed: %s", exc)
+            return 0
+        return len(rows)
+
+    def _analyze_windows_laps(
+        self,
+        computers: list[dict[str, Any]],
+        windows_computers: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Detect Windows LAPS coverage versus legacy LAPS only."""
+        risks: list[dict[str, Any]] = []
+        plaintext_count = self._plaintext_laps_readable_count()
+        if plaintext_count:
+            risks.append({
+                'type': RiskTypes.WINDOWS_LAPS_PLAINTEXT,
+                'severity': Severity.HIGH,
+                'title': f'Windows LAPS stores readable plaintext passwords on {plaintext_count} computers',
+                'description': (
+                    'msLAPS-Password is populated and readable by this assessment account. '
+                    'The password values were not retrieved. Plaintext LAPS attributes should be '
+                    'encrypted (msLAPS-EncryptedPassword) and tightly ACL-scoped.'
+                ),
+                'affected_object': 'Windows LAPS',
+                'object_type': 'configuration',
+                'impact': 'Any principal who can read msLAPS-Password obtains local administrator credentials.',
+                'attack_scenario': 'An account with read access to msLAPS-Password can recover local administrator credentials.',
+                'mitigation': 'Switch to encrypted Windows LAPS, restrict READ to a PAM group, and monitor 4662 on the attribute.',
+                'mitre_attack': MITRETechniques.UNSECURED_CREDENTIALS,
+            })
+        computer_count = len(computers or [])
+        if computer_count >= 5 and not windows_computers:
+            risks.append({
+                'type': RiskTypes.WINDOWS_LAPS_NOT_DEPLOYED,
+                'severity': Severity.MEDIUM,
+                'title': 'Windows LAPS is not deployed',
+                'description': (
+                    'No computer objects advertise msLAPS-PasswordExpirationTime or '
+                    'msLAPS-EncryptedPasswordExpirationTime. Legacy Microsoft LAPS (ms-Mcs-AdmPwd) is obsolete.'
+                ),
+                'affected_object': 'Domain',
+                'object_type': 'configuration',
+                'impact': 'Shared or static local administrator passwords enable lateral movement after a single host compromise.',
+                'attack_scenario': 'Dump a local admin hash from one workstation and reuse it across the estate.',
+                'mitigation': 'Deploy Windows LAPS with encrypted passwords and automatic rotation. Retire legacy LAPS.',
+                'mitre_attack': MITRETechniques.LATERAL_MOVEMENT,
+            })
+        return risks

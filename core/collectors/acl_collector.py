@@ -4,6 +4,7 @@ Collects ACL information for critical AD objects
 """
 
 import logging
+from core.ad_identity import computer_is_domain_controller
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class ACLCollector:
 
             # Add domain controllers
             for computer in computers:
-                if 'DC' in (computer.get('name') or '').upper() or 'CONTROLLER' in (computer.get('name') or '').upper():
+                if computer_is_domain_controller(computer):
                     critical_objects.append({
                         'type': 'computer',
                         'name': computer.get('name'),

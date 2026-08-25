@@ -5,7 +5,11 @@ Centralized configuration for the application
 
 from dataclasses import dataclass
 from typing import Optional
+import logging
+import math
 import os
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +37,8 @@ class RiskScoringConfig:
                 'user_with_spn': 40,
                 'admin_count_set': 60,
                 'inactive_privileged_account': 50,
+                'disabled_domain_admin': 80,
+                'disabled_enterprise_admin': 85,
                 'unconstrained_delegation': 90,
                 'unconstrained_delegation_user': 90,
                 'constrained_delegation': 45,
@@ -92,38 +98,61 @@ class AppConfig:
         if self.analysis is None:
             self.analysis = AnalysisConfig()
 
+    @staticmethod
+    def _env_int(name: str, current: int, minimum: int, maximum: int) -> int:
+        """Parse a bounded integer environment variable, keeping the current value on error."""
+        raw = os.getenv(name)
+        if raw is None or raw == "":
+            return current
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Invalid %s value: %r, using default", name, raw)
+            return current
+        if value < minimum or value > maximum:
+            logger.warning(
+                "Invalid %s value: %r, expected %d-%d, using default",
+                name, raw, minimum, maximum,
+            )
+            return current
+        return value
+
+    @staticmethod
+    def _env_float(name: str, current: float, minimum: float) -> float:
+        """Parse a finite, non-negative float environment variable."""
+        raw = os.getenv(name)
+        if raw is None or raw == "":
+            return current
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Invalid %s value: %r, using default", name, raw)
+            return current
+        if not math.isfinite(value) or value < minimum:
+            logger.warning("Invalid %s value: %r, using default", name, raw)
+            return current
+        return value
+
     @classmethod
     def from_env(cls) -> 'AppConfig':
         """Load configuration from environment variables."""
-        import logging
-        _logger = logging.getLogger(__name__)
         config = cls()
 
-        # LDAP config from env
-        if os.getenv('LDAP_TIMEOUT'):
-            try:
-                config.ldap.default_timeout = int(os.getenv('LDAP_TIMEOUT'))
-            except ValueError:
-                _logger.warning(f"Invalid LDAP_TIMEOUT value: {os.getenv('LDAP_TIMEOUT')!r}, using default")
-        if os.getenv('LDAP_MAX_RETRIES'):
-            try:
-                config.ldap.max_retries = int(os.getenv('LDAP_MAX_RETRIES'))
-            except ValueError:
-                _logger.warning(f"Invalid LDAP_MAX_RETRIES value: {os.getenv('LDAP_MAX_RETRIES')!r}, using default")
-        if os.getenv('LDAP_PAGE_SIZE'):
-            try:
-                config.ldap.page_size = int(os.getenv('LDAP_PAGE_SIZE'))
-            except ValueError:
-                _logger.warning(f"Invalid LDAP_PAGE_SIZE value: {os.getenv('LDAP_PAGE_SIZE')!r}, using default")
+        config.ldap.default_timeout = cls._env_int(
+            "LDAP_TIMEOUT", config.ldap.default_timeout, 1, 300
+        )
+        config.ldap.max_retries = cls._env_int(
+            "LDAP_MAX_RETRIES", config.ldap.max_retries, 1, 20
+        )
+        config.ldap.page_size = cls._env_int(
+            "LDAP_PAGE_SIZE", config.ldap.page_size, 1, 5000
+        )
 
-        # Stealth config from env
         if os.getenv('STEALTH_ENABLED'):
             config.stealth.enabled = os.getenv('STEALTH_ENABLED').lower() == 'true'
-        if os.getenv('RATE_LIMIT'):
-            try:
-                config.stealth.rate_limit = float(os.getenv('RATE_LIMIT'))
-            except ValueError:
-                _logger.warning(f"Invalid RATE_LIMIT value: {os.getenv('RATE_LIMIT')!r}, using default")
+        config.stealth.rate_limit = cls._env_float(
+            "RATE_LIMIT", config.stealth.rate_limit, 0.0
+        )
 
         return config
 

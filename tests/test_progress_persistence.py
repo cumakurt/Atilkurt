@@ -48,6 +48,10 @@ class TestProgressPersistence(unittest.TestCase):
             self.persistence.save_checkpoint("id/with/slash", {})
         with self.assertRaises(ValueError):
             self.persistence.save_checkpoint("id\\with\\backslash", {})
+        with self.assertRaises(ValueError):
+            self.persistence.save_checkpoint("id:with:colon", {})
+        with self.assertRaises(ValueError):
+            self.persistence.save_checkpoint("id with space", {})
 
     def test_path_traversal_is_rejected_for_all_checkpoint_operations(self):
         """Load and delete must enforce the same path validation as save."""

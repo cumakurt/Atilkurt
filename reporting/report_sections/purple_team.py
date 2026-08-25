@@ -4,6 +4,8 @@ Mixin for Red Team Playbook and Blue Team Checklist generation.
 
 import html as html_stdlib
 
+from reporting.localization import localize_playbook_value
+
 
 
 class PurpleTeamMixin:
@@ -11,6 +13,11 @@ class PurpleTeamMixin:
 
     def _red_card(self, title, objective, prerequisites, procedure_code, tools, mitre_id, detection_note, affected_list=''):
         """Build a single Red Team playbook card with full structure."""
+        language = getattr(self, 'language', 'en')
+        title = localize_playbook_value(title, 'title', language)
+        objective = localize_playbook_value(objective, 'objective', language)
+        prerequisites = localize_playbook_value(prerequisites, 'prerequisites', language)
+        detection_note = localize_playbook_value(detection_note, 'detection_note', language)
         aff = f'<p class="mb-1 small"><strong>Affected targets (from scan):</strong> <code>{html_stdlib.escape(affected_list)}</code></p>' if affected_list else ''
         return f"""
                 <div class="card border-danger mb-3">
@@ -31,6 +38,11 @@ class PurpleTeamMixin:
 
     def _blue_row(self, finding, event_ids, affected, detection, response, remediation):
         """Build a single Blue Team checklist row with detection, response, remediation."""
+        language = getattr(self, 'language', 'en')
+        finding = localize_playbook_value(finding, 'finding', language)
+        detection = localize_playbook_value(detection, 'detection', language)
+        response = localize_playbook_value(response, 'response', language)
+        remediation = localize_playbook_value(remediation, 'remediation', language)
         return f"""<tr>
             <td class="align-top">{html_stdlib.escape(finding)}</td>
             <td class="align-top"><code class="small">{html_stdlib.escape(event_ids)}</code></td>

@@ -5,6 +5,7 @@ Analyzes forest trusts, external trusts, and trust configurations
 
 import logging
 from typing import Any
+from core.ad_identity import forest_configuration_dn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -89,15 +90,18 @@ class TrustAnalyzer:
             # Approach 4: Try to find trusts in Configuration partition
             if not trusts_found:
                 try:
-                    config_dn = f"CN=Configuration,{base_dn}"
-                    results = self.ldap.search(
-                        search_base=config_dn,
-                        search_filter=search_filter,
-                        attributes=attributes
-                    )
-                    if results:
-                        trusts_found.extend(results)
-                        logger.debug(f"Found {len(results)} trusts in Configuration partition")
+                    config_dn = forest_configuration_dn(self.ldap)
+                    if not config_dn:
+                        logger.debug("Configuration naming context unavailable for trust search")
+                    else:
+                        results = self.ldap.search(
+                            search_base=config_dn,
+                            search_filter=search_filter,
+                            attributes=attributes
+                        )
+                        if results:
+                            trusts_found.extend(results)
+                            logger.debug(f"Found {len(results)} trusts in Configuration partition")
                 except Exception as e:
                     logger.debug(f"Error searching Configuration partition: {e}")
 

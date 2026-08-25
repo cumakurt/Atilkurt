@@ -2,12 +2,56 @@
 Mixin for building the main risk sections tab content and orchestrating risk categorization.
 """
 
+import html as html_stdlib
+
+from analysis.privileged_account_status import list_disabled_privileged_admins
+
+LDAP_DIRECTORY_EXPOSURE_TYPES = frozenset({
+    "ldap_anonymous_enabled",
+    "ldap_prewin2k_broad_membership",
+    "ldap_guest_enabled",
+    "ldap_legacy_functional_level",
+})
+IDENTITY_PROTECTION_TYPES = frozenset({
+    "reversible_encryption_enabled",
+    "privileged_user_outside_protected_users",
+    "privileged_user_without_smartcard",
+})
+ADCS_EXTENDED_TYPES = frozenset({
+    "certificate_esc5",
+    "certificate_esc7",
+    "certificate_esc9",
+    "certificate_esc10",
+    "certificate_esc11",
+    "certificate_esc13",
+    "certificate_esc14",
+    "certificate_esc15",
+    "certificate_esc16",
+    "certificate_certifried",
+})
+PASSWORD_POLICY_TYPES = frozenset({
+    "password_policy_weak",
+})
+DOMAIN_SECURITY_TYPES = frozenset({
+    "ldap_signing_disabled",
+    "ntlm_restriction_weak",
+    "smb_signing_disabled",
+})
+KERBEROS_ACCOUNT_SECURITY_TYPES = frozenset({
+    "kerberos_legacy_encryption",
+    "privileged_account_delegatable",
+})
+HIDDEN_PRIVILEGE_TYPES = frozenset({
+    "hidden_primary_group_privilege",
+    "privileged_computer_account",
+    "builtin_admin_renamed",
+})
 
 
 class RiskTabBuilderMixin:
     """Mixin for building the main risk sections tab content and orchestrating risk categorization."""
 
-    def _generate_risk_sections(self, risks, misconfig_findings, ciso_dashboard_html="", users=None, groups=None, computers=None, password_stats=None, compliance_data=None, risk_management_data=None, domain=None, dc_ip=None, kerberoasting_targets=None, asrep_targets=None):
+    def _generate_risk_sections(self, risks, misconfig_findings, ciso_dashboard_html="", users=None, groups=None, computers=None, password_stats=None, compliance_data=None, risk_management_data=None, domain=None, dc_ip=None, kerberoasting_targets=None, asrep_targets=None, domain_admin_takeover=None):
         """Generate HTML sections for all risks."""
         # Separate risks by category
         user_risks = [r for r in risks if r.get('object_type') == 'user']
@@ -27,9 +71,16 @@ class RiskTabBuilderMixin:
 
         # Advanced penetration testing categories
         dcsync_risks = [r for r in risks if 'dcsync' in r.get('type', '').lower()]
-        password_policy_risks = [r for r in risks if 'password_policy' in r.get('type', '').lower() or r.get('object_type') == 'policy']
+        password_policy_risks = [r for r in risks if r.get("type") in PASSWORD_POLICY_TYPES]
         trust_risks = [r for r in risks if 'trust' in r.get('type', '').lower() or r.get('object_type') == 'trust']
-        certificate_risks = [r for r in risks if 'certificate' in r.get('type', '').lower() or 'esc' in r.get('type', '').lower()]
+        certificate_risks = [
+            r for r in risks
+            if (
+                "certificate" in r.get("type", "").lower()
+                or "esc" in r.get("type", "").lower()
+            )
+            and r.get("type") not in ADCS_EXTENDED_TYPES
+        ]
         gpp_risks = [r for r in risks if 'gpp' in r.get('type', '').lower()]
         laps_risks = [r for r in risks if 'laps' in r.get('type', '').lower()]
         zerologon_risks = [r for r in risks if 'zerologon' in r.get('type', '').lower()]
@@ -37,7 +88,7 @@ class RiskTabBuilderMixin:
         petitpotam_risks = [r for r in risks if 'petitpotam' in r.get('type', '').lower()]
         shadow_credentials_risks = [r for r in risks if 'shadow' in r.get('type', '').lower() and 'credential' in r.get('type', '').lower()]
         nopac_risks = [r for r in risks if 'nopac' in r.get('type', '').lower()]
-        domain_security_risks = [r for r in risks if r.get('type') in ('ldap_signing_disabled', 'ntlm_restriction_weak', 'smb_signing_disabled')]
+        domain_security_risks = [r for r in risks if r.get("type") in DOMAIN_SECURITY_TYPES]
         extended_ldap_risks = [r for r in risks if r.get('type') in (
             'rbcd_delegation', 'sid_history_present', 'foreign_security_principal', 'key_credential_link_present',
             'fine_grained_password_policy', 'bitlocker_recovery_in_ad', 'adminsdholder_analysis',
@@ -57,11 +108,7 @@ class RiskTabBuilderMixin:
         golden_gmsa_risks = [r for r in risks if 'golden_gmsa' in r.get('type', '').lower()]
         honeypot_risks = [r for r in risks if 'honeypot' in r.get('type', '').lower()]
         stale_objects_risks = [r for r in risks if 'stale_' in r.get('type', '').lower()]
-        adcs_extended_risks = [r for r in risks if r.get('type', '') in (
-            'certificate_esc5', 'certificate_esc7', 'certificate_esc9',
-            'certificate_esc10', 'certificate_esc11', 'certificate_esc13',
-            'certificate_esc14', 'certificate_certifried',
-        )]
+        adcs_extended_risks = [r for r in risks if r.get("type") in ADCS_EXTENDED_TYPES]
         audit_policy_risks = [r for r in risks if 'audit_policy' in r.get('type', '').lower() or 'audit_sacl' in r.get('type', '').lower()]
         backup_operator_risks = [r for r in risks if 'backup_operator' in r.get('type', '').lower() or 'sensitive_operator' in r.get('type', '').lower()]
         coercion_risks = [r for r in risks if 'coercion' in r.get('type', '').lower()]
@@ -70,6 +117,21 @@ class RiskTabBuilderMixin:
         lateral_movement_risks = [r for r in risks if 'lateral_movement' in r.get('type', '').lower()]
         machine_quota_risks = [r for r in risks if 'machine_account_quota' in r.get('type', '').lower()]
         replication_risks = [r for r in risks if 'replication_' in r.get('type', '').lower()]
+        ldap_directory_exposure_risks = [r for r in risks if r.get("type") in LDAP_DIRECTORY_EXPOSURE_TYPES]
+        hidden_privilege_risks = [r for r in risks if r.get("type") in HIDDEN_PRIVILEGE_TYPES]
+        hybrid_identity_risks = [r for r in risks if str(r.get('type', '')).startswith('hybrid_')]
+        rodc_attack_surface_risks = [r for r in risks if str(r.get('type', '')).startswith('rodc_')]
+        delegated_msa_risks = [r for r in risks if str(r.get('type', '')).startswith('dmsa_')]
+        sccm_attack_surface_risks = [r for r in risks if str(r.get('type', '')).startswith('sccm_')]
+        kerberos_account_security_risks = [
+            r for r in risks if r.get("type") in KERBEROS_ACCOUNT_SECURITY_TYPES
+        ]
+        identity_protection_risks = [
+            r for r in risks if r.get("type") in IDENTITY_PROTECTION_TYPES
+        ]
+        fine_grained_password_policy_risks = [
+            r for r in risks if r.get('type') == 'weak_fine_grained_password_policy'
+        ]
 
         # Filter by severity for KPI navigation
         critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
@@ -81,6 +143,8 @@ class RiskTabBuilderMixin:
         privileged_account_risks = []
         for risk in risks:
             if risk.get('is_privileged', False):
+                privileged_account_risks.append(risk)
+            elif risk.get('type') in ('disabled_domain_admin', 'disabled_enterprise_admin'):
                 privileged_account_risks.append(risk)
             elif risk.get('object_type') == 'user':
                 affected_user = next((u for u in users if u.get('sAMAccountName') == risk.get('affected_object')), None) if users else None
@@ -107,6 +171,7 @@ class RiskTabBuilderMixin:
         critical_risks_html = self._generate_risk_list(critical_risks, "Critical Risks", "critical_risks", group_by_finding=True)
         high_risks_html = self._generate_risk_list(high_risks, "High Risks", "high_risks", group_by_finding=True)
         privileged_accounts_html = self._generate_risk_list(privileged_account_risks, "Privileged Account Risks", "privileged_accounts", group_by_finding=True)
+        disabled_privileged_admin_html = self._generate_disabled_privileged_admin_section(users)
         delegation_risks_html = self._generate_risk_list(delegation_risks, "Delegation Risks", "delegation_risks", group_by_finding=True)
         kerberoasting_html = self._generate_kerberoasting_section(kerberoasting_risks)
         service_accounts_html = self._generate_risk_list(service_account_risks, "Service Account Risks", "service_accounts", group_by_finding=True)
@@ -130,7 +195,7 @@ class RiskTabBuilderMixin:
         golden_gmsa_html = self._generate_risk_list(golden_gmsa_risks, "Golden gMSA Exposure", "golden_gmsa", group_by_finding=True)
         honeypot_html = self._generate_risk_list(honeypot_risks, "Honeypot & Deception Detection", "honeypot", group_by_finding=True)
         stale_objects_html = self._generate_risk_list(stale_objects_risks, "Stale & Dormant Objects", "stale_objects", group_by_finding=True)
-        adcs_extended_html = self._generate_risk_list(adcs_extended_risks, "AD CS Extended (ESC5-14, Certifried)", "adcs_extended", group_by_finding=True)
+        adcs_extended_html = self._generate_risk_list(adcs_extended_risks, "AD CS Extended (ESC5-15, Certifried)", "adcs_extended", group_by_finding=True)
         audit_policy_html = self._generate_risk_list(audit_policy_risks, "Audit Policy Analysis", "audit_policy", group_by_finding=True)
         backup_operator_html = self._generate_risk_list(backup_operator_risks, "Backup Operators & Sensitive Groups", "backup_operators", group_by_finding=True)
         coercion_html = self._generate_risk_list(coercion_risks, "Coercion Attacks (SpoolSample, DFSCoerce, WebClient)", "coercion_attacks", group_by_finding=True)
@@ -139,6 +204,30 @@ class RiskTabBuilderMixin:
         lateral_movement_html = self._generate_risk_list(lateral_movement_risks, "Lateral Movement Analysis", "lateral_movement", group_by_finding=True)
         machine_quota_html = self._generate_risk_list(machine_quota_risks, "Machine Account Quota", "machine_quota", group_by_finding=True)
         replication_html = self._generate_risk_list(replication_risks, "Replication Metadata Analysis", "replication_meta", group_by_finding=True)
+        ldap_directory_exposure_html = self._generate_risk_list(ldap_directory_exposure_risks, "LDAP Directory Exposure", "ldap_directory_exposure", group_by_finding=True)
+        hidden_privilege_html = self._generate_risk_list(hidden_privilege_risks, "Hidden Privilege & Primary Group", "hidden_privilege", group_by_finding=True)
+        hybrid_identity_html = self._generate_risk_list(hybrid_identity_risks, "Hybrid Identity (Entra Connect / ADFS)", "hybrid_identity", group_by_finding=True)
+        rodc_attack_surface_html = self._generate_risk_list(rodc_attack_surface_risks, "RODC Password Replication", "rodc_attack_surface", group_by_finding=True)
+        delegated_msa_html = self._generate_risk_list(delegated_msa_risks, "Delegated MSA / BadSuccessor", "delegated_msa", group_by_finding=True)
+        sccm_attack_surface_html = self._generate_risk_list(sccm_attack_surface_risks, "SCCM Attack Surface", "sccm_attack_surface", group_by_finding=True)
+        kerberos_account_security_html = self._generate_risk_list(
+            kerberos_account_security_risks,
+            "Kerberos Account Encryption & Delegation Protection",
+            "kerberos_account_security",
+            group_by_finding=True,
+        )
+        identity_protection_html = self._generate_risk_list(
+            identity_protection_risks,
+            "Privileged Identity Protection",
+            "identity_protection",
+            group_by_finding=True,
+        )
+        fine_grained_password_policy_html = self._generate_risk_list(
+            fine_grained_password_policy_risks,
+            "Fine-Grained Password Policy Overrides",
+            "fine_grained_password_policy",
+            group_by_finding=True,
+        )
 
         red_team_playbook_html, blue_team_checklists_html = self._generate_purple_team_section(
             risks, domain, dc_ip, kerberoasting_risks, asrep_risks, dcsync_risks,
@@ -156,9 +245,14 @@ class RiskTabBuilderMixin:
             {ciso_dashboard_html}
         </div>
         """
-
+        domain_admin_tab = f"""
+        <div id="domain-admin-takeover" class="tab-pane" role="tabpanel" aria-labelledby="domain-admin-takeover-tab">
+            {self._generate_domain_admin_takeover_section(domain_admin_takeover)}
+        </div>
+        """
         return f"""
         {dashboard_tab}
+        {domain_admin_tab}
         <div id="risks" class="tab-pane" role="tabpanel" aria-labelledby="risks-tab">
             {all_risks_html}
         </div>
@@ -169,6 +263,8 @@ class RiskTabBuilderMixin:
             {high_risks_html}
         </div>
         <div id="privileged-accounts" class="tab-pane" role="tabpanel" aria-labelledby="privileged-accounts-tab">
+            {disabled_privileged_admin_html}
+            {identity_protection_html}
             {privileged_accounts_html}
         </div>
         <div id="delegation-risks" class="tab-pane" role="tabpanel" aria-labelledby="delegation-risks-tab">
@@ -279,6 +375,14 @@ class RiskTabBuilderMixin:
                             {krbtgt_html}
                         </div>
                         <div class="col-12 mb-4">
+                            <h5><i class="fas fa-shield-alt text-danger"></i> Kerberos Account Encryption & Delegation Protection</h5>
+                            {kerberos_account_security_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-user-lock text-warning"></i> Fine-Grained Password Policy Overrides</h5>
+                            {fine_grained_password_policy_html}
+                        </div>
+                        <div class="col-12 mb-4">
                             <h5><i class="fas fa-laptop text-warning"></i> Machine Account Quota</h5>
                             {machine_quota_html}
                         </div>
@@ -291,12 +395,32 @@ class RiskTabBuilderMixin:
                             {coercion_html}
                         </div>
                         <div class="col-12 mb-4">
-                            <h5><i class="fas fa-certificate text-warning"></i> AD CS Extended (ESC5-14)</h5>
+                            <h5><i class="fas fa-certificate text-warning"></i> AD CS Extended (ESC5-15, Certifried)</h5>
                             {adcs_extended_html}
                         </div>
                         <div class="col-12 mb-4">
                             <h5><i class="fas fa-users-cog text-warning"></i> Backup Operators & Sensitive Groups</h5>
                             {backup_operator_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-id-badge text-danger"></i> Hidden Privilege & Primary Group</h5>
+                            {hidden_privilege_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-cloud text-danger"></i> Hybrid Identity (Entra / ADFS)</h5>
+                            {hybrid_identity_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-server text-warning"></i> RODC Password Replication</h5>
+                            {rodc_attack_surface_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-user-ninja text-danger"></i> Delegated MSA / BadSuccessor</h5>
+                            {delegated_msa_html}
+                        </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-network-wired text-warning"></i> SCCM Attack Surface</h5>
+                            {sccm_attack_surface_html}
                         </div>
                     </div>
                 </div>
@@ -325,6 +449,10 @@ class RiskTabBuilderMixin:
                             <h5><i class="fas fa-spider text-success"></i> Honeypot & Deception</h5>
                             {honeypot_html}
                         </div>
+                        <div class="col-12 mb-4">
+                            <h5><i class="fas fa-project-diagram text-danger"></i> LDAP Directory Exposure</h5>
+                            {ldap_directory_exposure_html}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -352,4 +480,43 @@ class RiskTabBuilderMixin:
         </div>
         {self._generate_compliance_section(compliance_data) if compliance_data else ''}
         {self._generate_risk_management_section(risk_management_data) if risk_management_data else ''}
+        """
+
+    def _generate_disabled_privileged_admin_section(self, users):
+        """Dedicated Privileged Accounts panel for disabled DA/EA users."""
+        accounts = list_disabled_privileged_admins(users)
+        if not accounts:
+            return """
+            <div class="alert alert-success" id="disabled-privileged-admins">
+                <i class="fas fa-check-circle"></i>
+                No disabled Domain Admin or Enterprise Admin accounts were found.
+            </div>
+            """
+        rows = []
+        for account in accounts:
+            roles = ", ".join(html_stdlib.escape(role) for role in account.get("roles") or [])
+            rows.append(
+                "<tr>"
+                f"<td><strong>{html_stdlib.escape(str(account.get('username') or 'Unknown'))}</strong> "
+                '<span class="badge bg-warning text-dark">Disabled</span></td>'
+                f'<td><span class="badge bg-danger">{roles}</span></td>'
+                f"<td><small>{html_stdlib.escape(str(account.get('distinguishedName') or ''))}</small></td>"
+                "</tr>"
+            )
+        return f"""
+        <div class="card border-danger mb-4" id="disabled-privileged-admins">
+            <div class="card-header bg-danger text-white">
+                <i class="fas fa-user-slash"></i> Disabled Domain Admin / Enterprise Admin accounts ({len(accounts)})
+            </div>
+            <div class="card-body">
+                <p>These accounts are disabled but still members of Domain Admins or Enterprise Admins.
+                Re-enabling any of them restores those rights immediately. Remove them from the privileged group before leaving the account disabled or deleted.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover">
+                        <thead><tr><th>Username</th><th>Privileged group</th><th>Distinguished name</th></tr></thead>
+                        <tbody>{''.join(rows)}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
         """

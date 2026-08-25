@@ -9,6 +9,10 @@ from datetime import datetime
 from core.constants import UACFlags, RiskTypes, Severity, MITRETechniques, TimeThresholds
 from core.base_analyzer import BaseAnalyzer
 from core.types import UserDict, RiskDict
+from analysis.privileged_account_status import (
+    account_is_disabled,
+    risks_for_disabled_privileged_admin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,9 @@ class UserRiskAnalyzer(BaseAnalyzer):
 
             # Check inactive privileged accounts
             risks.extend(self._check_inactive_privileged(user))
+
+            # Disabled Domain Admin / Enterprise Admin accounts are reported separately
+            risks.extend(risks_for_disabled_privileged_admin(user))
 
             # Check disabled accounts
             risks.extend(self._check_disabled_account(user))
@@ -380,7 +387,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
         """Check if user account is disabled."""
         risks = []
 
-        if user.get('isDisabled'):
+        if account_is_disabled(user) and not risks_for_disabled_privileged_admin(user):
             risks.append({
                 'type': RiskTypes.DISABLED_USER_ACCOUNT,
                 'severity': Severity.LOW,

@@ -1,134 +1,108 @@
 """
 GPP (Group Policy Preferences) Password Extractor Module
-Extracts and decrypts passwords from GPP files in SYSVOL
+Reports recoverable cpassword material when evidence is present.
+LDAP GPO objects alone are not treated as proof of embedded passwords.
 """
 
-import logging
+from __future__ import annotations
+
 import base64
-from typing import Any, Optional
-from core.constants import RiskTypes, Severity, MITRETechniques
+import logging
+from typing import Any
+
+from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
 
+_CPASSWORD_KEYS = (
+    "cpassword",
+    "gppCpassword",
+    "gpp_cpassword",
+    "encrypted_password",
+)
+
 
 class GPPPasswordExtractor:
-    """Extracts and decrypts passwords from Group Policy Preferences."""
+    """Detect Group Policy Preference passwords when ciphertext evidence exists."""
 
-    # AES key used by Microsoft for GPP password encryption (publicly known)
-    GPP_AES_KEY = b'\x4e\x99\x06\xe8\xfc\xb6\x6c\xc9\xfa\xf4\x93\x10\x62\x0f\xfe\xe8\xf4\x96\xe8\x06\xcc\x05\x79\x90\x20\x9b\x09\xa4\x33\xb6\x6c\x1b'
+    # AES-256 key published by Microsoft for GPP cpassword (publicly known).
+    GPP_AES_KEY = (
+        b"\x4e\x99\x06\xe8\xfc\xb6\x6c\xc9\xfa\xf4\x93\x10\x62\x0f\xfe\xe8"
+        b"\xf4\x96\xe8\x06\xcc\x05\x79\x90\x20\x9b\x09\xa4\x33\xb6\x6c\x1b"
+    )
+    GPP_AES_IV = b"\x00" * 16
 
-    def __init__(self, ldap_connection):
-        """
-        Initialize GPP password extractor.
-
-        Args:
-            ldap_connection: LDAPConnection instance
-        """
+    def __init__(self, ldap_connection: Any = None):
+        """Initialize the extractor. LDAP is unused; SYSVOL is not read over SMB."""
         self.ldap = ldap_connection
 
     def analyze_gpp_passwords(self, gpos: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        Analyze GPOs for embedded passwords in GPP files.
+        """Return findings only for GPOs that include cpassword evidence."""
+        risks: list[dict[str, Any]] = []
+        for gpo in gpos or []:
+            evidence_count = self._cpassword_evidence_count(gpo)
+            if evidence_count == 0 and not gpo.get("has_gpp_password"):
+                continue
+            gpo_name = str(gpo.get("name") or gpo.get("displayName") or "Unknown")
+            gpo_path = gpo.get("gPCFileSysPath") or ""
+            risks.append({
+                "type": RiskTypes.GPP_PASSWORD_FOUND,
+                "severity": Severity.CRITICAL,
+                "title": f"GPP cpassword evidence: {gpo_name}",
+                "description": (
+                    f"GPO '{gpo_name}' includes recoverable Group Policy Preferences password "
+                    f"material ({evidence_count or 1} value(s)). GPP cpassword uses a published AES key."
+                ),
+                "affected_object": gpo_name,
+                "object_type": "gpo",
+                "gpo_path": gpo_path,
+                "impact": (
+                    "Anyone who can read the cpassword value can recover the stored credential "
+                    "and often move laterally with a local or service account."
+                ),
+                "attack_scenario": (
+                    "Read Groups.xml / Services.xml from SYSVOL or from collected GPO evidence, "
+                    "decrypt cpassword with the published AES key, and reuse the credential."
+                ),
+                "mitigation": (
+                    "Remove passwords from Group Policy Preferences, rotate any exposed credentials, "
+                    "and use gMSA or LAPS instead of GPP-stored secrets."
+                ),
+                "cis_reference": "CIS Benchmark prohibits storing passwords in GPP",
+                "mitre_attack": MITRETechniques.UNSECURED_CREDENTIALS,
+            })
+        logger.info("Found %d GPP password risks", len(risks))
+        return risks
 
-        Args:
-            gpos: List of GPO dictionaries
-
-        Returns:
-            List of risk dictionaries for GPP passwords
-        """
-        risks = []
-
-        try:
-            for gpo in gpos:
-                gpo_name = gpo.get('name') or gpo.get('displayName', 'Unknown')
-                gpo_path = gpo.get('gPCFileSysPath')
-
-                if not gpo_path:
-                    continue
-
-                # Note: This is a theoretical analysis
-                # In practice, you would need SMB access to read SYSVOL files
-                # We'll check for GPP-related attributes and provide detection guidance
-
-                risks.append({
-                    'type': RiskTypes.GPP_PASSWORD_FOUND,
-                    'severity': Severity.CRITICAL,
-                    'title': f'GPP Password Risk: {gpo_name}',
-                    'description': (
-                        f"GPO '{gpo_name}' may contain Group Policy Preferences with embedded passwords. "
-                        "GPP passwords are encrypted with a publicly known AES key and can be easily decrypted."
-                    ),
-                    'affected_object': gpo_name,
-                    'object_type': 'gpo',
-                    'gpo_path': gpo_path,
-                    'impact': (
-                        'Group Policy Preferences stored passwords in SYSVOL with weak encryption. '
-                        'These passwords can be extracted and decrypted by anyone with read access to SYSVOL. '
-                        'This is a critical security risk.'
-                    ),
-                    'attack_scenario': (
-                        f"An attacker with read access to SYSVOL can access '{gpo_path}' and extract "
-                        "encrypted passwords from Groups.xml, Services.xml, ScheduledTasks.xml, or "
-                        "DataSources.xml files. These passwords can be decrypted using publicly available tools."
-                    ),
-                    'mitigation': (
-                        'Remove all passwords from Group Policy Preferences. Use Group Managed Service '
-                        'Accounts (gMSAs) or LAPS for local administrator passwords. Audit SYSVOL for '
-                        'remaining GPP files with passwords. Use tools like Get-GPPPassword to find them.'
-                    ),
-                    'cis_reference': 'CIS Benchmark prohibits storing passwords in GPP',
-                    'mitre_attack': MITRETechniques.UNSECURED_CREDENTIALS,
-                    'extraction_method': (
-                        'Use tools like Get-GPPPassword (PowerShell), gpp-decrypt, or manually decrypt '
-                        'using the known AES key. Check SYSVOL paths for Groups.xml, Services.xml, etc.'
-                    ),
-                    'gpp_file_locations': [
-                        f'{gpo_path}\\Groups\\Groups.xml',
-                        f'{gpo_path}\\Services\\Services.xml',
-                        f'{gpo_path}\\ScheduledTasks\\ScheduledTasks.xml',
-                        f'{gpo_path}\\DataSources\\DataSources.xml',
-                        f'{gpo_path}\\Printers\\Printers.xml',
-                        f'{gpo_path}\\Drives\\Drives.xml'
-                    ]
-                })
-
-            logger.info(f"Found {len(risks)} GPP password risks")
-            return risks
-
-        except Exception as e:
-            logger.error(f"Error analyzing GPP passwords: {str(e)}")
-            return []
-
-    def decrypt_gpp_password(self, encrypted_password: str) -> Optional[str]:
-        """
-        Decrypt a GPP password using the known AES key.
-
-        Args:
-            encrypted_password: Base64-encoded encrypted password
-
-        Returns:
-            Decrypted password or None if decryption fails
-        """
+    def decrypt_gpp_password(self, encrypted_password: str) -> str | None:
+        """Decrypt a GPP cpassword using the published AES-256 key and null IV."""
         try:
             from Crypto.Cipher import AES
             from Crypto.Util.Padding import unpad
 
-            # Decode base64
-            encrypted = base64.b64decode(encrypted_password)
-
-            # Extract IV (first 16 bytes) and ciphertext
-            iv = encrypted[:16]
-            ciphertext = encrypted[16:]
-
-            # Decrypt
-            cipher = AES.new(self.GPP_AES_KEY, AES.MODE_CBC, iv)
-            decrypted = cipher.decrypt(ciphertext)
-
-            # Remove padding
-            password = unpad(decrypted, 16).decode('utf-16-le')
-
-            return password
-
-        except Exception as e:
-            logger.debug(f"Error decrypting GPP password: {str(e)}")
+            payload = "".join(str(encrypted_password).split())
+            payload += "=" * ((4 - len(payload) % 4) % 4)
+            ciphertext = base64.b64decode(payload)
+            cipher = AES.new(self.GPP_AES_KEY, AES.MODE_CBC, self.GPP_AES_IV)
+            decrypted = unpad(cipher.decrypt(ciphertext), AES.block_size)
+            return decrypted.decode("utf-16-le").rstrip("\x00")
+        except Exception as exc:
+            logger.debug("GPP cpassword decryption failed: %s", type(exc).__name__)
             return None
+
+    @classmethod
+    def _cpassword_evidence_count(cls, gpo: dict[str, Any]) -> int:
+        """Count cpassword values on a GPO record without storing the secrets."""
+        count = 0
+        for key in _CPASSWORD_KEYS:
+            value = gpo.get(key)
+            if isinstance(value, str) and value.strip():
+                count += 1
+            elif isinstance(value, (list, tuple)):
+                count += sum(1 for item in value if str(item).strip())
+        nested = gpo.get("gpp_files")
+        if isinstance(nested, (list, tuple)):
+            for item in nested:
+                if isinstance(item, dict):
+                    count += cls._cpassword_evidence_count(item)
+        return count

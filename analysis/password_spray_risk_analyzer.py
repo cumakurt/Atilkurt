@@ -8,6 +8,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Optional
+from core.ad_identity import membership_names
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -202,19 +203,13 @@ class PasswordSprayRiskAnalyzer:
             if self._is_disabled(user):
                 continue
 
-            # Check if user is in a privileged group
-            member_of = user.get('memberOf', []) or []
-            if isinstance(member_of, str):
-                member_of = [member_of]
-
-            is_privileged = any(
-                g.upper() in str(dn).upper()
-                for dn in member_of
-                for g in [
-                    'DOMAIN ADMINS', 'ENTERPRISE ADMINS',
-                    'SCHEMA ADMINS', 'ADMINISTRATORS',
-                ]
-            )
+            privileged = {
+                "domain admins",
+                "enterprise admins",
+                "schema admins",
+                "administrators",
+            }
+            is_privileged = bool(membership_names(user.get("memberOf")) & privileged)
             if not is_privileged:
                 continue
 

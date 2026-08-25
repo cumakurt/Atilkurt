@@ -5,6 +5,7 @@ Collects GPO objects and their configurations from Active Directory
 
 import logging
 from ldap3.utils.conv import escape_filter_chars
+from core.exceptions import LDAPSearchError
 from core.progress_tracker import ProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
@@ -89,10 +90,13 @@ class GPOCollector:
             logger.info(f"Collected {len(gpos)} GPOs")
             return gpos
 
-        except Exception as e:
+        except LDAPSearchError as e:
             logger.error(f"Error collecting GPOs: {str(e)}")
             # Return empty list if GPO collection fails (may not have permissions)
             return []
+        except Exception as e:
+            logger.error(f"Unexpected error collecting GPOs: {str(e)}")
+            raise
 
     def _get_linked_ous(self, gpo_dn):
         """

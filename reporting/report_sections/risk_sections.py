@@ -223,6 +223,8 @@ class RiskSectionsMixin:
 
     def _generate_charts_data(self, risks):
         """Generate data for Chart.js charts."""
+        from reporting.localization import risk_type_label
+
         # Severity distribution
         severity_counts = {
             'critical': 0,
@@ -252,7 +254,10 @@ class RiskSectionsMixin:
                 severity_counts['medium'],
                 severity_counts['low']
             ],
-            'riskTypeLabels': [rt[0] for rt in top_risk_types],
+            'riskTypeLabels': [
+                risk_type_label(rt[0], getattr(self, 'language', 'en'))
+                for rt in top_risk_types
+            ],
             'riskTypeData': [rt[1] for rt in top_risk_types]
         }
 

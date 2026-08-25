@@ -14,6 +14,8 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+_UNSAFE_CHECKPOINT_CHARS = frozenset('<>:"|?*')
+
 
 class ProgressPersistence:
     """
@@ -41,6 +43,8 @@ class ProgressPersistence:
             or "\x00" in checkpoint_id
             or "/" in checkpoint_id
             or "\\" in checkpoint_id
+            or any(char in _UNSAFE_CHECKPOINT_CHARS for char in checkpoint_id)
+            or any(char.isspace() for char in checkpoint_id)
         ):
             raise ValueError("Invalid checkpoint_id: path separators are not allowed")
 
@@ -65,7 +69,11 @@ class ProgressPersistence:
         """
         if timestamp is None:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        return f"{domain}_{timestamp}"
+        safe_domain = "".join(
+            char if char.isalnum() or char in "._-" else "_"
+            for char in str(domain)
+        )
+        return f"{safe_domain}_{timestamp}"
 
     def save_checkpoint(self, checkpoint_id: str, data: dict[str, Any]) -> str:
         """

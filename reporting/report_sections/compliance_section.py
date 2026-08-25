@@ -72,6 +72,8 @@ class ComplianceSectionMixin:
 
     def _generate_cis_compliance_html(self, cis_data):
         """Generate CIS Benchmark compliance HTML."""
+        from reporting.localization import risk_type_label
+
         if not cis_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No CIS Benchmark data available.</p></div></div>'
 
@@ -152,7 +154,9 @@ class ComplianceSectionMixin:
             passed = cis_data.get('passed_controls', [])
 
             failed_html = ''.join([
-                f'<li><span class="badge bg-danger">{c.get("control")}</span> - {c.get("risk_type")} ({c.get("count", 0)} instances)</li>'
+                f'<li><span class="badge bg-danger">{c.get("control")}</span> - '
+                f'{risk_type_label(c.get("risk_type"), getattr(self, "language", "en"))} '
+                f'({c.get("count", 0)} instances)</li>'
                 for c in failed[:10]
             ])
 

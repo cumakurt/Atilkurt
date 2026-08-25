@@ -5,22 +5,27 @@ Analyzes group objects for security risks including nested admin groups
 
 import logging
 
+from analysis.privileged_account_status import (
+    ROLE_DOMAIN_ADMINS,
+    ROLE_ENTERPRISE_ADMINS,
+    account_is_disabled,
+    build_disabled_privileged_admin_risk,
+    resolve_group_member,
+)
+from core.ad_identity import (
+    ROLE_ACCOUNT_OPERATORS,
+    ROLE_BACKUP_OPERATORS,
+    first_ldap_rdn,
+    group_is_role,
+    is_privileged_group_name,
+    is_privileged_group_record,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class GroupRiskAnalyzer:
     """Analyzes group objects for security risks."""
-
-    PRIVILEGED_GROUPS = [
-        'Domain Admins',
-        'Enterprise Admins',
-        'Schema Admins',
-        'Account Operators',
-        'Backup Operators',
-        'Server Operators',
-        'Print Operators',
-        'Administrators'
-    ]
 
     def __init__(self):
         """Initialize group risk analyzer."""
@@ -46,6 +51,9 @@ class GroupRiskAnalyzer:
             # Check for too many Domain Admins
             risks.extend(self._check_too_many_domain_admins(group, users))
 
+            # Disabled members that still hold Domain Admin or Enterprise Admin
+            risks.extend(self._check_disabled_privileged_admin_members(group, users))
+
             # Check for nested admin groups
             risks.extend(self._check_nested_admin_groups(group, groups, group_membership_map))
 
@@ -53,6 +61,43 @@ class GroupRiskAnalyzer:
             risks.extend(self._check_operators_members(group, users))
 
         logger.info(f"Found {len(risks)} group-related risks")
+        return risks
+
+    def _check_disabled_privileged_admin_members(self, group, users):
+        """Flag disabled users that remain members of Domain Admins or Enterprise Admins."""
+        role = None
+        if group_is_role(group, ROLE_DOMAIN_ADMINS):
+            role = ROLE_DOMAIN_ADMINS
+        elif group_is_role(group, ROLE_ENTERPRISE_ADMINS):
+            role = ROLE_ENTERPRISE_ADMINS
+        if not role:
+            return []
+
+        users_by_dn = {}
+        users_by_sam = {}
+        for user in users or []:
+            dn = str(user.get("distinguishedName") or user.get("dn") or "").lower()
+            sam = str(user.get("sAMAccountName") or "").lower()
+            if dn:
+                users_by_dn[dn] = user
+            if sam:
+                users_by_sam[sam] = user
+
+        members = group.get("member") or []
+        if not isinstance(members, list):
+            members = [members] if members else []
+
+        risks = []
+        seen = set()
+        for member in members:
+            user = resolve_group_member(member, users_by_dn, users_by_sam)
+            if not user or not account_is_disabled(user):
+                continue
+            username = user.get("sAMAccountName") or str(member)
+            if username in seen:
+                continue
+            seen.add(username)
+            risks.append(build_disabled_privileged_admin_risk(user, role))
         return risks
 
     def _build_membership_map(self, groups):
@@ -71,8 +116,8 @@ class GroupRiskAnalyzer:
         """Check if Domain Admins group has too many members."""
         risks = []
 
-        group_name = group.get('name') or group.get('sAMAccountName')
-        if not group_name or 'Domain Admins' not in group_name:
+        group_name = group.get('name') or group.get('sAMAccountName') or ROLE_DOMAIN_ADMINS
+        if not group_is_role(group, ROLE_DOMAIN_ADMINS):
             return risks
 
         members = group.get('member', []) or []
@@ -106,10 +151,7 @@ class GroupRiskAnalyzer:
         if not group_name:
             return risks
 
-        # Check if this is a privileged group
-        is_privileged = any(priv_group.lower() in group_name.lower() for priv_group in self.PRIVILEGED_GROUPS)
-
-        if not is_privileged:
+        if not is_privileged_group_record(group):
             return risks
 
         # Check if this group is a member of another privileged group
@@ -118,8 +160,8 @@ class GroupRiskAnalyzer:
             member_of = [member_of] if member_of else []
 
         for parent_group_dn in member_of:
-            parent_group_name = self._extract_group_name(parent_group_dn)
-            if parent_group_name and any(priv_group.lower() in parent_group_name.lower() for priv_group in self.PRIVILEGED_GROUPS):
+            parent_group_name = first_ldap_rdn(parent_group_dn) or self._extract_group_name(parent_group_dn)
+            if parent_group_name and is_privileged_group_name(parent_group_name):
                 risks.append({
                     'type': 'nested_admin_group',
                     'severity': 'high',
@@ -145,8 +187,10 @@ class GroupRiskAnalyzer:
         if not group_name:
             return risks
 
-        # Check if this is Backup Operators or Account Operators
-        if 'Backup Operators' not in group_name and 'Account Operators' not in group_name:
+        if not (
+            group_is_role(group, ROLE_BACKUP_OPERATORS)
+            or group_is_role(group, ROLE_ACCOUNT_OPERATORS)
+        ):
             return risks
 
         members = group.get('member', []) or []

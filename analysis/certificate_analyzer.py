@@ -3,223 +3,161 @@ Certificate-Based Attack Analyzer Module
 Detects LDAP-visible AD CS template indicators for ESC1 and ESC2.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
-from core.constants import RiskTypes, Severity, MITRETechniques
+
+from core.ad_identity import forest_configuration_dn, ldap_scalar_text
+from core.constants import MITRETechniques, RiskTypes, Severity
+from core.exceptions import LDAPSearchError
 
 logger = logging.getLogger(__name__)
+
+ENROLLEE_SUPPLIES_SUBJECT = 0x1
+PEND_ALL_REQUESTS = 0x2
+CLIENT_AUTH_OID = "1.3.6.1.5.5.7.3.2"
+SMART_CARD_LOGON_OID = "1.3.6.1.4.1.311.20.2.2"
+ANY_PURPOSE_OID = "2.5.29.37.0"
+TEMPLATE_ATTRIBUTES = [
+    "name",
+    "displayName",
+    "cn",
+    "msPKI-Certificate-Name-Flag",
+    "msPKI-Enrollment-Flag",
+    "pKIExtendedKeyUsage",
+]
 
 
 class CertificateAnalyzer:
     """Analyzes Active Directory Certificate Services for vulnerabilities."""
 
     def __init__(self, ldap_connection):
-        """
-        Initialize certificate analyzer.
-
-        Args:
-            ldap_connection: LDAPConnection instance
-        """
+        """Initialize certificate analyzer."""
         self.ldap = ldap_connection
 
     def analyze_certificate_services(self) -> list[dict[str, Any]]:
-        """
-        Analyze AD Certificate Services for vulnerabilities.
-
-        Returns:
-            List of risk dictionaries for certificate-based attacks
-        """
-        risks = []
-
-        try:
-            base_dn = self.ldap.base_dn
-            config_dn = f"CN=Configuration,{base_dn}"
-
-            # Search for Certificate Templates
-            search_filter = '(objectClass=pKICertificateTemplate)'
-            # Use standard attribute names that are more likely to work
-            attributes = [
-                'name',
-                'displayName',
-                'distinguishedName'
-            ]
-
-            try:
-                templates = self.ldap.search(
-                    search_base=f"CN=Certificate Templates,CN=Public Key Services,CN=Services,{config_dn}",
-                    search_filter=search_filter,
-                    attributes=attributes
-                )
-
-                for template in templates:
-                    template_name = template.get('name') or template.get('displayName', 'Unknown')
-
-                    # Try to get additional attributes for detailed analysis
-                    template_dn = template.get('dn') or template.get('distinguishedName')
-                    if template_dn:
-                        try:
-                            # Try to read certificate template attributes with proper names
-                            detailed_template = self.ldap.search(
-                                search_base=template_dn,
-                                search_filter='(objectClass=pKICertificateTemplate)',
-                                attributes=['*']  # Get all attributes
-                            )
-                            if detailed_template:
-                                template.update(detailed_template[0])
-                        except Exception as e:
-                            logger.debug(f"Could not read detailed template attributes: {str(e)}")
-
-                    # Analyze template for various ESC vulnerabilities
-                    template_risks = self._analyze_template_vulnerabilities(template, template_name)
-                    risks.extend(template_risks)
-
-            except Exception as e:
-                logger.debug(f"Error searching for certificate templates: {str(e)}")
-                # Provide general guidance even if templates can't be read
-                risks.append({
-                    'type': RiskTypes.CERTIFICATE_SERVICES_DETECTED,
-                    'severity': Severity.MEDIUM,
-                    'title': 'AD Certificate Services Detected',
-                    'description': (
-                        'Active Directory Certificate Services (AD CS) is configured. '
-                        'Review certificate templates for vulnerabilities (ESC1-ESC8).'
-                    ),
-                    'affected_object': 'AD CS',
-                    'object_type': 'service',
-                    'impact': (
-                        'Misconfigured certificate templates can allow privilege escalation. '
-                        'Attackers can request certificates that enable domain compromise.'
-                    ),
-                    'attack_scenario': (
-                        'Attackers can exploit misconfigured certificate templates to request certificates '
-                        'that allow authentication as other users or with elevated privileges.'
-                    ),
-                    'mitigation': (
-                        'Review all certificate templates. Ensure templates do not allow enrollment by '
-                        'unauthenticated users. Remove dangerous EKUs. Restrict certificate enrollment. '
-                        'Use tools like Certipy or PSPKIAudit to audit templates.'
-                    ),
-                    'cis_reference': 'CIS Benchmark requires secure certificate template configuration',
-                    'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER
-                })
-
-            logger.info(f"Found {len(risks)} certificate service risks")
-            return risks
-
-        except Exception as e:
-            logger.error(f"Error analyzing certificate services: {str(e)}")
+        """Analyze AD Certificate Services templates using the forest config NC."""
+        config_dn = forest_configuration_dn(self.ldap)
+        if not config_dn:
+            logger.warning("Could not determine forest configuration naming context")
             return []
 
+        try:
+            templates = self.ldap.search(
+                search_base=f"CN=Certificate Templates,CN=Public Key Services,CN=Services,{config_dn}",
+                search_filter="(objectClass=pKICertificateTemplate)",
+                attributes=TEMPLATE_ATTRIBUTES,
+            ) or []
+        except LDAPSearchError as exc:
+            logger.debug("Certificate template search failed: %s", exc)
+            return []
+
+        risks: list[dict[str, Any]] = []
+        for template in templates:
+            template_name = (
+                ldap_scalar_text(template.get("name"))
+                or ldap_scalar_text(template.get("displayName"))
+                or ldap_scalar_text(template.get("cn"))
+                or "Unknown"
+            )
+            risks.extend(self._analyze_template_vulnerabilities(template, str(template_name)))
+
+        logger.info("Found %d certificate service risks", len(risks))
+        return risks
+
     def _analyze_template_vulnerabilities(self, template: dict, template_name: str) -> list[dict[str, Any]]:
-        """
-        Analyze a certificate template for vulnerabilities.
+        """Analyze a certificate template for ESC1- and ESC2-like attribute exposure."""
+        risks: list[dict[str, Any]] = []
+        enrollment_flags = self._as_int(template.get("msPKI-Enrollment-Flag")) or 0
+        name_flags = self._as_int(template.get("msPKI-Certificate-Name-Flag")) or 0
+        ekus_present = "pKIExtendedKeyUsage" in template
+        ekus = self._as_list(template.get("pKIExtendedKeyUsage"))
+        eku_text = " ".join(str(eku) for eku in ekus)
+        has_client_auth = CLIENT_AUTH_OID in eku_text or SMART_CARD_LOGON_OID in eku_text
+        has_any_purpose = ANY_PURPOSE_OID in eku_text
+        manager_approval = bool(enrollment_flags & PEND_ALL_REQUESTS)
 
-        Args:
-            template: Template dictionary
-            template_name: Name of the template
-
-        Returns:
-            List of risk dictionaries
-        """
-        risks = []
-
-        # Try different attribute name variations
-        enrollment_flags = 0
-        for attr_name in ['pKIEnrollmentFlags', 'pKIEnrollmentFlags', 'msPKI-Enrollment-Flag']:
-            if attr_name in template:
-                try:
-                    enrollment_flags = template.get(attr_name, 0)
-                    if isinstance(enrollment_flags, str):
-                        enrollment_flags = int(enrollment_flags)
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        name_flags = 0
-        for attr_name in ['msPKI-Certificate-Name-Flag', 'msPKICertificateNameFlag']:
-            if attr_name in template:
-                try:
-                    name_flags = template.get(attr_name, 0)
-                    if isinstance(name_flags, str):
-                        name_flags = int(name_flags)
-                    break
-                except (ValueError, TypeError):
-                    pass
-
-        # ESC1: Enrollee Supplies Subject + No Manager Approval + Autoenroll Enabled
-        # ENROLLEE_SUPPLIES_SUBJECT = 0x1
-        # AUTO_ENROLLMENT_CHECK_USER_DS_CERTIFICATE = 0x20
-        if (enrollment_flags & 0x1) and (enrollment_flags & 0x20):
-            # Check if template allows client authentication
-            ekus = template.get('pKIExtendedKeyUsage', []) or []
-            if not isinstance(ekus, list):
-                ekus = [ekus] if ekus else []
-
-            has_client_auth = any('1.3.6.1.5.5.7.3.2' in str(eku) for eku in ekus)
-
-            if has_client_auth:
-                risks.append({
-                    'type': RiskTypes.CERTIFICATE_ESC1,
-                    'severity': Severity.CRITICAL,
-                    'title': f'ESC1 Vulnerability: {template_name}',
-                    'description': (
-                        f"Certificate template '{template_name}' is vulnerable to ESC1. "
-                        "It allows enrollees to supply the subject and enables client authentication."
-                    ),
-                    'affected_object': template_name,
-                    'object_type': 'certificate_template',
-                    'vulnerability': 'ESC1',
-                    'impact': (
-                        'ESC1 allows attackers to request certificates for any user, enabling '
-                        'authentication as that user and privilege escalation.'
-                    ),
-                    'attack_scenario': (
-                        f"An attacker can request a certificate from template '{template_name}' "
-                        "for a Domain Admin account, then use that certificate to authenticate "
-                        "as Domain Admin."
-                    ),
-                    'mitigation': (
-                        'Remove ENROLLEE_SUPPLIES_SUBJECT flag. Require manager approval. '
-                        'Remove client authentication EKU or restrict enrollment.'
-                    ),
-                    'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER
-                })
-
-        # ESC2: Any Purpose EKU or No EKU
-        ekus = template.get('pKIExtendedKeyUsage', []) or []
-        if not isinstance(ekus, list):
-            ekus = [ekus] if ekus else []
-
-        has_any_purpose = any('2.5.29.37.0' in str(eku) for eku in ekus)  # Any Purpose OID
-        has_no_eku = len(ekus) == 0
-
-        if has_any_purpose or has_no_eku:
+        if (
+            name_flags & ENROLLEE_SUPPLIES_SUBJECT
+            and not manager_approval
+            and (has_client_auth or has_any_purpose)
+        ):
             risks.append({
-                'type': RiskTypes.CERTIFICATE_ESC2,
-                'severity': Severity.CRITICAL,
-                'title': f'ESC2 Vulnerability: {template_name}',
-                'description': (
-                    f"Certificate template '{template_name}' is vulnerable to ESC2. "
-                    "It has Any Purpose EKU or no EKU restrictions."
+                "type": RiskTypes.CERTIFICATE_ESC1,
+                "severity": Severity.CRITICAL,
+                "title": f"ESC1-like template flags: {template_name}",
+                "description": (
+                    f"Certificate template '{template_name}' allows the enrollee to supply the subject "
+                    "and advertises client authentication (or Any Purpose) without manager approval. "
+                    "Enrollment rights still need to be confirmed from the template ACL."
                 ),
-                'affected_object': template_name,
-                'object_type': 'certificate_template',
-                'vulnerability': 'ESC2',
-                'impact': (
-                    'ESC2 allows certificates to be used for any purpose, enabling various '
-                    'attack scenarios including client authentication and code signing.'
+                "affected_object": template_name,
+                "object_type": "certificate_template",
+                "vulnerability": "ESC1",
+                "impact": (
+                    "If a low-privilege principal can enroll, they can request a certificate for another "
+                    "identity and authenticate as that account."
                 ),
-                'attack_scenario': (
-                    f"An attacker can request a certificate from template '{template_name}' "
-                    "and use it for client authentication or other purposes to gain unauthorized access."
+                "attack_scenario": (
+                    f"Enroll against '{template_name}', supply a Domain Admin SAN, and authenticate with "
+                    "the issued certificate."
                 ),
-                'mitigation': (
-                    'Remove Any Purpose EKU. Add specific EKUs. Restrict certificate usage.'
+                "mitigation": (
+                    "Clear ENROLLEE_SUPPLIES_SUBJECT, require manager approval, and restrict enrollment."
                 ),
-                'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER
+                "mitre_attack": MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
             })
 
-        # Additional ESC vulnerabilities would require more detailed analysis
-        # ESC3, ESC4, ESC6, ESC8 require checking specific permissions and configurations
+        empty_eku_confirmed = (
+            ekus_present
+            and not ekus
+            and (
+                "msPKI-Certificate-Name-Flag" in template
+                or "msPKI-Enrollment-Flag" in template
+            )
+        )
+        if has_any_purpose or empty_eku_confirmed:
+            risks.append({
+                "type": RiskTypes.CERTIFICATE_ESC2,
+                "severity": Severity.CRITICAL,
+                "title": f"ESC2-like template flags: {template_name}",
+                "description": (
+                    f"Certificate template '{template_name}' has Any Purpose EKU or an empty EKU list "
+                    "on a fully retrieved template object."
+                ),
+                "affected_object": template_name,
+                "object_type": "certificate_template",
+                "vulnerability": "ESC2",
+                "impact": (
+                    "Unrestricted EKUs can be used for client authentication and other certificate uses."
+                ),
+                "attack_scenario": (
+                    f"Request a certificate from '{template_name}' and use it for authentication."
+                ),
+                "mitigation": "Replace Any Purpose / empty EKU with explicit application policies.",
+                "mitre_attack": MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
+            })
 
         return risks
+
+    @staticmethod
+    def _as_int(value: Any) -> int | None:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_list(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]

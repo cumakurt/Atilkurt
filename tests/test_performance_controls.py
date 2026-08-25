@@ -98,6 +98,22 @@ class TestAnalysisProfiles(unittest.TestCase):
 
         self.assertEqual(result["cheap_risks"], [])
 
+    def test_unexpected_step_failure_is_analysis_error(self):
+        from core.exceptions import AnalysisError
+
+        def broken_runner(ldap, data):
+            raise TypeError("synthetic analyzer bug")
+
+        registry.ANALYSIS_STEP_REGISTRY = [
+            ("broken", "Broken analysis", broken_runner),
+        ]
+        registry.ANALYSIS_STEP_DEFAULTS = {"broken": {"broken_risks": []}}
+
+        with self.assertRaises(AnalysisError) as caught:
+            registry.run_all_analyses(None, {}, profile="full")
+        self.assertIn("broken", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, TypeError)
+
 
 class TestACLShadowAdminPerformance(unittest.TestCase):
     """Shadow Admin detection should not perform per-user LDAP lookups."""

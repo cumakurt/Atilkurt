@@ -3,7 +3,7 @@
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
-AtilKurt is a read-only Active Directory security assessment tool. It collects directory data through LDAP, runs a broad set of security analyzers, scores the findings, and generates a self-contained HTML report for offline review.
+AtilKurt is a read-only Active Directory security assessment tool. It collects directory data through LDAP, runs a broad set of security analyzers, scores the findings, and generates a self-contained HTML report for offline review. Reports are generated in English by default and can be fully localized to Turkish with `--lan tr`.
 
 ## Simplest Manual Usage
 
@@ -16,6 +16,13 @@ ATILKURT_PASS='your-password' \
 
 Replace the example values with the assessment account details. The password is passed through the environment instead of a command-line argument, so it is not exposed in the process argument list. If the domain name does not resolve to a reachable domain controller, add `--dc-ip 192.168.1.10`. Add `--ssl` when the domain controller provides LDAPS on port 636.
 
+To generate the same assessment with a Turkish report, add `--lan tr`:
+
+```bash
+ATILKURT_PASS='your-password' \
+.venv/bin/atilkurt --domain example.com --username auditor --lan tr
+```
+
 ## Overview
 
 The tool is designed for security assessments, internal red-team style reviews, and directory hygiene analysis. It does not modify Active Directory and is built around LDAP search operations only.
@@ -25,7 +32,7 @@ Core goals:
 - Collect identity, group, computer, GPO, and ACL data from Active Directory
 - Detect misconfigurations, weak controls, and known attack paths
 - Consolidate findings into a severity-based risk model
-- Produce offline-capable HTML, JSON, and optional checkpoint exports
+- Produce offline-capable English or Turkish HTML reports, JSON exports, and optional checkpoints
 - Support large environments with paging, caching, parallel collection, and incremental execution
 
 ## Key Capabilities
@@ -39,7 +46,7 @@ Core goals:
 ### Security Analysis
 
 - User, computer, and group risk analysis
-- Kerberos, delegation, privilege escalation, and ACL review
+- Kerberos delegation, account-level encryption compatibility, privileged-account delegation protection, privilege escalation, and ACL review
 - Kerberoasting, AS-REP roasting, DCSync, GPP, LAPS, trust, and password policy checks
 - AD CS analysis, including extended certificate abuse paths
 - Extended LDAP checks for common privileged-object and configuration weaknesses
@@ -55,6 +62,8 @@ Core goals:
 ### Reporting
 
 - Single-file HTML report with embedded assets
+- English reporting by default and complete Turkish report localization with `--lan tr`
+- Domain Admin takeover map for pentest-oriented path review
 - JSON export for downstream processing
 - Compliance reporting for CIS, NIST CSF, ISO 27001, and GDPR
 - Executive summary and analysis summary tables
@@ -77,7 +86,7 @@ Risk deduplication, exploitability assessment, and scoring
         ↓
 Compliance mapping and remediation prioritization
         ↓
-HTML report, optional JSON/export files, and optional checkpoint
+Localized HTML report, optional JSON/export files, and optional checkpoint
 ```
 
 The LDAP layer exposes search operations only. AtilKurt does not create, modify, or delete directory objects. Analysis modules consume normalized directory records and return findings; the scoring layer then applies object context and prevalence before sorting the findings. An unexpected analysis failure is surfaced and prevents the run from being reported as successful.
@@ -90,10 +99,11 @@ The following tables describe every analysis step registered by the application.
 
 | Analysis key | What it evaluates |
 | --- | --- |
-| `user_risks` | Password-never-expires and password-not-required flags, disabled Kerberos pre-authentication, SPN-bearing users, protected-account indicators, inactive privileged users, disabled or locked accounts, old service-account passwords, recently created accounts, and recent group-membership changes. |
+| `user_risks` | Password-never-expires and password-not-required flags, disabled Kerberos pre-authentication, SPN-bearing users, protected-account indicators, inactive privileged users, disabled Domain Admin and Enterprise Admin accounts (called out separately), other disabled or locked accounts, old service-account passwords, recently created accounts, and recent group-membership changes. |
 | `computer_risks` | End-of-life or legacy operating systems, unconstrained and constrained delegation, inactive computer accounts, and computer accounts that appear never to have been used. |
 | `legacy_os` | Normalized operating-system names and versions, with separate end-of-life and legacy classifications so older but still supported versions are not reported as EOL. |
 | `group_risks` | Excessive Domain Admin membership, nested privileged groups, and populated operator groups that can provide sensitive administrative capabilities. |
+| `identity_protection` | Privileged enabled users with reversible password encryption, missing Protected Users membership, or no smart-card requirement. Missing `memberOf` data is not treated as evidence of absence. |
 | `service_accounts` | Privileged service accounts, traditional service accounts that could use managed identities, and service-account password lifetime concerns. |
 | `stale_objects` | Inactive users, ancient passwords, possible credential disclosure in descriptions, stale computers, and unresolved or orphaned SID references. |
 | `honeypot` | Existing accounts that look like deception candidates and directory conditions where a controlled decoy account may improve detection. These are advisory findings, not proof that an account is malicious. |
@@ -104,38 +114,46 @@ The following tables describe every analysis step registered by the application.
 | Analysis key | What it evaluates |
 | --- | --- |
 | `kerberos_delegation` | Unconstrained delegation, constrained delegation, broad service delegation, and delegation combinations that may enable impersonation or privilege escalation. |
+| `kerberos_account_security` | Enabled user and computer accounts that explicitly advertise DES or RC4 without AES, plus privileged users that do not have the sensitive-and-cannot-be-delegated protection. An absent or zero `msDS-SupportedEncryptionTypes` value is governed by domain/KDC defaults and is not reported as RC4-only evidence. |
 | `kerberoasting` | Accounts with service principal names that can be Kerberoasted and accounts without Kerberos pre-authentication that may be AS-REP roastable. |
 | `password_policy` | Domain password length, history, age, complexity, reversible encryption, and account-lockout policy attributes. |
+| `fine_grained_password_policy` | Password Settings Objects (PSOs) that weaken the domain default for minimum length, history, complexity, lockout threshold, duration, or observation window, as well as any PSO that enables reversible encryption. The finding includes precedence and target principals for remediation context. |
 | `password_spray` | Lockout threshold, duration and observation window, privileged accounts without smart-card requirements, password-age patterns, and an overall spray-readiness score. |
-| `laps` | Presence of LAPS-related computer attributes, local administrator password coverage, and which principals may be able to read managed password data. |
-| `gpp_passwords` | Group Policy Preference password material associated with collected GPOs, including recoverable `cpassword` exposure where available. |
+| `laps` | Presence of legacy and Windows LAPS expiry attributes, whether Windows LAPS is deployed, and whether the assessment account can *see* readable `msLAPS-Password` values. Password secrets themselves are not retrieved into the report. |
+| `gpp_passwords` | Recoverable Group Policy Preference `cpassword` material when that evidence is present on collected GPO records. LDAP GPO inventory without `cpassword` is not reported as a GPP password finding; SYSVOL is not read over SMB. |
 | `gmsa` | gMSA configuration, principals allowed to retrieve managed passwords, and traditional service accounts that are candidates for migration to gMSA. |
-| `golden_gmsa` | KDS root-key exposure and excessive gMSA password-reader conditions associated with Golden gMSA attack paths. |
+| `golden_gmsa` | KDS root-key exposure and excessive gMSA password-reader conditions associated with Golden gMSA attack paths. KDS objects are located from RootDSE `configurationNamingContext`, not from `CN=Configuration,<domain DN>`. |
 | `krbtgt` | KRBTGT password age and encryption configuration indicators that affect Golden Ticket resilience. |
 
 ### Authorization, ACLs, and Attack Paths
 
 | Analysis key | What it evaluates |
 | --- | --- |
-| `privilege_escalation` | Relationship-based escalation paths across users, groups, computers, SPNs, and delegation. |
+| `privilege_escalation` | Relationship-based escalation paths across users, groups, computers, SPNs, and delegation. Privileged groups are matched by exact name or well-known RID, not by substring (so Hyper-V Administrators is not treated as Administrators). |
 | `acl_legacy` | Compatibility ACL checks for dangerous rights found on collected users, groups, and computers. |
-| `acl_security` | Security-descriptor parsing, dangerous ACEs, inheritance concerns, shadow administrators, and multi-hop ACL privilege-escalation paths. |
+| `acl_security` | Security-descriptor parsing, dangerous ACEs, inheritance concerns, shadow administrators, and multi-hop ACL privilege-escalation paths. Privileged groups are identified by exact name or RID. |
 | `dcsync` | Principals with directory replication rights that may permit DCSync-style credential extraction. |
 | `gpo_abuse` | GPO modification rights and GPO placement or linkage that could affect privileged organizational units. |
-| `backup_operators` | Membership in Backup Operators and other sensitive operator groups whose rights can bypass ordinary file or service controls. |
-| `lateral_movement` | Unrestricted privileged logon opportunities, tier-boundary violations, and broad Remote Desktop exposure inferred from directory relationships. |
+| `backup_operators` | Membership in Backup Operators and other sensitive operator groups, matched by exact group name (so similarly named custom groups are not flagged). |
+| `lateral_movement` | Unrestricted privileged logon opportunities, tier-boundary violations, and broad Remote Desktop exposure inferred from directory relationships. Privileged membership uses exact CN/SAM names, not DN substrings. |
 | `machine_quota` | `ms-DS-MachineAccountQuota`, account-creation exposure, and creator-SID concentration that can contribute to machine-account abuse paths. |
-| `replication_metadata` | Recent sensitive-object changes and tombstone-lifetime settings relevant to change monitoring and recovery. |
+| `replication_metadata` | Recent sensitive-object changes and tombstone-lifetime settings relevant to change monitoring and recovery. Forest configuration objects (tombstone lifetime) are resolved from RootDSE. |
 
 ### Domain, Trust, PKI, and Control-Plane Security
 
 | Analysis key | What it evaluates |
 | --- | --- |
 | `trusts` | Domain trust direction, transitivity, SID-filtering-related indicators, and conditions that expand cross-domain attack scope. |
-| `certificate_services` | Certificate-template attributes that directly indicate ESC1- or ESC2-like exposure. Other template conditions are reported only when the available LDAP attributes support them. |
-| `adcs_extended` | Extended AD CS indicators for ESC5, ESC7, ESC9, ESC10/14, ESC11, ESC13, and Certifried-related conditions. Several CA-wide items are explicit review prompts and require manual confirmation. |
-| `vulnerability_scan` | Directory-data heuristics for ZeroLogon, PrintNightmare, PetitPotam, Shadow Credentials, and NoPac exposure. This module does not send exploits or perform network vulnerability verification; patch state and service configuration must be confirmed independently. |
+| `certificate_services` | Forest configuration naming context from RootDSE (so child domains search the forest PKI container). ESC1-like flags use `msPKI-Certificate-Name-Flag` enrollee-supplies-subject plus client-auth/Any Purpose EKU without manager approval. Missing EKU attributes are not treated as ESC2. Enrollment ACLs are not inferred. |
+| `adcs_extended` | Extended AD CS indicators for ESC5, ESC7, ESC9, ESC10/14, ESC11, ESC13, ESC15, and Certifried-related conditions. Several CA-wide items are explicit review prompts and require manual confirmation. Configuration objects are resolved from RootDSE, not from `CN=Configuration,<domain DN>`. |
+| `vulnerability_scan` | Directory-data heuristics for ZeroLogon, PrintNightmare, PetitPotam, Shadow Credentials, and NoPac. Domain Controllers are identified by `SERVER_TRUST_ACCOUNT`, primary group RID 516, or the Domain Controllers OU — not by the letters `DC` in a hostname. Shadow Credentials findings require `msDS-KeyCredentialLink` on a privileged account. The module does not send exploits or verify patch state. |
 | `domain_security` | LDAP signing/channel-binding indicators, NTLM minimum-security settings, and SMB-signing policy evidence found in GPO metadata. |
+| `ldap_directory_exposure` | Anonymous LDAP (dSHeuristics), Pre-Windows 2000 Compatible Access membership, enabled Guest (including renamed RID-501 accounts), and outdated domain/forest functional levels that keep legacy enumeration paths open. Directory Service objects are resolved from RootDSE `configurationNamingContext`; child-domain DNs are not prefixed with `CN=Configuration`. |
+| `hidden_privilege` | Privileged `primaryGroupID` values that hide Domain Admin-equivalent membership, computer accounts in privileged groups, and renamed RID-500 administrators. |
+| `hybrid_identity` | Entra Connect / MSOL_ sync accounts, Seamless SSO (`AZUREADSSOACC`), and ADFS identities identified by service principal names. Missing hybrid-join attributes are reported only when those hybrid components are present, so a purely on-premises forest is not flagged. |
+| `rodc_attack_surface` | RODC RevealOnDemand / NeverReveal configuration, privileged principals allowed to cache secrets, and large revealed-user caches. |
+| `delegated_msa` | Windows Server 2025 delegated MSA (dMSA) objects and predecessor links used in the BadSuccessor privilege-inheritance attack. Schema presence is resolved from RootDSE `schemaNamingContext` so child domains are evaluated against the forest schema. |
+| `sccm_attack_surface` | Configuration Manager `System Management` publication and management-point objects that commonly lead to client-push takeover paths. |
 | `extended_ldap` | RBCD, `msDS-KeyCredentialLink`, SID history, foreign security principals, fine-grained password policies, BitLocker recovery objects, AdminSDHolder, OU/GPO structure, empty or deeply nested groups, expired computers, printer and Exchange objects, DNS zones, and AD Recycle Bin state. |
 | `audit_policy` | Audit-related GPO discovery, AdminSDHolder and domain-root SACL review guidance, and the critical Windows event IDs recommended for monitoring. |
 | `coercion` | Print Spooler, DFS, and WebClient-related directory indicators that may expose authentication-coercion paths. No coercion request is sent. |
@@ -269,7 +287,7 @@ Explicit CLI options take precedence over equivalent `.env` values. Existing pro
 
 A username may be supplied as `username`, `DOMAIN\username`, or `username@example.com`; the connection layer normalizes it for LDAP authentication.
 
-- Without `--ssl`, AtilKurt connects to port 389 and attempts NTLM only. It never sends a SIMPLE bind password over plaintext LDAP.
+- Without `--ssl`, AtilKurt connects to port 389 and attempts NTLM only. It never sends a SIMPLE bind password over plaintext LDAP. The CLI prints a warning so operators prefer LDAPS when it is available.
 - With `--ssl`, AtilKurt connects to port 636 and may use NTLM or SIMPLE inside the protected TLS connection.
 - TLS certificate validation is enabled by default. A failed explicit LDAPS connection is reported and never downgraded to plaintext LDAP.
 - `--no-validate-cert` is intended only for controlled labs with a certificate chain that cannot be validated.
@@ -349,6 +367,39 @@ ATILKURT_PASS='read-from-your-secret-manager' \
 ```
 
 Use `--ssl` for LDAPS on port 636. Without it, the application uses LDAP on port 389 and restricts authentication to NTLM; it does not send SIMPLE credentials over plaintext LDAP. If `--output` is omitted, a timestamped HTML filename is generated for the target domain.
+
+### Report Language
+
+English is the default report language. The three equivalent language option names below are accepted:
+
+```bash
+./run.sh --lan tr
+./run.sh --lang tr
+./run.sh --language tr
+```
+
+The short form is recommended in examples. A complete Turkish HTML and JSON assessment can be generated with:
+
+```bash
+ATILKURT_DOMAIN=example.com \
+ATILKURT_USER=auditor \
+ATILKURT_PASS='read-from-your-secret-manager' \
+ATILKURT_DC_IP=192.168.1.10 \
+./run.sh \
+  --ssl \
+  --lan tr \
+  --output assessment-tr.html \
+  --json-export assessment-tr.json
+```
+
+Omitting the option is equivalent to `--lan en`:
+
+```bash
+./run.sh --ssl
+./run.sh --ssl --lan en
+```
+
+Only `en` and `tr` are valid values. Unsupported language values are rejected during CLI validation before an LDAP connection is attempted.
 
 ### Large Environment Scan
 
@@ -438,7 +489,7 @@ After the normal scan, this prints whether the named user has a computed path to
 ./run.sh --verbose --log-file assessment.log
 ```
 
-Use `--verbose` for informational diagnostics or `--debug` for detailed troubleshooting. Console status output remains available independently of the Python logging level. Treat log files as sensitive assessment artifacts.
+Use `--verbose` for informational diagnostics or `--debug` for detailed troubleshooting. Console status output remains available independently of the Python logging level. Treat log files as sensitive assessment artifacts. Fatal errors (`[-] ...`) are written to stderr so that stdout can be piped without mixing failure text into captured reports.
 
 ## CLI Reference
 
@@ -451,6 +502,7 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `--ssl`: Use LDAPS on port 636
 - `--validate-cert`: Backward-compatible certificate validation flag
 - `--no-validate-cert`: Disable certificate validation
+- `--version`: Print the AtilKurt version and exit
 
 ### Collection and Performance
 
@@ -477,6 +529,7 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 ### Export and Reporting
 
 - `--output`: HTML report output path
+- `--lan, --lang, --language {en,tr}`: Select the report language; defaults to `en`, while `tr` localizes human-readable HTML and JSON report content to Turkish
 - `--single-file-report`: Generate an offline-capable self-contained HTML report
 - `--no-single-file-report`: Write a report that references a copied `vendor/` asset directory
 - `--json-export`: JSON export output path
@@ -497,12 +550,39 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 
 ## Report Output
 
+### Report Language and Localization
+
+Report localization is selected once for the complete report-generation phase:
+
+| CLI value | Result |
+| --- | --- |
+| Option omitted | English report; equivalent to `--lan en` |
+| `--lan en` | English HTML and JSON report content |
+| `--lan tr` | Turkish HTML and human-readable JSON report content |
+
+Turkish mode localizes the report presentation end to end, including:
+
+- Document metadata, report title, header, navigation, breadcrumbs, buttons, filters, sorting controls, pagination, empty states, and browser notifications
+- Executive dashboard KPIs, severity labels, charts, analysis summaries, account statistics, and action priorities
+- Finding titles, descriptions, impact statements, attack scenarios, mitigation and remediation guidance, and exploitability labels
+- Directory views, risk category tabs, compliance views, risk-management sections, and the Domain Admin takeover map
+- Red Team and Blue Team explanatory text while retaining authorized validation commands and defensive event identifiers
+- Client-side CSV column headings, export messages, and the visible values used in interactive detail dialogs
+
+Localization is deterministic and offline. It does not call an external translation service and does not add a network dependency to report generation.
+
+Technical and integration-sensitive values remain unchanged in both languages. This includes JSON property names, stable risk `type` identifiers, raw Active Directory attribute names, account and object names, DNs, SIDs, SPNs, CVE identifiers, MITRE ATT&CK identifiers, LDAP filters, event IDs, tool names, and command examples. Preserving these values keeps baselines, filters, integrations, and remediation procedures technically accurate.
+
+When `--lan tr` and `--json-export` are used together, the JSON export contains `"report_language": "tr"`; human-readable finding and summary fields are Turkish, while its schema and directory identities remain stable. Checkpoints, baseline matching, and the focused `--kerberoasting-export` schema are not translated. Console progress and diagnostic log messages also remain in English; `--lan` controls generated report artifacts.
+
 ### Interactive HTML Report
 
 The HTML report includes:
 
 - An executive dashboard with the domain score, critical/high counts, privileged-account and delegation KPIs, risk distribution, category breakdown, top risky objects, action priorities, password statistics, account activity, administrative-group membership, and account status
-- Dedicated views for all risks, critical and high risks, privileged accounts, delegation, password issues, users, computers, groups, Kerberos findings, attack paths, service accounts, GPO abuse, DCSync, password policy, trusts, AD CS, GPP, LAPS, vulnerability indicators, legacy operating systems, and ACL security
+- Dedicated views for all risks, critical and high risks, privileged accounts (including a dedicated list of disabled Domain Admin and Enterprise Admin accounts), delegation, password issues, users, computers, groups, Kerberos findings, attack paths, service accounts, GPO abuse, DCSync, password policy, trusts, AD CS, GPP, LAPS, vulnerability indicators, legacy operating systems, and ACL security
+- A Domain Admin takeover map that lists every pentest technique that can reach Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a privileged certificate), with the assumed starting access, why the path works, logical stages, scan evidence, how to break the path, and detection guidance
+- Advanced-analysis sections for account-level Kerberos encryption and delegation protection, weak fine-grained password policy overrides, KRBTGT health, gMSA, machine quota, lateral movement, coercion, and extended AD CS findings
 - Finding cards with severity, affected object, technical description, business impact, attack scenario, mitigation guidance, MITRE ATT&CK references, and exploitability context when available
 - Search, sorting, pagination, object-detail dialogs, and client-side CSV export for the relevant directory and risk tables
 - Compliance views for CIS, NIST CSF, ISO 27001, and GDPR
@@ -511,6 +591,8 @@ The HTML report includes:
 - A complete analysis-count summary across all registered finding categories
 
 The report is self-contained by default, so it can be copied to another machine and opened without a separate asset directory or network access.
+
+The selected language is written to the HTML document language metadata (`lang="en"` or `lang="tr"`) so browsers and assistive technologies can interpret the report correctly.
 
 Use `--no-single-file-report` when you prefer a smaller HTML file that references a copied `vendor/` directory next to the report. The default single-file mode embeds styles, scripts, icons, and fonts and does not require internet access.
 
@@ -522,10 +604,11 @@ Use `--no-single-file-report` when you prefer a smaller HTML file that reference
 - Consolidated and scored risks
 - Domain score and executive summary
 - All registered analysis result categories
+- Domain Admin takeover map (open paths, evidence, and the unobserved technique catalog)
 - Compliance data and risk-management data
 - Baseline comparison data when `--baseline` is used
 
-JSON output is intended for downstream processing and contains substantially more sensitive directory data than the summary HTML views. Store and transmit it accordingly.
+JSON output is intended for downstream processing and contains substantially more sensitive directory data than the summary HTML views. Store and transmit it accordingly. In Turkish mode, consumers should continue using the unchanged JSON keys and stable risk identifiers instead of depending on localized display text.
 
 ### Kerberoasting Target Export
 
@@ -541,10 +624,10 @@ When `--output` is omitted or retains its default `report.html`, AtilKurt genera
 
 ## Checkpoints, Incremental State, and Caching
 
-- LDAP search results are cached in memory for a bounded lifetime to reduce duplicate queries during one process.
+- LDAP search results are cached in memory for a bounded lifetime and a maximum number of entries to reduce duplicate queries during one process.
 - Cache keys include the base DN, filter, attributes, size limit, page size, and paging state so semantically different searches do not collide.
 - Paged search deduplicates entries and validates LDAP result codes before caching.
-- Checkpoint IDs cannot contain path separators or resolve outside `.atilkurt_checkpoints`.
+- Checkpoint IDs cannot contain path separators, whitespace, or reserved filename characters, and cannot resolve outside `.atilkurt_checkpoints`.
 - The checkpoint directory uses `0700`; individual checkpoint files use `0600` and are atomically replaced.
 - Incremental comparison uses deterministic SHA-256 identity hashes and reports new, changed, and deleted objects separately.
 - Checkpoints and JSON baselines are not encrypted. Their filesystem permissions reduce accidental local disclosure but do not replace full-disk encryption or an organizational secrets/data handling policy.
@@ -594,6 +677,18 @@ docker run --rm \
 ```
 
 Add `-e ATILKURT_DC_IP=192.168.1.10` when the domain name does not resolve to a domain controller. Extra CLI arguments follow the image name, for example `atilkurt:latest --ssl --json-export /output/assessment.json`.
+
+To write a Turkish report from the container, pass the language option after the image name:
+
+```bash
+docker run --rm \
+  -e ATILKURT_DOMAIN=example.com \
+  -e ATILKURT_USER=auditor \
+  -e ATILKURT_PASS='your-password' \
+  -e ATILKURT_OUTPUT=/output/assessment-tr.html \
+  -v "$PWD/output:/output" \
+  atilkurt:latest --ssl --lan tr
+```
 
 Docker Compose reads the same values from `.env`:
 
@@ -666,6 +761,7 @@ The repository includes tests for:
 - LDAP escaping and caching
 - Progress persistence
 - Report generation
+- English-default and Turkish HTML/JSON report localization, including preservation of technical identifiers and bundled JavaScript assets
 - HTML injection and embedded-data handling
 - Secure atomic files, checkpoint traversal, and symbolic-link resistance
 - CLI validation and launcher `.env` parsing
@@ -682,6 +778,7 @@ AtilKurt/
 ├── core/                     # LDAP, collection, validation, cache, and persistence
 │   └── collectors/           # User, computer, group, GPO, and ACL collectors
 ├── reporting/                # HTML composition, report sections, and exporters
+│   ├── localization.py       # English/Turkish presentation localization
 │   ├── report_sections/      # Dashboard, directory, risk, ACL, and compliance views
 │   └── vendor/               # Offline report assets
 ├── risk/                     # Business impact, cost, heat map, and prioritization
@@ -704,7 +801,7 @@ Main areas:
 - `analysis/` contains directory-data analyzers. Most analyzers are stateless; LDAP-aware modules receive the shared read-only connection boundary.
 - `scoring/` converts findings to contextual 0-to-100 scores and a domain score.
 - `risk/` adds heat-map placement, business-impact estimates, remediation effort, and prioritization.
-- `reporting/` generates the offline HTML application, compliance views, dashboard, purple-team guidance, and integration exports.
+- `reporting/` generates the offline HTML application, English/Turkish presentation layer, compliance views, dashboard, purple-team guidance, and integration exports.
 - `tests/` covers the orchestration boundaries as well as individual analyzers and security regressions.
 
 Runtime dependencies are intentionally small: `ldap3` provides LDAP protocol support and `pycryptodome` supports cryptographic parsing/decryption needed by specific analyses. Report UI assets are vendored for offline use; no CDN is required when opening the default report.

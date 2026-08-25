@@ -994,6 +994,7 @@ def _build_nav_items(stats):
     """Build sidebar navigation items - maps to Bootstrap tab triggers."""
     nav_config = [
         ('dashboard-tab', 'dashboard', 'Dashboard', 'layout-dashboard', None, None),
+        ('domain-admin-takeover-tab', 'domain-admin-takeover', 'Domain Admin Map', 'crown', str(stats.get('da_takeover_count', 0)), 'danger' if stats.get('da_takeover_count') else None),
         ('risks-tab', 'risks', 'All Risks', 'alert-triangle', str(stats.get('total_risks', 0)), None),
         ('critical-risks-tab', 'critical-risks', 'Critical Risks', 'alert-octagon', str(stats.get('critical_count', 0)), 'danger'),
         ('high-risks-tab', 'high-risks', 'High Risks', 'alert-circle', str(stats.get('high_count', 0)), 'warning'),

@@ -1257,6 +1257,49 @@ class DashboardSectionMixin:
         </script>
         """
 
+    def _admin_username_html(self, member):
+        """Render an admin member name, marking disabled accounts."""
+        name = html_stdlib.escape(str(member.get("username", "Unknown")))
+        if member.get("isDisabled"):
+            return (
+                f"<strong>{name}</strong> "
+                '<span class="badge bg-warning text-dark">Disabled</span>'
+            )
+        return f"<strong>{name}</strong>"
+
+    def _disabled_privileged_admin_banner(self, da_members, ea_members):
+        """Dedicated table for disabled Domain Admin / Enterprise Admin accounts."""
+        rows = []
+        for member in da_members or []:
+            if member.get("isDisabled"):
+                rows.append((member, "Domain Admins"))
+        for member in ea_members or []:
+            if member.get("isDisabled"):
+                rows.append((member, "Enterprise Admins"))
+        if not rows:
+            return ""
+        body = []
+        for member, role in rows:
+            body.append(
+                "<tr>"
+                f"<td>{self._admin_username_html(member)}</td>"
+                f'<td><span class="badge bg-danger">{html_stdlib.escape(role)}</span></td>'
+                "</tr>"
+            )
+        return f"""
+        <div class="alert alert-danger" id="disabled-privileged-admins">
+            <h6 class="alert-heading"><i class="fas fa-user-slash"></i> Disabled Domain Admin / Enterprise Admin accounts ({len(rows)})</h6>
+            <p class="mb-2">These accounts are disabled but still members of Domain Admins or Enterprise Admins.
+            Re-enabling any of them restores those rights without a group-membership change. Remove the account from the group, then delete it if it is no longer required.</p>
+            <div class="table-responsive bg-white rounded">
+                <table class="table table-sm mb-0" id="disabledPrivilegedAdminTable">
+                    <thead><tr><th>Username</th><th>Privileged group</th></tr></thead>
+                    <tbody>{''.join(body)}</tbody>
+                </table>
+            </div>
+        </div>
+        """
+
     def _generate_admin_group_html(self, admin_group_stats):
         """Generate HTML for admin group membership statistics."""
         if not admin_group_stats:
@@ -1283,7 +1326,7 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 da_members_html += f"""
                 <tr>
-                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td>{self._admin_username_html(member)}</td>
                     <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
@@ -1333,7 +1376,7 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 ea_members_html += f"""
                 <tr>
-                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td>{self._admin_username_html(member)}</td>
                     <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
@@ -1383,7 +1426,7 @@ class DashboardSectionMixin:
                 group_added = member.get('groupAdded', 'N/A')
                 sa_members_html += f"""
                 <tr>
-                    <td><strong>{html_stdlib.escape(str(member.get('username', 'Unknown')))}</strong></td>
+                    <td>{self._admin_username_html(member)}</td>
                     <td><span class="badge bg-danger">{html_stdlib.escape(groups_str)}</span></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(account_created))}</small></td>
                     <td><small class="text-muted">{html_stdlib.escape(str(group_added))}</small></td>
@@ -1416,6 +1459,8 @@ class DashboardSectionMixin:
         else:
             sa_members_html = '<p class="text-muted">No Schema Admin members found.</p>'
 
+        disabled_admin_html = self._disabled_privileged_admin_banner(da_members, ea_members)
+
         return f"""
         <div class="row mb-4">
             <div class="col-12">
@@ -1447,6 +1492,7 @@ class DashboardSectionMixin:
                         <div class="alert alert-info mb-3">
                             <i class="fas fa-info-circle"></i> <strong>Note:</strong> "Group Added" time is approximate (based on account's last modification time).
                         </div>
+                        {disabled_admin_html}
                         <div class="row">
                             <div class="col-md-12 mb-3">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -1567,8 +1613,9 @@ class DashboardSectionMixin:
             pageData.forEach(member => {{
                 const row = document.createElement('tr');
                 const groups_str = (member.groups || []).join(', ');
+                const disabledBadge = member.isDisabled ? ' <span class="badge bg-warning text-dark">Disabled</span>' : '';
                 row.innerHTML = `
-                    <td><strong>${{escapeReportHtml(member.username || 'Unknown')}}</strong></td>
+                    <td><strong>${{escapeReportHtml(member.username || 'Unknown')}}</strong>${{disabledBadge}}</td>
                     <td><span class="badge bg-danger">${{escapeReportHtml(groups_str)}}</span></td>
                     <td><small class="text-muted">${{escapeReportHtml(member.accountCreated || 'N/A')}}</small></td>
                     <td><small class="text-muted">${{escapeReportHtml(member.groupAdded || 'N/A')}}</small></td>

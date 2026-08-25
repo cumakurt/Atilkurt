@@ -172,18 +172,21 @@ def validate_output_file(output_file: str) -> str:
 
     output_file = output_file.strip()
 
-    # Check for path traversal
-    if '..' in output_file:
-        raise ValidationError("Path traversal (..) is not allowed in output path")
-
     # Check for invalid characters
     invalid_chars = ['<', '>', '"', '|', '?', '*', '\x00']
     if any(char in output_file for char in invalid_chars):
         raise ValidationError(f"Output file contains invalid characters: {output_file}")
 
-    # Normalize path and reject path traversal
+    # Normalize path and reject path traversal in path components only.
+    # A filename such as report..html is legitimate and must not be rejected.
+    # Both POSIX and Windows separators are treated as component boundaries.
+    raw_parts = [part for part in output_file.replace("\\", "/").split("/") if part]
+    if ".." in raw_parts:
+        raise ValidationError("Path traversal (..) is not allowed in output path")
+
     normalized = os.path.normpath(output_file)
-    if '..' in normalized.split(os.sep):
+    normalized_parts = [part for part in normalized.replace("\\", "/").split("/") if part]
+    if ".." in normalized_parts:
         raise ValidationError("Path traversal (..) is not allowed in output path")
 
     # Return the normalized (sanitized) path, not the original

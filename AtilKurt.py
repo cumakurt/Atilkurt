@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from core.ldap_connection import LDAPConnection
 from core.validators import validate_output_file
-from core.exceptions import ValidationError, LDAPConnectionError, LDAPSearchError
+from core.exceptions import AnalysisError, ValidationError, LDAPConnectionError, LDAPSearchError
 from core.collectors.user_collector import UserCollector
 from core.collectors.computer_collector import ComputerCollector
 from core.collectors.group_collector import GroupCollector
@@ -34,6 +34,7 @@ from analysis.registry import (
 )
 from analysis.exploitability_scorer import ExploitabilityScorer
 from analysis.privilege_calculator import PrivilegeCalculator
+from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
 from analysis.password_policy_analyzer import PasswordPolicyAnalyzer
 from analysis.baseline_comparator import BaselineComparator
 from scoring.risk_scorer import RiskScorer
@@ -46,6 +47,16 @@ from core.secure_file import atomic_text_writer
 from risk.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
+PACKAGE_VERSION = "1.0"
+
+
+def _package_version() -> str:
+    """Return the installed package version, falling back to the source version."""
+    try:
+        from importlib.metadata import version
+        return version("atilkurt")
+    except Exception:
+        return PACKAGE_VERSION
 
 
 class _PrivateFileHandler(logging.StreamHandler):
@@ -111,11 +122,13 @@ def _finite_nonnegative_float(value: str) -> float:
         raise argparse.ArgumentTypeError("must be a finite non-negative number")
     return parsed
 
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description='AtilKurt - Active Directory Security Health Check Tool'
     )
+    parser.add_argument('--version', action='version', version=f'AtilKurt {_package_version()}')
     parser.add_argument('-d', '--domain', required=True,
                         help='Domain name (e.g., example.com)')
     parser.add_argument('-u', '--username', required=True,
@@ -128,6 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
                              '(default: domain name)')
     parser.add_argument('--output', default='report.html',
                         help='Output HTML report file')
+    parser.add_argument(
+        '--lan', '--lang', '--language',
+        dest='language',
+        choices=('en', 'tr'),
+        default='en',
+        help='Report language: en or tr (default: en)',
+    )
     parser.add_argument(
         '--single-file-report',
         action=argparse.BooleanOptionalAction,
@@ -256,7 +276,7 @@ def validate_output_paths(args: argparse.Namespace) -> None:
         if args.kerberoasting_export:
             args.kerberoasting_export = validate_output_file(args.kerberoasting_export)
     except ValidationError as e:
-        print(f"[-] Invalid output path: {e}")
+        print(f"[-] Invalid output path: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -272,8 +292,9 @@ def resolve_password(args: argparse.Namespace) -> tuple[str, SecurePasswordManag
     """
     password_manager = SecurePasswordManager()
 
-    # 1. Prefer environment variable
-    env_pass = os.environ.get('ATILKURT_PASS')
+    # 1. Prefer environment variable, then drop it so later process listings
+    # and child environments do not keep the secret.
+    env_pass = os.environ.pop('ATILKURT_PASS', None)
     if env_pass:
         return password_manager.set_password(env_pass), password_manager
 
@@ -567,12 +588,22 @@ def score_and_consolidate(
     top = executive_summary['top_critical_risks']
     print(f"[+] Top critical risk: {top[0]['title'] if top else 'None'}")
 
+    print("[*] Mapping Domain Admin takeover paths...")
+    takeover = DomainAdminTakeoverAnalyzer().analyze(
+        scored_risks, users=users, groups=groups, computers=computers
+    )
+    print(
+        f"[+] Domain Admin takeover paths: {takeover['summary']['open_path_count']} open "
+        f"({takeover['summary']['da_equivalent_open_count']} DA-equivalent)"
+    )
+
     return {
         'scored_risks': scored_risks,
         'domain_score': domain_score,
         'executive_summary': executive_summary,
         'shadow_admin_risks': shadow_admin_risks,
         'acl_escalation_risks': acl_escalation_risks,
+        'domain_admin_takeover': takeover,
     }
 
 
@@ -685,8 +716,13 @@ def generate_reports(
     analysis_summary_counts['shadow_admins'] = len(analysis.get('shadow_admins', []))
     analysis_summary_counts['acl_escalation_paths'] = len(analysis.get('acl_escalation_paths', []))
     analysis_summary_counts['misconfig_findings'] = len(analysis.get('misconfig_findings', []))
+    takeover = scoring.get('domain_admin_takeover') or {}
+    analysis['domain_admin_takeover'] = takeover
+    analysis_summary_counts['domain_admin_takeover'] = int(
+        (takeover.get('summary') or {}).get('open_path_count') or 0
+    )
 
-    report_generator = HTMLReportGenerator()
+    report_generator = HTMLReportGenerator(language=args.language)
     report_generator.generate(
         users=data['users'],
         computers=data['computers'],
@@ -706,6 +742,7 @@ def generate_reports(
         kerberoasting_targets=analysis['kerberoasting_targets'],
         asrep_targets=analysis['asrep_targets'],
         analysis_summary_counts=analysis_summary_counts,
+        domain_admin_takeover=takeover,
         inline_assets=args.single_file_report,
     )
     print(f"[+] HTML report generated: {output_file}")
@@ -726,12 +763,12 @@ def generate_reports(
                 f"{comp['summary']['resolved_count']} resolved risks"
             )
         else:
-            print("[-] Baseline comparison failed")
+            print("[-] Baseline comparison failed", file=sys.stderr)
 
     # JSON export
     if args.json_export:
         _export_json(args.json_export, data, analysis, scoring, compliance,
-                     baseline_comparison)
+                     baseline_comparison, language=args.language)
 
     # Kerberoasting export
     if args.kerberoasting_export:
@@ -751,6 +788,7 @@ def _export_json(
     scoring: dict[str, Any],
     compliance: dict[str, Any],
     baseline_comparison: Optional[dict[str, Any]],
+    language: str = 'en',
 ) -> None:
     """Write full results to a JSON file."""
     export_data = {
@@ -766,8 +804,11 @@ def _export_json(
         "baseline_comparison": baseline_comparison,
     }
     export_data.update(build_export_analysis_slice(analysis))
+    if language == 'tr':
+        from reporting.localization import localize_export_payload
+        export_data = localize_export_payload(export_data, language)
     with atomic_text_writer(path, encoding="utf-8") as f:
-        json.dump(export_data, f, indent=2, default=str)
+        json.dump(export_data, f, indent=2, default=str, ensure_ascii=False)
     print(f"[+] JSON export saved: {path}")
 
 
@@ -950,10 +991,15 @@ def main() -> None:
         try:
             ldap_conn.connect()
         except LDAPConnectionError as e:
-            print(f"[-] LDAP connection failed: {e}")
+            print(f"[-] LDAP connection failed: {e}", file=sys.stderr)
             sys.exit(1)
 
         print("[+] LDAP connection established successfully")
+        if not args.ssl:
+            print(
+                "[!] LDAP is using port 389 without TLS. Prefer --ssl so credentials "
+                "and directory data are not sent in the clear."
+            )
         if stealth.enabled:
             ldap_conn.pre_search_hook = stealth.apply_delay
 
@@ -1029,13 +1075,16 @@ def main() -> None:
         print("[+] Analysis completed successfully!")
 
     except ValidationError as e:
-        print(f"[-] Validation error: {e}")
+        print(f"[-] Validation error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except AnalysisError as e:
+        print(f"[-] Analysis error: {e}", file=sys.stderr)
         sys.exit(1)
     except (LDAPConnectionError, LDAPSearchError) as e:
-        print(f"[-] LDAP error: {e}")
+        print(f"[-] LDAP error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"[-] Error: {e}")
+        print(f"[-] Error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         sys.exit(1)

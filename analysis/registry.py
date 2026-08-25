@@ -8,6 +8,8 @@ import json
 import time
 from typing import Any, Callable, Optional
 
+from core.exceptions import AnalysisError, LDAPConnectionError, LDAPSearchError
+
 # ---------------------------------------------------------------------------
 # Risk keys: single source for consolidation and export
 # ---------------------------------------------------------------------------
@@ -19,7 +21,9 @@ CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "user_risks",
     "computer_risks",
     "group_risks",
+    "identity_protection_risks",
     "kerberos_risks",
+    "kerberos_account_security_risks",
     "escalation_paths",
     "acl_risks",
     "comprehensive_acl_risks",
@@ -30,6 +34,7 @@ CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "gpo_abuse_risks",
     "dcsync_risks",
     "password_policy_risks",
+    "fine_grained_password_policy_risks",
     "trust_risks",
     "certificate_risks",
     "gpp_risks",
@@ -54,11 +59,24 @@ CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "lateral_movement_risks",
     "machine_quota_risks",
     "replication_risks",
+    "ldap_directory_exposure_risks",
+    "hidden_privilege_risks",
+    "hybrid_identity_risks",
+    "rodc_attack_surface_risks",
+    "delegated_msa_risks",
+    "sccm_attack_surface_risks",
 )
 
 # Mapping: export_data key -> analysis key (for JSON export).
 # Covers all analysis-derived keys in the JSON export; renames use different export key.
 EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
+    "user_risks": "user_risks",
+    "computer_risks": "computer_risks",
+    "group_risks": "group_risks",
+    "kerberos_risks": "kerberos_risks",
+    "escalation_paths": "escalation_paths",
+    "acl_risks": "acl_risks",
+    "comprehensive_acl_risks": "comprehensive_acl_risks",
     "misconfig_findings": "misconfig_findings",
     "kerberoasting_targets": "kerberoasting_targets",
     "asrep_targets": "asrep_targets",
@@ -66,6 +84,9 @@ EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
     "gpo_abuse_risks": "gpo_abuse_risks",
     "dcsync_risks": "dcsync_risks",
     "password_policy_risks": "password_policy_risks",
+    "identity_protection_risks": "identity_protection_risks",
+    "kerberos_account_security_risks": "kerberos_account_security_risks",
+    "fine_grained_password_policy_risks": "fine_grained_password_policy_risks",
     "trust_risks": "trust_risks",
     "certificate_risks": "certificate_risks",
     "gpp_risks": "gpp_risks",
@@ -74,6 +95,9 @@ EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
     "printnightmare_risks": "printnightmare_risks",
     "petitpotam_risks": "petitpotam_risks",
     "shadow_credentials_risks": "shadow_cred_risks",
+    "nopac_risks": "nopac_risks",
+    "domain_security_risks": "domain_security_risks",
+    "extended_ldap_risks": "extended_ldap_risks",
     "legacy_os_data": "legacy_os_results",
     "acl_security_data": "acl_security_results",
     "shadow_admins": "shadow_admins",
@@ -92,6 +116,13 @@ EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
     "lateral_movement_risks": "lateral_movement_risks",
     "machine_quota_risks": "machine_quota_risks",
     "replication_risks": "replication_risks",
+    "ldap_directory_exposure_risks": "ldap_directory_exposure_risks",
+    "hidden_privilege_risks": "hidden_privilege_risks",
+    "hybrid_identity_risks": "hybrid_identity_risks",
+    "rodc_attack_surface_risks": "rodc_attack_surface_risks",
+    "delegated_msa_risks": "delegated_msa_risks",
+    "sccm_attack_surface_risks": "sccm_attack_surface_risks",
+    "domain_admin_takeover": "domain_admin_takeover",
 }
 
 
@@ -126,7 +157,7 @@ def deduplicate_risks(risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_export_analysis_slice(analysis: dict[str, Any]) -> dict[str, Any]:
     """Build the analysis portion of JSON export from analysis dict."""
     out: dict[str, Any] = {}
-    dict_only_keys = {"legacy_os_data", "acl_security_data", "tier_data"}
+    dict_only_keys = {"legacy_os_data", "acl_security_data", "tier_data", "domain_admin_takeover"}
     for export_key, analysis_key in EXPORT_KEY_TO_ANALYSIS_KEY.items():
         default: Any = None if export_key in dict_only_keys else []
         out[export_key] = analysis.get(analysis_key, default)
@@ -164,11 +195,27 @@ def _run_group_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     return {"group_risks": analyzer.analyze(data["groups"], data["users"])}
 
 
+def _run_identity_protection(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.identity_protection_analyzer import IdentityProtectionAnalyzer
+    analyzer = IdentityProtectionAnalyzer()
+    return {"identity_protection_risks": analyzer.analyze(data["users"])}
+
+
 def _run_kerberos(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.kerberos_delegation import KerberosDelegationAnalyzer
     analyzer = KerberosDelegationAnalyzer()
     risks = analyzer.analyze(data["users"], data["computers"])
     return {"kerberos_risks": risks}
+
+
+def _run_kerberos_account_security(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.kerberos_account_security_analyzer import KerberosAccountSecurityAnalyzer
+    analyzer = KerberosAccountSecurityAnalyzer()
+    return {
+        "kerberos_account_security_risks": analyzer.analyze(
+            data["users"], data["computers"]
+        )
+    }
 
 
 def _run_escalation(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +283,12 @@ def _run_password_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]
     from analysis.password_policy_analyzer import PasswordPolicyAnalyzer
     analyzer = PasswordPolicyAnalyzer(ldap_conn)
     return {"password_policy_risks": analyzer.analyze_password_policy()}
+
+
+def _run_fine_grained_password_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.fine_grained_password_policy_analyzer import FineGrainedPasswordPolicyAnalyzer
+    analyzer = FineGrainedPasswordPolicyAnalyzer(ldap_conn)
+    return {"fine_grained_password_policy_risks": analyzer.analyze()}
 
 
 def _run_trust(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
@@ -372,13 +425,57 @@ def _run_replication(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     return {"replication_risks": analyzer.analyze(data["users"], data["groups"])}
 
 
+def _run_ldap_directory_exposure(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.ldap_directory_exposure_analyzer import LDAPDirectoryExposureAnalyzer
+    analyzer = LDAPDirectoryExposureAnalyzer(ldap_conn)
+    return {"ldap_directory_exposure_risks": analyzer.analyze(data.get("users") or [])}
+
+
+def _run_hidden_privilege(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.hidden_privilege_analyzer import HiddenPrivilegeAnalyzer
+    analyzer = HiddenPrivilegeAnalyzer()
+    return {
+        "hidden_privilege_risks": analyzer.analyze(data["users"], data["computers"], data["groups"])
+    }
+
+
+def _run_hybrid_identity(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.hybrid_identity_analyzer import HybridIdentityAnalyzer
+    analyzer = HybridIdentityAnalyzer(ldap_conn)
+    return {"hybrid_identity_risks": analyzer.analyze(data["users"], data["computers"])}
+
+
+def _run_rodc_attack_surface(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.rodc_attack_surface_analyzer import RODCAttackSurfaceAnalyzer
+    analyzer = RODCAttackSurfaceAnalyzer(ldap_conn)
+    return {"rodc_attack_surface_risks": analyzer.analyze(data["computers"], data["groups"])}
+
+
+def _run_delegated_msa(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.delegated_msa_analyzer import DelegatedMSAAnalyzer
+    analyzer = DelegatedMSAAnalyzer(ldap_conn)
+    return {"delegated_msa_risks": analyzer.analyze()}
+
+
+def _run_sccm_attack_surface(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.sccm_attack_surface_analyzer import SCCMAttackSurfaceAnalyzer
+    analyzer = SCCMAttackSurfaceAnalyzer(ldap_conn)
+    return {"sccm_attack_surface_risks": analyzer.analyze()}
+
+
 # (key, description, runner) for each analysis step.
 ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dict[str, Any]]]] = [
     ("user_risks", "User risk analysis", _run_user_risks),
     ("computer_risks", "Computer risk analysis", _run_computer_risks),
     ("legacy_os", "Legacy OS analysis", _run_legacy_os),
     ("group_risks", "Group risk analysis", _run_group_risks),
+    ("identity_protection", "Privileged identity protection analysis", _run_identity_protection),
     ("kerberos_delegation", "Kerberos delegation analysis", _run_kerberos),
+    (
+        "kerberos_account_security",
+        "Kerberos account encryption and delegation protection analysis",
+        _run_kerberos_account_security,
+    ),
     ("privilege_escalation", "Privilege escalation analysis", _run_escalation),
     ("acl_legacy", "ACL analysis (legacy)", _run_acl_legacy),
     ("acl_security", "Comprehensive ACL security analysis", _run_acl_security),
@@ -388,6 +485,11 @@ ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dic
     ("gpo_abuse", "GPO abuse analysis", _run_gpo_abuse),
     ("dcsync", "DCSync rights analysis", _run_dcsync),
     ("password_policy", "Password policy analysis", _run_password_policy),
+    (
+        "fine_grained_password_policy",
+        "Fine-grained password policy override analysis",
+        _run_fine_grained_password_policy,
+    ),
     ("trusts", "Trust relationship analysis", _run_trust),
     ("certificate_services", "AD Certificate Services analysis", _run_certificate),
     ("gpp_passwords", "GPP password extraction", _run_gpp),
@@ -409,6 +511,12 @@ ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dic
     ("lateral_movement", "Lateral movement analysis", _run_lateral_movement),
     ("machine_quota", "Machine account quota analysis", _run_machine_quota),
     ("replication_metadata", "Replication metadata analysis", _run_replication),
+    ("ldap_directory_exposure", "LDAP directory exposure and anonymous enumeration", _run_ldap_directory_exposure),
+    ("hidden_privilege", "Hidden privilege and primary-group analysis", _run_hidden_privilege),
+    ("hybrid_identity", "Hybrid identity (Entra Connect, Seamless SSO, ADFS)", _run_hybrid_identity),
+    ("rodc_attack_surface", "RODC password-replication attack surface", _run_rodc_attack_surface),
+    ("delegated_msa", "Delegated MSA / BadSuccessor analysis", _run_delegated_msa),
+    ("sccm_attack_surface", "SCCM System Management attack surface", _run_sccm_attack_surface),
 ]
 
 # Backward-compatible view used by existing tests and external imports.
@@ -424,7 +532,9 @@ ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
         "legacy_os_risks": [],
     },
     "group_risks": {"group_risks": []},
+    "identity_protection": {"identity_protection_risks": []},
     "kerberos_delegation": {"kerberos_risks": []},
+    "kerberos_account_security": {"kerberos_account_security_risks": []},
     "privilege_escalation": {"escalation_paths": []},
     "acl_legacy": {"acl_risks": []},
     "acl_security": {
@@ -448,6 +558,7 @@ ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
     "gpo_abuse": {"gpo_abuse_risks": []},
     "dcsync": {"dcsync_risks": []},
     "password_policy": {"password_policy_risks": []},
+    "fine_grained_password_policy": {"fine_grained_password_policy_risks": []},
     "trusts": {"trust_risks": []},
     "certificate_services": {"certificate_risks": []},
     "gpp_passwords": {"gpp_risks": []},
@@ -475,6 +586,12 @@ ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
     "lateral_movement": {"lateral_movement_risks": []},
     "machine_quota": {"machine_quota_risks": []},
     "replication_metadata": {"replication_risks": []},
+    "ldap_directory_exposure": {"ldap_directory_exposure_risks": []},
+    "hidden_privilege": {"hidden_privilege_risks": []},
+    "hybrid_identity": {"hybrid_identity_risks": []},
+    "rodc_attack_surface": {"rodc_attack_surface_risks": []},
+    "delegated_msa": {"delegated_msa_risks": []},
+    "sccm_attack_surface": {"sccm_attack_surface_risks": []},
 }
 
 FAST_PROFILE_EXCLUDED: set[str] = {
@@ -534,11 +651,20 @@ def run_all_analyses(
     selected_keys = {key for key, _, _ in selected_steps}
     results: dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
 
-    for _, description, runner in selected_steps:
+    for key, description, runner in selected_steps:
         if status_callback:
             status_callback(description)
         start_time = time.perf_counter()
-        step_result = runner(ldap_conn, data)
+        try:
+            step_result = runner(ldap_conn, data)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except (AnalysisError, LDAPSearchError, LDAPConnectionError):
+            raise
+        except Exception as exc:
+            raise AnalysisError(
+                f"Unexpected failure in analysis step {key!r} ({description}): {exc}"
+            ) from exc
         duration = time.perf_counter() - start_time
         results.update(step_result)
         if progress_callback:

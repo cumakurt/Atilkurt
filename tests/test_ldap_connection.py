@@ -107,6 +107,16 @@ class TestLDAPSearchCorrectness(unittest.TestCase):
         with self.assertRaisesRegex(LDAPSearchError, "insufficientAccessRights"):
             ldap.search(search_filter="(objectClass=user)")
 
+    def test_false_return_with_success_result_is_an_empty_success(self):
+        """The LDAP result code remains authoritative for an empty response."""
+        ldap = build_connection()
+        ldap.connection = FakeSearchConnection(
+            succeeded=False,
+            result={"result": 0, "description": "success"},
+        )
+
+        self.assertEqual(ldap.search(search_filter="(objectClass=user)"), [])
+
     def test_paged_size_limit_does_not_duplicate_final_page(self):
         """Stopping at a caller size limit must append each entry exactly once."""
         ldap = build_connection(page_size=2)

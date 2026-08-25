@@ -356,7 +356,7 @@ class LDAPConnection:
                 # Re-raise search errors if not retryable
                 error_msg = str(e).lower()
                 if not self._is_retryable_error(error_msg) or attempt >= self.max_retries - 1:
-                    logger.error(f"LDAP search error: {str(e)}")
+                    logger.debug("LDAP search rejected: %s", e)
                     raise
                 last_error = e
                 wait_time = self.retry_delay * (attempt + 1)
@@ -392,7 +392,6 @@ class LDAPConnection:
                     continue
                 else:
                     error_msg = f"LDAP search error: {str(e)}"
-                    logger.error(error_msg)
                     raise LDAPSearchError(error_msg) from e
             except Exception as e:
                 last_error = e
@@ -424,7 +423,11 @@ class LDAPConnection:
         except (TypeError, ValueError):
             numeric_result_code = None
 
-        if succeeded and numeric_result_code in (None, 0):
+        # The LDAP result code is authoritative. Some ldap3 strategies return
+        # False for an empty successful search while still reporting result=0.
+        if numeric_result_code == 0:
+            return
+        if succeeded and numeric_result_code is None:
             return
         if allow_size_limit and numeric_result_code == 4:
             return
@@ -527,18 +530,14 @@ class LDAPConnection:
                     )
 
                 # Perform paged search
-                try:
-                    search_succeeded = self.connection.search(
-                        search_base=search_base,
-                        search_filter=search_filter,
-                        attributes=attributes,
-                        paged_size=self.page_size,
-                        paged_cookie=cookie
-                    )
-                    self._validate_search_result(search_succeeded)
-                except Exception as search_error:
-                    logger.warning(f"Paged search error: {str(search_error)}")
-                    raise
+                search_succeeded = self.connection.search(
+                    search_base=search_base,
+                    search_filter=search_filter,
+                    attributes=attributes,
+                    paged_size=self.page_size,
+                    paged_cookie=cookie
+                )
+                self._validate_search_result(search_succeeded)
 
                 # Process entries in current page
                 # ldap3 accumulates entries, so we only process new ones
@@ -614,7 +613,6 @@ class LDAPConnection:
 
         except LDAPException as e:
             error_msg = f"LDAP paged search error: {str(e)}"
-            logger.error(error_msg)
             raise LDAPSearchError(error_msg) from e
 
     def _get_paged_cookie(self) -> Optional[bytes]:

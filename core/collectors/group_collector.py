@@ -4,6 +4,7 @@ Collects all group objects and memberships from Active Directory
 """
 
 import logging
+from core.ad_identity import is_privileged_group_record
 from core.progress_tracker import ProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
@@ -11,22 +12,6 @@ logger = logging.getLogger(__name__)
 
 class GroupCollector:
     """Collects group objects from Active Directory via LDAP."""
-
-    # Privileged groups to flag
-    PRIVILEGED_GROUPS = [
-        'Domain Admins',
-        'Enterprise Admins',
-        'Account Operators',
-        'Backup Operators',
-        'Server Operators',
-        'Print Operators',
-        'Schema Admins',
-        'Administrators',
-        'Domain Controllers',
-        'Replicator',
-        'DnsAdmins',
-        'Group Policy Creator Owners'
-    ]
 
     def __init__(self, ldap_connection, show_progress: bool = True):
         """
@@ -105,8 +90,9 @@ class GroupCollector:
                     'whenCreated': entry.get('whenCreated'),
                     'whenChanged': entry.get('whenChanged'),
                     'groupType': entry.get('groupType'),
-                    'isPrivileged': self._is_privileged_group(group_name)
+                    'isPrivileged': False,
                 }
+                group['isPrivileged'] = is_privileged_group_record(group)
 
                 groups.append(group)
 
@@ -119,16 +105,5 @@ class GroupCollector:
             raise
 
     def _is_privileged_group(self, group_name):
-        """
-        Check if group is a privileged security group.
-
-        Args:
-            group_name: Group name to check
-
-        Returns:
-            bool: True if group is privileged
-        """
-        if not group_name:
-            return False
-
-        return any(priv_group.lower() in group_name.lower() for priv_group in self.PRIVILEGED_GROUPS)
+        """Return True when a group name matches a well-known privileged group."""
+        return is_privileged_group_record({"name": group_name, "sAMAccountName": group_name})

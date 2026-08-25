@@ -5,6 +5,7 @@ Collects all user objects from Active Directory
 
 import logging
 from datetime import datetime
+from core.constants import UACFlags
 from core.progress_tracker import ProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class UserCollector:
                 'userAccountControl',
                 'adminCount',
                 'servicePrincipalName',
+                'msDS-SupportedEncryptionTypes',
                 'displayName',
                 'mail',
                 'whenCreated',
@@ -59,7 +61,10 @@ class UserCollector:
                 'description',
                 'distinguishedName',
                 'lockoutTime',
-                'accountExpires'
+                'accountExpires',
+                'primaryGroupID',
+                'msDS-ExternalDirectoryObjectId',
+                'msDS-KeyCredentialLink',
             ]
 
             # Create progress callback
@@ -92,6 +97,7 @@ class UserCollector:
                     'userAccountControl': uac,
                     'adminCount': entry.get('adminCount'),
                     'servicePrincipalName': entry.get('servicePrincipalName', []),
+                    'msDS-SupportedEncryptionTypes': entry.get('msDS-SupportedEncryptionTypes'),
                     'mail': entry.get('mail'),
                     'whenCreated': entry.get('whenCreated'),
                     'whenChanged': entry.get('whenChanged'),
@@ -99,8 +105,11 @@ class UserCollector:
                     'distinguishedName': entry.get('dn', entry.get('distinguishedName')),
                     'lockoutTime': self._convert_timestamp(entry.get('lockoutTime')),
                     'accountExpires': self._convert_timestamp(entry.get('accountExpires')),
-                    'isDisabled': bool(uac & 0x2),  # ACCOUNTDISABLE flag
-                    'isLocked': self._is_account_locked(entry.get('lockoutTime'))
+                    'primaryGroupID': entry.get('primaryGroupID'),
+                    'msDS-ExternalDirectoryObjectId': entry.get('msDS-ExternalDirectoryObjectId'),
+                    'hasKeyCredentialLink': bool(entry.get('msDS-KeyCredentialLink')),
+                    'isDisabled': bool(uac & UACFlags.ACCOUNTDISABLE),
+                    'isLocked': bool(uac & UACFlags.LOCKOUT) or self._is_account_locked(entry.get('lockoutTime')),
                 }
 
                 # Normalize memberOf to list
@@ -161,24 +170,12 @@ class UserCollector:
         Returns:
             bool: True if account is locked
         """
-        if not lockout_time:
+        if lockout_time in (None, "", 0, "0"):
             return False
 
         try:
-            # If lockoutTime is 0 or None, account is not locked
-            if isinstance(lockout_time, (int, str)):
-                lockout_time = int(lockout_time)
-                if lockout_time == 0:
-                    return False
-
-            # If lockoutTime is a datetime, check if it's recent (within last 30 days)
-            # Lockout typically expires after lockout duration, but we check if it's set
             if isinstance(lockout_time, datetime):
-                # If lockoutTime is set and recent, account might be locked
-                # Note: Actual lockout status depends on lockout duration policy
-                days_ago = (datetime.now() - lockout_time.replace(tzinfo=None)).days
-                return days_ago < 30  # Consider locked if lockoutTime is within last 30 days
-
-            return False
+                return True
+            return int(lockout_time) != 0
         except (ValueError, TypeError):
             return False

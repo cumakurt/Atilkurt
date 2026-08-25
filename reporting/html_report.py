@@ -18,6 +18,12 @@ from core.constants import DEVELOPER_INFO
 from core.secure_file import atomic_write_text
 from reporting.ciso_dashboard import CISODashboardGenerator
 from reporting.saas_report_template import build_saas_report
+from reporting.localization import (
+    localize_finding_list,
+    localize_html_document,
+    localize_report_structure,
+    normalize_language,
+)
 
 from reporting.report_sections.risk_sections import RiskSectionsMixin
 from reporting.report_sections.purple_team import PurpleTeamMixin
@@ -26,6 +32,7 @@ from reporting.report_sections.directory_section import DirectorySectionMixin
 from reporting.report_sections.acl_section import ACLSectionMixin
 from reporting.report_sections.compliance_section import ComplianceSectionMixin
 from reporting.report_sections.risk_tab_builder import RiskTabBuilderMixin
+from reporting.report_sections.domain_admin_section import DomainAdminSectionMixin
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,7 @@ class HTMLReportGenerator(
     DirectorySectionMixin,
     ACLSectionMixin,
     ComplianceSectionMixin,
+    DomainAdminSectionMixin,
     RiskTabBuilderMixin,
 ):
     """Generates interactive HTML security reports.
@@ -48,12 +56,13 @@ class HTMLReportGenerator(
       - DirectorySectionMixin:  Directory objects tables (users, groups, computers)
       - ACLSectionMixin:        ACL security, legacy OS, attack paths, misconfig
       - ComplianceSectionMixin: CIS, NIST, ISO, GDPR compliance & risk management
+      - DomainAdminSectionMixin: Pentest-oriented Domain Admin takeover map
       - RiskTabBuilderMixin:    Main risk sections tab orchestration
     """
 
-    def __init__(self):
+    def __init__(self, language: str = 'en'):
         """Initialize HTML report generator."""
-        pass
+        self.language = normalize_language(language)
 
     def _copy_vendor_to_output(self, output_file):
         """Copy reporting/vendor to the same directory as output_file so the report works offline."""
@@ -80,7 +89,8 @@ class HTMLReportGenerator(
                  legacy_os_data=None, acl_security_data=None, compliance_data=None,
                  risk_management_data=None, domain=None, dc_ip=None,
                  kerberoasting_targets=None, asrep_targets=None,
-                 analysis_summary_counts=None, inline_assets: bool = True):
+                 analysis_summary_counts=None, domain_admin_takeover=None,
+                 inline_assets: bool = True):
         """
         Generate HTML report.
 
@@ -103,12 +113,14 @@ class HTMLReportGenerator(
             kerberoasting_targets: Kerberoasting target list
             asrep_targets: AS-REP roasting target list
             analysis_summary_counts: Optional dict of analysis key -> count for Executive Summary
+            domain_admin_takeover: Optional Domain Admin takeover map from scoring
         """
         html_content = self._generate_html(
             users, computers, groups, gpos, risks, misconfig_findings,
             domain_score, executive_summary, legacy_os_data, acl_security_data,
             compliance_data, risk_management_data, domain, dc_ip,
-            kerberoasting_targets, asrep_targets, analysis_summary_counts, inline_assets
+            kerberoasting_targets, asrep_targets, analysis_summary_counts,
+            domain_admin_takeover, inline_assets
         )
 
         atomic_write_text(output_file, html_content)
@@ -126,8 +138,28 @@ class HTMLReportGenerator(
                        compliance_data=None, risk_management_data=None,
                        domain=None, dc_ip=None, kerberoasting_targets=None,
                        asrep_targets=None, analysis_summary_counts=None,
-                       inline_assets: bool = True):
+                       domain_admin_takeover=None, inline_assets: bool = True):
         """Generate complete HTML content."""
+        if self.language == 'tr':
+            risks = localize_finding_list(risks, self.language)
+            misconfig_findings = localize_finding_list(
+                misconfig_findings,
+                self.language,
+                finding_kind='misconfiguration',
+            )
+            executive_summary = localize_report_structure(
+                executive_summary,
+                self.language,
+            )
+            risk_management_data = localize_report_structure(
+                risk_management_data,
+                self.language,
+            )
+            compliance_data = localize_report_structure(
+                compliance_data,
+                self.language,
+                structure_kind='compliance',
+            )
         # Load logo if exists
         logo_base64 = None
         logo_paths = [
@@ -153,6 +185,19 @@ class HTMLReportGenerator(
 
         # Calculate statistics
         stats = self._calculate_statistics(users, computers, groups, risks)
+        if domain_admin_takeover is None:
+            from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
+            domain_admin_takeover = DomainAdminTakeoverAnalyzer().analyze(
+                risks, users=users, groups=groups, computers=computers
+            )
+        if self.language == 'tr':
+            domain_admin_takeover = localize_report_structure(
+                domain_admin_takeover,
+                self.language,
+                structure_kind='domain_admin_takeover',
+            )
+        summary = (domain_admin_takeover or {}).get("summary") or {}
+        stats["da_takeover_count"] = int(summary.get("open_path_count") or 0)
 
         # Generate CISO dashboard data (includes enhanced Executive Summary + all analyses overview)
         ciso_generator = CISODashboardGenerator()
@@ -160,6 +205,8 @@ class HTMLReportGenerator(
             risks, users, computers, groups, domain_score, executive_summary,
             analysis_summary_counts=analysis_summary_counts
         )
+        if self.language == 'tr':
+            ciso_data = localize_report_structure(ciso_data, self.language)
 
         # Update KPIs with domain score - ensure it's a valid number
         if domain_score is None:
@@ -187,7 +234,8 @@ class HTMLReportGenerator(
             risks, misconfig_findings, ciso_dashboard_html,
             users, groups, computers, password_stats,
             compliance_data, risk_management_data,
-            domain, dc_ip, kerberoasting_targets, asrep_targets
+            domain, dc_ip, kerberoasting_targets, asrep_targets,
+            domain_admin_takeover=domain_admin_takeover,
         )
 
         # Inline vendor CSS/JS so the HTML file is completely self-contained.
@@ -228,7 +276,7 @@ class HTMLReportGenerator(
             inline_css=inline_css,
             inline_js=inline_js,
         )
-        return html
+        return localize_html_document(html, self.language)
 
     def _inline_css_asset_urls(self, css: str, css_path: str, vendor_dir: str) -> str:
         """Replace local or vendored CSS url(...) references with data URIs."""

@@ -8,11 +8,13 @@ Extends the existing certificate_analyzer.py with additional ESC vectors:
   ESC11 — ICertPassage RPC relay
   ESC13 — OID Group Link abuse
   ESC14 — Explicit altSecurityIdentities write
+  ESC15 — Schema v1 application-policy / EKU confusion
   Certifried — CVE-2022-26923 (machine account SPN takeover)
 """
 
 import logging
 from typing import Any, Optional
+from core.ad_identity import forest_configuration_dn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT = 0x00000001
 
 
 class ADCSExtendedAnalyzer:
-    """Extended AD CS vulnerability analysis (ESC5-14 + Certifried)."""
+    """Extended AD CS vulnerability analysis (ESC5-15 + Certifried)."""
 
     def __init__(self, ldap_connection):
         self.ldap = ldap_connection
@@ -73,6 +75,7 @@ class ADCSExtendedAnalyzer:
             if templates:
                 risks.extend(self._check_esc9(templates))
                 risks.extend(self._check_esc13(templates))
+                risks.extend(self._check_esc15(templates))
 
             # ── Certifried (CVE-2022-26923) ──
             risks.extend(self._check_certifried())
@@ -83,25 +86,14 @@ class ADCSExtendedAnalyzer:
             logger.info(f"Found {len(risks)} extended AD CS risks")
             return risks
 
-        except Exception as e:
-            logger.error(f"Error in AD CS extended analysis: {e}")
-            return []
+        except Exception:
+            logger.exception("Error in AD CS extended analysis")
+            raise
 
     # ── Data retrieval ──────────────────────────────────────────────────────
 
     def _get_config_dn(self) -> Optional[str]:
-        try:
-            results = self.ldap.search(
-                search_base='', search_filter='(objectClass=*)',
-                attributes=['configurationNamingContext'], size_limit=1,
-            )
-            if results:
-                return results[0].get('configurationNamingContext')
-        except Exception:
-            pass
-        base_dn = self.ldap.base_dn
-        dc_parts = [p for p in base_dn.split(',') if p.upper().startswith('DC=')]
-        return 'CN=Configuration,' + ','.join(dc_parts) if dc_parts else None
+        return forest_configuration_dn(self.ldap)
 
     def _get_enrollment_services(self, pki_dn: str) -> list[dict[str, Any]]:
         try:
@@ -164,7 +156,6 @@ class ADCSExtendedAnalyzer:
                 'mitre_attack': MITRETechniques.PRIVILEGE_ESCALATION,
             })
         return risks
-
     # ── ESC7 — CA Officer abuse ─────────────────────────────────────────────
 
     def _check_esc7(self, cas: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -373,4 +364,33 @@ class ADCSExtendedAnalyzer:
                     })
         except Exception as e:
             logger.debug(f"ESC10/ESC14 check failed: {e}")
+        return risks
+
+    def _check_esc15(self, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Schema v1 templates treat Application Policy as EKU (ESC15 / EKUwu)."""
+        risks: list[dict[str, Any]] = []
+        for tmpl in templates:
+            schema = self._as_int(tmpl.get('msPKI-Template-Schema-Version'))
+            if schema != 1:
+                continue
+            name = tmpl.get('cn') or tmpl.get('displayName') or 'Unknown template'
+            app_policy = tmpl.get('msPKI-Certificate-Application-Policy') or tmpl.get('pKIExtendedKeyUsage')
+            if not app_policy:
+                continue
+            risks.append({
+                'type': RiskTypes.CERTIFICATE_ESC15,
+                'severity': Severity.HIGH,
+                'title': f'Certificate template "{name}" is schema v1 (ESC15)',
+                'description': (
+                    f'Template "{name}" uses msPKI-Template-Schema-Version=1. Schema v1 templates do not '
+                    'distinguish Application Policies from EKUs, so an enrollee can request a certificate '
+                    'that the CA treats as Client Authentication even when the intended policy is narrower.'
+                ),
+                'affected_object': str(name),
+                'object_type': 'configuration',
+                'impact': 'ESC15 (EKUwu) can turn a narrowly scoped template into an authentication certificate.',
+                'attack_scenario': 'Enroll with an altered application policy OID and authenticate as a privileged user.',
+                'mitigation': 'Upgrade templates to schema v2+, disable unused v1 templates, and require manager approval.',
+                'mitre_attack': MITRETechniques.VALID_ACCOUNTS_DOMAIN,
+            })
         return risks

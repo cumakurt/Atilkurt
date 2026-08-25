@@ -9,8 +9,13 @@ Evaluates lateral movement potential by analyzing:
 
 import logging
 from typing import Any
+from core.ad_identity import (
+    account_has_privileged_evidence,
+    first_ldap_rdn,
+    membership_names,
+)
 from core.constants import (
-    RiskTypes, Severity, MITRETechniques, PRIVILEGED_GROUPS,
+    RiskTypes, Severity, MITRETechniques,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,22 +133,14 @@ class LateralMovementAnalyzer:
         risks: list[dict[str, Any]] = []
         tier0_accounts: list[str] = []
 
-        tier0_groups = {'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'DOMAIN CONTROLLERS'}
+        tier0_groups = {"enterprise admins", "schema admins", "domain controllers"}
 
         for user in users:
             if self._is_disabled(user):
                 continue
 
-            member_of = user.get('memberOf', []) or []
-            if isinstance(member_of, str):
-                member_of = [member_of]
-
-            in_tier0 = any(
-                g in str(dn).upper()
-                for dn in member_of
-                for g in tier0_groups
-            )
-            if not in_tier0:
+            member_names = membership_names(user.get("memberOf"))
+            if not (member_names & tier0_groups):
                 continue
 
             allowed_ws = user.get('userWorkstations') or user.get('logonWorkstation')
@@ -247,19 +244,8 @@ class LateralMovementAnalyzer:
 
     @staticmethod
     def _is_privileged(user: dict[str, Any]) -> bool:
-        member_of = user.get('memberOf', []) or []
-        if isinstance(member_of, str):
-            member_of = [member_of]
-        return any(
-            g.upper() in str(dn).upper()
-            for dn in member_of
-            for g in PRIVILEGED_GROUPS
-        )
+        return account_has_privileged_evidence(user)
 
     @staticmethod
     def _extract_cn(dn: str) -> str:
-        for part in dn.split(','):
-            p = part.strip()
-            if p.upper().startswith('CN='):
-                return p[3:]
-        return dn
+        return first_ldap_rdn(dn) or dn

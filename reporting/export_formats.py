@@ -13,6 +13,20 @@ from core.secure_file import atomic_text_writer
 
 logger = logging.getLogger(__name__)
 
+_CSV_FORMULA_PREFIXES = frozenset("=+-@\t\r")
+
+
+def _csv_safe_cell(value: Any) -> Any:
+    """Neutralize Excel/CSV formula injection in attacker-controlled fields."""
+    if isinstance(value, (list, dict)):
+        value = json.dumps(value)
+    if not isinstance(value, str):
+        return value
+    sanitized = value.replace("\x00", "")
+    if sanitized[:1] in _CSV_FORMULA_PREFIXES:
+        return f"'{sanitized}"
+    return sanitized
+
 
 class ExportFormats:
     """Handles export to various formats."""
@@ -42,13 +56,9 @@ class ExportFormats:
             writer.writeheader()
 
             for risk in risks:
-                # Convert complex types to strings
                 row = {}
                 for key, value in risk.items():
-                    if isinstance(value, (list, dict)):
-                        row[key] = json.dumps(value)
-                    else:
-                        row[key] = value
+                    row[key] = _csv_safe_cell(value)
                 writer.writerow(row)
 
         logger.info(f"CSV export saved to {output_file}")

@@ -6,6 +6,7 @@ and over-permissive password retrieval ACLs.
 
 import logging
 from typing import Any
+from core.ad_identity import schema_supports_object_class
 from core.constants import RiskTypes, Severity, MITRETechniques, ServiceAccountPatterns
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,11 @@ class GMSAAnalyzer:
 
     def _get_gmsa_accounts(self, base_dn: str) -> list[dict[str, Any]]:
         """Retrieve all gMSA accounts from the domain."""
+        if schema_supports_object_class(
+            self.ldap,
+            'msDS-GroupManagedServiceAccount',
+        ) is False:
+            return []
         try:
             results = self.ldap.search(
                 search_base=base_dn,
@@ -69,7 +75,6 @@ class GMSAAnalyzer:
                 attributes=[
                     'sAMAccountName', 'distinguishedName',
                     'msDS-ManagedPasswordInterval',
-                    'PrincipalsAllowedToRetrieveManagedPassword',
                     'msDS-GroupMSAMembership',
                     'servicePrincipalName', 'userAccountControl',
                     'whenCreated', 'description',

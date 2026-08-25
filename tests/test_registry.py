@@ -25,6 +25,16 @@ class TestRegistryConstants(unittest.TestCase):
         self.assertEqual(EXPORT_KEY_TO_ANALYSIS_KEY["shadow_credentials_risks"], "shadow_cred_risks")
         self.assertIn("legacy_os_data", EXPORT_KEY_TO_ANALYSIS_KEY)
         self.assertEqual(EXPORT_KEY_TO_ANALYSIS_KEY["legacy_os_data"], "legacy_os_results")
+        for key in (
+            "user_risks",
+            "computer_risks",
+            "group_risks",
+            "kerberos_risks",
+            "nopac_risks",
+            "domain_security_risks",
+            "extended_ldap_risks",
+        ):
+            self.assertIn(key, EXPORT_KEY_TO_ANALYSIS_KEY)
 
     def test_analysis_steps_registered(self):
         self.assertGreater(len(ANALYSIS_STEPS), 20)

@@ -153,6 +153,35 @@ class TestGoldenGMSAAnalyzer(unittest.TestCase):
         self.assertIsInstance(risks, list)
 
 
+class TestIdentityProtectionAnalyzer(unittest.TestCase):
+    """Test privileged identity-protection checks."""
+
+    def setUp(self):
+        from analysis.identity_protection_analyzer import IdentityProtectionAnalyzer
+        self.analyzer = IdentityProtectionAnalyzer()
+
+    def test_privileged_account_protection_gaps_are_reported(self):
+        risks = self.analyzer.analyze([_make_user(
+            sAMAccountName='admin_user',
+            adminCount=1,
+            userAccountControl=0x80,
+            memberOf=['CN=Domain Admins,CN=Users,DC=test,DC=com'],
+        )])
+
+        risk_types = {risk['type'] for risk in risks}
+        self.assertIn('reversible_encryption_enabled', risk_types)
+        self.assertIn('privileged_user_outside_protected_users', risk_types)
+        self.assertIn('privileged_user_without_smartcard', risk_types)
+
+    def test_missing_membership_data_does_not_create_protected_users_finding(self):
+        risks = self.analyzer.analyze([_make_user(adminCount=1, memberOf=None)])
+
+        self.assertNotIn(
+            'privileged_user_outside_protected_users',
+            {risk['type'] for risk in risks},
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  HoneypotDetector Tests
 # ═══════════════════════════════════════════════════════════════════════════
@@ -354,6 +383,17 @@ class TestBackupOperatorAnalyzer(unittest.TestCase):
         risks = self.analyzer.analyze([], groups)
         self.assertIsInstance(risks, list)
 
+    def test_similarly_named_group_is_not_backup_operators(self):
+        groups = [
+            _make_group(
+                name='Azure Backup Operators',
+                sAMAccountName='Azure Backup Operators',
+                member=['CN=backup_user,CN=Users,DC=test,DC=com'],
+            )
+        ]
+        risks = self.analyzer.analyze([], groups)
+        self.assertEqual(risks, [])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  CoerceAttackAnalyzer Tests
@@ -466,7 +506,19 @@ class TestLateralMovementAnalyzer(unittest.TestCase):
             )
         ]
         risks = self.analyzer.analyze(users, [_make_computer()], groups)
-        self.assertIsInstance(risks, list)
+        types = {risk['type'] for risk in risks}
+        self.assertIn('lateral_movement_unrestricted', types)
+
+    def test_ou_named_domain_admins_is_not_privileged(self):
+        users = [
+            _make_user(
+                sAMAccountName='helpdesk',
+                adminCount=0,
+                memberOf=['CN=Helpdesk,OU=Domain Admins,DC=test,DC=com'],
+            )
+        ]
+        risks = self.analyzer.analyze(users, [_make_computer()], [])
+        self.assertFalse(any(risk['type'] == 'lateral_movement_unrestricted' for risk in risks))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

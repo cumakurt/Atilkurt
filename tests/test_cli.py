@@ -18,6 +18,13 @@ def parse_arguments(*extra_arguments):
     return arguments
 
 
+def test_version_flag_does_not_require_domain_arguments():
+    parser = build_parser()
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["--version"])
+    assert caught.value.code == 0
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -53,6 +60,18 @@ def test_domain_name_is_the_default_ldap_server():
     assert arguments.dc_ip == "example.com"
 
 
+def test_report_language_defaults_to_english():
+    arguments = parse_arguments()
+
+    assert arguments.language == "en"
+
+
+def test_turkish_report_language_can_be_selected():
+    arguments = parse_arguments("--lan", "tr")
+
+    assert arguments.language == "tr"
+
+
 def test_explicit_domain_controller_overrides_default():
     arguments = parse_arguments("--dc-ip", "192.0.2.10")
 
@@ -86,3 +105,16 @@ def test_private_log_handler_does_not_follow_symbolic_links(tmp_path):
         _PrivateFileHandler(str(link_path))
 
     assert target_path.read_text(encoding="utf-8") == "preserve"
+
+
+def test_environment_password_is_removed_after_read(monkeypatch):
+    from AtilKurt import resolve_password
+
+    monkeypatch.setenv("ATILKURT_PASS", "unit-test-secret")
+    arguments = parse_arguments()
+    password, manager = resolve_password(arguments)
+    try:
+        assert password == "unit-test-secret"
+        assert "ATILKURT_PASS" not in os.environ
+    finally:
+        manager.clear_password()

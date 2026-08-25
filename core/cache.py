@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from functools import lru_cache, wraps
 from typing import Any, Callable, Optional
@@ -16,17 +17,21 @@ logger = logging.getLogger(__name__)
 
 
 class TimedCache:
-    """Thread-safe time-based cache with expiration."""
+    """Thread-safe time-based cache with expiration and a bounded LRU size."""
 
-    def __init__(self, default_ttl: int = 3600) -> None:
+    def __init__(self, default_ttl: int = 3600, maxsize: int = 4096) -> None:
         """
         Initialize timed cache.
 
         Args:
             default_ttl: Default time-to-live in seconds
+            maxsize: Maximum number of live entries to retain
         """
-        self._cache: dict[str, tuple] = {}  # key -> (value, expiration_time)
+        if maxsize < 1:
+            raise ValueError("maxsize must be at least 1")
+        self._cache: OrderedDict[str, tuple[Any, datetime]] = OrderedDict()
         self.default_ttl = default_ttl
+        self.maxsize = maxsize
         self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
@@ -49,6 +54,7 @@ class TimedCache:
                 del self._cache[key]
                 return None
 
+            self._cache.move_to_end(key)
             return value
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
@@ -63,7 +69,21 @@ class TimedCache:
         ttl = ttl or self.default_ttl
         expiration = datetime.now() + timedelta(seconds=ttl)
         with self._lock:
+            if key in self._cache:
+                self._cache[key] = (value, expiration)
+                self._cache.move_to_end(key)
+                return
+            self._evict_if_needed_locked()
             self._cache[key] = (value, expiration)
+
+    def _evict_if_needed_locked(self) -> None:
+        """Drop expired entries, then the least-recently-used item if still full."""
+        now = datetime.now()
+        expired = [expired_key for expired_key, (_, expiration) in self._cache.items() if now > expiration]
+        for expired_key in expired:
+            del self._cache[expired_key]
+        while len(self._cache) >= self.maxsize:
+            self._cache.popitem(last=False)
 
     def clear(self) -> None:
         """Clear all cached values."""
@@ -133,7 +153,7 @@ def cached(ttl: Optional[int] = None, maxsize: int = 128):
     """
     if ttl is not None:
         # Use timed cache
-        _cache = TimedCache(default_ttl=ttl)
+        _cache = TimedCache(default_ttl=ttl, maxsize=maxsize)
 
         def decorator(func: Callable) -> Callable:
             @wraps(func)

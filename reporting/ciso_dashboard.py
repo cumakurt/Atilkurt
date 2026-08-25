@@ -6,6 +6,8 @@ Enterprise-grade CISO dashboard for AD security metrics
 import logging
 from collections import defaultdict
 
+from analysis.privileged_account_status import account_is_disabled
+
 logger = logging.getLogger(__name__)
 
 # Human-readable labels for each analysis category (Executive Summary - All Analyses Overview)
@@ -13,7 +15,9 @@ ANALYSIS_DISPLAY_LABELS = {
     "user_risks": "User risk analysis",
     "computer_risks": "Computer risk analysis",
     "group_risks": "Group risk analysis",
+    "identity_protection_risks": "Privileged identity protection",
     "kerberos_risks": "Kerberos & delegation",
+    "kerberos_account_security_risks": "Kerberos account encryption & delegation protection",
     "escalation_paths": "Privilege escalation paths",
     "acl_risks": "ACL risks (legacy)",
     "comprehensive_acl_risks": "ACL security (comprehensive)",
@@ -24,6 +28,7 @@ ANALYSIS_DISPLAY_LABELS = {
     "gpo_abuse_risks": "GPO abuse risks",
     "dcsync_risks": "DCSync rights",
     "password_policy_risks": "Password policy issues",
+    "fine_grained_password_policy_risks": "Fine-grained password policy overrides",
     "trust_risks": "Trust relationship risks",
     "certificate_risks": "AD CS certificate risks",
     "gpp_risks": "GPP stored passwords",
@@ -48,6 +53,13 @@ ANALYSIS_DISPLAY_LABELS = {
     "lateral_movement_risks": "Lateral movement",
     "machine_quota_risks": "Machine account quota",
     "replication_risks": "Replication metadata",
+    "ldap_directory_exposure_risks": "LDAP directory exposure",
+    "hidden_privilege_risks": "Hidden privilege / primary group",
+    "hybrid_identity_risks": "Hybrid identity (Entra / ADFS)",
+    "rodc_attack_surface_risks": "RODC password replication",
+    "delegated_msa_risks": "Delegated MSA / BadSuccessor",
+    "sccm_attack_surface_risks": "SCCM attack surface",
+    "domain_admin_takeover": "Domain Admin takeover map",
     "shadow_admins": "Shadow admins",
     "acl_escalation_paths": "ACL privilege escalation paths",
     "misconfig_findings": "Misconfiguration findings",
@@ -688,6 +700,7 @@ class CISODashboardGenerator:
         for user in users:
             username = user.get('sAMAccountName', 'Unknown')
             is_privileged = False
+            is_disabled = account_is_disabled(user)
 
             # Format account creation time
             account_created_time = None
@@ -730,6 +743,7 @@ class CISODashboardGenerator:
                 stats['domain_admins']['members'].append({
                     'username': username,
                     'groups': domain_admin_groups,
+                    'isDisabled': is_disabled,
                     'accountCreated': account_created_display,
                     'accountCreatedRaw': account_created_time.isoformat() if account_created_time else None,
                     'groupAdded': group_added_display,
@@ -744,6 +758,7 @@ class CISODashboardGenerator:
                 stats['enterprise_admins']['members'].append({
                     'username': username,
                     'groups': enterprise_admin_groups,
+                    'isDisabled': is_disabled,
                     'accountCreated': account_created_display,
                     'accountCreatedRaw': account_created_time.isoformat() if account_created_time else None,
                     'groupAdded': group_added_display,
@@ -758,6 +773,7 @@ class CISODashboardGenerator:
                 stats['schema_admins']['members'].append({
                     'username': username,
                     'groups': schema_admin_groups,
+                    'isDisabled': is_disabled,
                     'accountCreated': account_created_display,
                     'accountCreatedRaw': account_created_time.isoformat() if account_created_time else None,
                     'groupAdded': group_added_display,

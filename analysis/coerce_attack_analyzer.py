@@ -9,6 +9,7 @@ Identifies NTLM authentication coercion vectors beyond PetitPotam:
 
 import logging
 from typing import Any
+from core.ad_identity import computer_is_domain_controller
 from core.constants import RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class CoerceAttackAnalyzer:
             if 'SERVER' not in os_name and 'WINDOWS' not in os_name:
                 continue
 
-            is_dc = 'DOMAIN CONTROLLER' in os_name or 'DC' in name.upper()
+            is_dc = computer_is_domain_controller(comp)
             if is_dc:
                 dc_targets.append(name)
             elif 'SERVER' in os_name:

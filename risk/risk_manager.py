@@ -30,6 +30,8 @@ class RiskManager:
         'kerberos_preauth_disabled': 1.0,
         'unconstrained_delegation': 2.0,
         'too_many_domain_admins': 4.0,
+        'disabled_domain_admin': 1.0,
+        'disabled_enterprise_admin': 1.0,
         'weak_password_policy': 2.0,
         'password_policy_weak': 2.0,
         'account_lockout_disabled': 1.0,
@@ -65,6 +67,9 @@ class RiskManager:
         'sensitive_operator_risk': 2.0,
         'audit_policy_insufficient': 4.0,
         'audit_sacl_missing': 4.0,
+        'reversible_encryption_enabled': 2.0,
+        'privileged_user_outside_protected_users': 2.0,
+        'privileged_user_without_smartcard': 2.0,
     }
 
     # Default hourly rate (can be customized)

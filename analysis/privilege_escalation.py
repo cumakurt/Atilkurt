@@ -6,22 +6,13 @@ Analyzes theoretical privilege escalation paths without providing exploit code
 import logging
 from collections import deque
 
+from core.ad_identity import first_ldap_rdn, is_privileged_group_name, is_privileged_group_record
+
 logger = logging.getLogger(__name__)
 
 
 class PrivilegeEscalationAnalyzer:
     """Analyzes privilege escalation paths in Active Directory."""
-
-    PRIVILEGED_GROUPS = [
-        'Domain Admins',
-        'Enterprise Admins',
-        'Schema Admins',
-        'Account Operators',
-        'Backup Operators',
-        'Server Operators',
-        'Print Operators',
-        'Administrators'
-    ]
 
     def __init__(self):
         """Initialize privilege escalation analyzer."""
@@ -81,7 +72,7 @@ class PrivilegeEscalationAnalyzer:
                 continue
 
             # Check if privileged
-            if self._is_privileged_group(group_name):
+            if is_privileged_group_record(group):
                 self.privileged_groups.add(group_name)
 
             # Build group hierarchy
@@ -121,10 +112,8 @@ class PrivilegeEscalationAnalyzer:
             self.user_group_map[username] = user_groups
 
     def _is_privileged_group(self, group_name):
-        """Check if a group is privileged."""
-        if not group_name:
-            return False
-        return any(priv_group.lower() in group_name.lower() for priv_group in self.PRIVILEGED_GROUPS)
+        """Return True when a group name exactly matches a well-known privileged group."""
+        return is_privileged_group_name(first_ldap_rdn(group_name))
 
     def _is_user_already_privileged(self, user, user_group_map):
         """Check if user is already in a privileged group (legacy method, kept for compatibility)."""
@@ -369,17 +358,9 @@ class PrivilegeEscalationAnalyzer:
         return risks
 
     def _extract_group_name(self, group_dn):
-        """Extract group name from DN."""
-        if not group_dn:
-            return None
-        # Extract CN from DN (simplified)
-        if 'CN=' in group_dn:
-            try:
-                cn_part = group_dn.split('CN=')[1].split(',')[0]
-                return cn_part
-            except Exception:
-                return None
-        return group_dn
+        """Extract the first RDN from a group DN or return the bare name."""
+        name = first_ldap_rdn(group_dn)
+        return name or None
 
     def _find_indirect_paths(self, group_name, group_map, user_group_map):
         """Find indirect paths to privileged groups through nested groups (legacy method)."""

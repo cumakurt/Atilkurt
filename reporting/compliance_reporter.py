@@ -23,6 +23,8 @@ class ComplianceReporter:
         'kerberos_preauth_disabled': 'CIS 2.3.1.3',
         'unconstrained_delegation': 'CIS 2.3.1.4',
         'too_many_domain_admins': 'CIS 2.3.1.5',
+        'disabled_domain_admin': 'CIS 2.3.1.5',
+        'disabled_enterprise_admin': 'CIS 2.3.1.5',
         'password_policy_weak': 'CIS 2.3.2.1',
         'account_lockout_disabled': 'CIS 2.3.2.2',
         'eol_operating_system': 'CIS 2.3.3.1',
@@ -46,7 +48,9 @@ class ComplianceReporter:
         'dcsync_rights': 'PR.AC-1',
         'trust_relationship_risk': 'PR.AC-1',
         'privilege_escalation_path': 'PR.AC-1',
-        'shadow_admin': 'PR.AC-1'
+        'shadow_admin': 'PR.AC-1',
+        'disabled_domain_admin': 'PR.AC-1',
+        'disabled_enterprise_admin': 'PR.AC-1',
     }
 
     # ISO 27001 mappings
@@ -62,7 +66,9 @@ class ComplianceReporter:
         'dcsync_rights': 'A.9.2.1',
         'trust_relationship_risk': 'A.9.4.2',
         'privilege_escalation_path': 'A.9.2.1',
-        'shadow_admin': 'A.9.2.1'
+        'shadow_admin': 'A.9.2.1',
+        'disabled_domain_admin': 'A.9.2.1',
+        'disabled_enterprise_admin': 'A.9.2.1',
     }
 
     # CIS Controls v8 mappings (Critical Security Controls)
@@ -72,6 +78,8 @@ class ComplianceReporter:
         'kerberos_preauth_disabled': '5.2 (Privileged Access Management)',
         'unconstrained_delegation': '5.2 (Privileged Access Management)',
         'too_many_domain_admins': '5.1 (Privileged Account Inventory)',
+        'disabled_domain_admin': '5.1 (Privileged Account Inventory)',
+        'disabled_enterprise_admin': '5.1 (Privileged Account Inventory)',
         'password_policy_weak': '5.2 (Privileged Access Management)',
         'account_lockout_disabled': '5.2 (Privileged Access Management)',
         'eol_operating_system': '7.1 (Vulnerability Management)',
@@ -99,7 +107,9 @@ class ComplianceReporter:
         'gpp_password_found': 'Article 32',
         'dcsync_rights': 'Article 32',
         'privilege_escalation_path': 'Article 32',
-        'shadow_admin': 'Article 32'
+        'shadow_admin': 'Article 32',
+        'disabled_domain_admin': 'Article 32',
+        'disabled_enterprise_admin': 'Article 32',
     }
 
     RISK_TYPE_ALIASES = {
