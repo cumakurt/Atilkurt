@@ -36,6 +36,42 @@ Core goals:
 - Produce offline-capable English or Turkish HTML reports, JSON/OpenGraph exports, and optional checkpoints
 - Support large environments with paging, caching, parallel collection, and incremental execution
 
+## Screenshots
+
+The following images are taken from a **synthetic demo dataset** (`contoso.lab`), not a live domain. They show the self-contained HTML report in English and Turkish. Regenerate them with:
+
+```bash
+python3 scripts/generate_demo_screenshots.py
+```
+
+### English report
+
+**Dashboard** — domain score, severity KPIs, and executive summary:
+
+![English dashboard](img/screenshots/en-dashboard.png)
+
+**Domain Admin Map** — open takeover paths with PoC roadmap and usable commands:
+
+![English Domain Admin Map](img/screenshots/en-domain-admin-map.png)
+
+**Critical Risks** — scored critical findings with impact and mitigation accordions:
+
+![English Critical Risks](img/screenshots/en-critical-risks.png)
+
+### Turkish report (`--lan tr`)
+
+**Gösterge Paneli** — same dashboard chrome localized to Turkish:
+
+![Turkish dashboard](img/screenshots/tr-dashboard.png)
+
+**Etki Alanı Yöneticisi Haritası** — PoC yol haritası and command labels in Turkish (command bodies stay paste-ready in English):
+
+![Turkish Domain Admin Map](img/screenshots/tr-domain-admin-map.png)
+
+**Kritik Riskler** — localized finding titles and UI:
+
+![Turkish Critical Risks](img/screenshots/tr-critical-risks.png)
+
 ## Key Capabilities
 
 ### Directory Inventory
