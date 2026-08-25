@@ -9,13 +9,20 @@ from typing import Any
 class DomainAdminSectionMixin:
     """Render pentest-oriented Domain Admin takeover paths."""
 
-    def _generate_domain_admin_takeover_section(self, takeover: dict[str, Any] | None) -> str:
+    def _generate_domain_admin_takeover_section(
+        self,
+        takeover: dict[str, Any] | None,
+        domain: str | None = None,
+        dc_ip: str | None = None,
+    ) -> str:
         """Return HTML for the Domain Admin takeover map tab."""
         takeover = takeover or {}
         summary = takeover.get("summary") or {}
         open_paths = takeover.get("open_paths") or []
         unobserved = takeover.get("unobserved_paths") or []
         headline = html_stdlib.escape(str(summary.get("headline") or "Domain Admin takeover map."))
+        domain_label = html_stdlib.escape(str(domain or "DOMAIN"))
+        dc_label = html_stdlib.escape(str(dc_ip or "DC_IP"))
 
         open_count = int(summary.get("open_path_count") or 0)
         da_count = int(summary.get("da_equivalent_open_count") or 0)
@@ -82,6 +89,24 @@ class DomainAdminSectionMixin:
             }}
             .da-why {{ color: #cbd5e1; font-size: .92rem; }}
             .da-break li {{ margin-bottom: .25rem; }}
+            .da-poc {{
+                border-left: 3px solid #ff6b00;
+                padding-left: .9rem;
+                margin: .5rem 0 1rem;
+            }}
+            .da-poc-step {{ margin-bottom: .85rem; }}
+            .da-expected {{ color: #86efac; font-size: .86rem; }}
+            .da-cmd {{
+                background: rgba(2,6,23,.7);
+                border-radius: 10px;
+                padding: .75rem .9rem;
+                margin-bottom: .65rem;
+            }}
+            .da-cmd pre {{
+                margin: .35rem 0 0 0;
+                white-space: pre-wrap;
+                word-break: break-word;
+            }}
         </style>
         <div class="da-hero">
             <h3 class="mb-2"><i class="fas fa-crown text-warning"></i> Domain Admin takeover map</h3>
@@ -89,8 +114,13 @@ class DomainAdminSectionMixin:
             <p class="text-muted small mt-2 mb-0">
                 This view is written the way an internal penetration test is scoped: every technique that
                 can become Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a
-                privileged certificate). Each open path is backed by findings from this scan. Stages
-                describe attack <em>logic</em> for assessment and defense — not exploit procedures.
+                privileged certificate). Each open path is backed by findings from this scan. Every path
+                includes a detailed PoC roadmap and the verification and authorized-assessment commands
+                a tester would use. Commands are templates for authorized engagements only.
+            </p>
+            <p class="text-muted small mt-2 mb-0">
+                Domain: <code>{domain_label}</code> | DC: <code>{dc_label}</code>.
+                Use only in authorized engagements.
             </p>
             <div class="da-kpis">
                 <div class="da-kpi"><div class="n">{open_count}</div><div class="l">Open paths</div></div>
@@ -113,7 +143,8 @@ class DomainAdminSectionMixin:
                     <p class="text-muted small">
                         Absence of evidence is not evidence of absence. These techniques remain on a
                         Domain Admin assessment checklist even when this LDAP-only scan did not observe
-                        the supporting attributes.
+                        the supporting attributes. Each catalog entry still includes the PoC roadmap
+                        and command templates.
                     </p>
                     {unobserved_html}
                 </div>
@@ -209,8 +240,94 @@ class DomainAdminSectionMixin:
             {evidence_block}
             <h6 class="mt-3">Logical attack chain</h6>
             {stage_html}
+            {self._da_poc_block(path)}
+            {self._da_commands_block(path)}
             <h6 class="mt-3">How to break the path</h6>
             <ul class="da-break">{break_html}</ul>
             <p class="small text-muted mb-0"><strong>Detection:</strong> {detection}</p>
         </article>
+        """
+
+    def _da_poc_block(self, path: dict[str, Any]) -> str:
+        """Render the detailed PoC roadmap for one path."""
+        steps = path.get("poc_roadmap") or []
+        if not steps:
+            return ""
+        items = []
+        for idx, step in enumerate(steps, 1):
+            if not isinstance(step, dict):
+                continue
+            title = html_stdlib.escape(str(step.get("step") or ""))
+            detail = html_stdlib.escape(str(step.get("detail") or ""))
+            expected = html_stdlib.escape(str(step.get("expected") or ""))
+            expected_html = (
+                f'<div class="da-expected"><strong>Expected evidence:</strong> {expected}</div>'
+                if expected
+                else ""
+            )
+            items.append(
+                f"""<div class="da-poc-step da-stage">
+                    <div class="da-num">{idx}</div>
+                    <div>
+                        <strong>{title}</strong>
+                        <div class="da-why">{detail}</div>
+                        {expected_html}
+                    </div>
+                </div>"""
+            )
+        return f"""
+            <h6 class="mt-3">PoC roadmap</h6>
+            <p class="small text-muted">
+                Finding-specific proof path from this scan to Domain Admin (or equivalent).
+                Stop after evidence is recorded; do not persist privileged access.
+            </p>
+            <div class="da-poc">{''.join(items)}</div>
+        """
+
+    def _da_command_items(self, commands: list[Any]) -> str:
+        blocks = []
+        for item in commands:
+            if not isinstance(item, dict):
+                continue
+            label = html_stdlib.escape(str(item.get("label") or item.get("id") or "Command"))
+            command = html_stdlib.escape(str(item.get("command") or ""))
+            if not command:
+                continue
+            blocks.append(
+                f"""<div class="da-cmd">
+                    <div class="small"><strong>{label}</strong></div>
+                    <pre class="mb-0"><code>{command}</code></pre>
+                </div>"""
+            )
+        return "".join(blocks)
+
+    def _da_commands_block(self, path: dict[str, Any]) -> str:
+        """Render verification and authorized-assessment command templates."""
+        verify = self._da_command_items(path.get("verify_commands") or [])
+        assess = self._da_command_items(path.get("assessment_commands") or [])
+        tools = path.get("tools") or []
+        if not verify and not assess:
+            return ""
+        tool_html = ""
+        if tools:
+            badges = " ".join(
+                f'<span class="badge bg-secondary">{html_stdlib.escape(str(tool))}</span>'
+                for tool in tools
+            )
+            tool_html = f'<p class="small mb-2"><strong>Assessment tools:</strong> {badges}</p>'
+        verify_html = (
+            f"<h6 class='mt-2'>Finding verification commands</h6>{verify}" if verify else ""
+        )
+        assess_html = (
+            f"<h6 class='mt-2'>Authorized assessment commands</h6>{assess}" if assess else ""
+        )
+        return f"""
+            <h6 class="mt-3">Usable commands</h6>
+            <p class="small text-muted">
+                Placeholders are filled from this scan when possible ({html_stdlib.escape(str((path.get('evidence_objects') or ['TARGET'])[0]))}).
+                Use only in authorized engagements.
+            </p>
+            {tool_html}
+            {verify_html}
+            {assess_html}
         """

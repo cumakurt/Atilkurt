@@ -37,6 +37,60 @@ class RiskSectionsMixin:
 
         return f'<span class="badge bg-{color}" title="Exploitability Score: {score}/10, Difficulty: {difficulty}">Exploitability: {score:.1f}/10</span>'
 
+    def _generate_confidence_badge(self, risk):
+        """Generate a confidence badge from the evidence scorer."""
+        confidence = risk.get("confidence") or {}
+        if not isinstance(confidence, dict) or confidence.get("score") is None:
+            return ""
+        score = float(confidence.get("score") or 0)
+        level = str(confidence.get("level") or "unknown").lower()
+        level_label = self._html_escape(confidence.get("level_label") or level.upper())
+        color = "success" if level == "high" else "warning" if level == "medium" else "secondary"
+        basis = self._html_escape(confidence.get("basis") or "")
+        return (
+            f'<span class="badge bg-{color}" title="Basis: {basis}">'
+            f'Confidence: {level_label} ({score:.1f}%)</span>'
+        )
+
+    def _generate_evidence_details(self, risk):
+        """Render the evidence chain without exposing secret attribute values."""
+        confidence = risk.get("confidence") or {}
+        chain = risk.get("evidence_chain") or []
+        if not confidence and not chain:
+            return ""
+        basis = self._html_escape(confidence.get("basis") or "Unknown")
+        score = float(confidence.get("score") or 0)
+        level = self._html_escape(
+            confidence.get("level_label") or str(confidence.get("level") or "unknown").upper()
+        )
+        items = []
+        for step in chain:
+            if not isinstance(step, dict):
+                continue
+            source = self._html_escape(step.get("source_label") or step.get("source") or "unknown")
+            claim = self._html_escape(step.get("claim") or "")
+            strength = self._html_escape(step.get("strength_label") or step.get("strength") or "")
+            items.append(
+                f"<li><strong>{source}</strong>: {claim} "
+                f"<span class='badge bg-secondary'>{strength}</span></li>"
+            )
+        return f"""
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#evidence_{{accordion_id}}">
+                    <i class="fas fa-link"></i> <span>Evidence Chain</span>
+                </button>
+            </h2>
+            <div id="evidence_{{accordion_id}}" class="accordion-collapse collapse" data-bs-parent="#{{accordion_id}}">
+                <div class="accordion-body matrix-theme">
+                    <p><strong>Confidence Score:</strong> {score:.1f}% ({level})</p>
+                    <p><strong>Basis:</strong> {basis}</p>
+                    <ol>{''.join(items)}</ol>
+                </div>
+            </div>
+        </div>
+        """
+
     def _generate_exploitability_details(self, risk):
         """Generate exploitability details section."""
         exploitability = risk.get('exploitability')
@@ -469,6 +523,7 @@ class RiskSectionsMixin:
                         <span class="badge bg-info">Final Score: {risk_score:.1f}/100</span>
                         {comb_badge}
                         {self._generate_exploitability_badge(risk)}
+                        {self._generate_confidence_badge(risk)}
                     </div>
 
                     <div class="accordion report-accordion mt-3" id="{accordion_id}">
@@ -501,6 +556,7 @@ class RiskSectionsMixin:
                                 </div>
                             </div>
                         </div>
+                        {self._generate_evidence_details(risk).replace('{accordion_id}', accordion_id)}
                         {self._generate_affected_objects_html(risk, '#' + accordion_id)}
                     </div>
                 </div>

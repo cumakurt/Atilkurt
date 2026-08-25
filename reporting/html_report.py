@@ -188,7 +188,12 @@ class HTMLReportGenerator(
         if domain_admin_takeover is None:
             from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
             domain_admin_takeover = DomainAdminTakeoverAnalyzer().analyze(
-                risks, users=users, groups=groups, computers=computers
+                risks,
+                users=users,
+                groups=groups,
+                computers=computers,
+                domain=domain,
+                dc_ip=dc_ip,
             )
         if self.language == 'tr':
             domain_admin_takeover = localize_report_structure(

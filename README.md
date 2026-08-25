@@ -31,8 +31,9 @@ Core goals:
 
 - Collect identity, group, computer, GPO, and ACL data from Active Directory
 - Detect misconfigurations, weak controls, and known attack paths
+- Correlate optional offline Windows events and exported DC/GPO posture evidence with LDAP findings
 - Consolidate findings into a severity-based risk model
-- Produce offline-capable English or Turkish HTML reports, JSON exports, and optional checkpoints
+- Produce offline-capable English or Turkish HTML reports, JSON/OpenGraph exports, and optional checkpoints
 - Support large environments with paging, caching, parallel collection, and incremental execution
 
 ## Key Capabilities
@@ -49,6 +50,9 @@ Core goals:
 - Kerberos delegation, account-level encryption compatibility, privileged-account delegation protection, privilege escalation, and ACL review
 - Kerberoasting, AS-REP roasting, DCSync, GPP, LAPS, trust, and password policy checks
 - AD CS analysis, including extended certificate abuse paths
+- Authentication Policy/Silo, KeyCredentialLink forensics, strong certificate mapping, Windows LAPS v2, RC4 retirement, and AdminSDHolder drift checks
+- gMSA-reader, AD CS control-plane, trust, AD-integrated DNS, and hybrid-identity relationship graphs
+- Evidence-based Tier-0 shortest paths, chokepoints, and blast-radius analysis
 - Extended LDAP checks for common privileged-object and configuration weaknesses
 - Domain security, audit policy, stale object, gMSA, KRBTGT, machine quota, and replication metadata analysis
 
@@ -56,6 +60,7 @@ Core goals:
 
 - Severity-based domain score
 - Exploitability scoring
+- Per-finding confidence scoring with a transparent evidence chain
 - Risk prioritization and remediation cost estimation
 - Business impact and ROI-style remediation views
 
@@ -64,6 +69,7 @@ Core goals:
 - Single-file HTML report with embedded assets
 - English reporting by default and complete Turkish report localization with `--lan tr`
 - Domain Admin takeover map for pentest-oriented path review
+- Optional BloodHound OpenGraph-shaped Tier-0 graph export
 - JSON export for downstream processing
 - Compliance reporting for CIS, NIST CSF, ISO 27001, and GDPR
 - Executive summary and analysis summary tables
@@ -81,6 +87,8 @@ LDAP or LDAPS bind
 Paged collection of users, computers, groups, and GPOs
         ↓
 Registered security analysis modules
+        ↓
+Optional event, DC/GPO posture, and baseline-snapshot correlation
         ↓
 Risk deduplication, exploitability assessment, and scoring
         ↓
@@ -124,6 +132,11 @@ The following tables describe every analysis step registered by the application.
 | `gmsa` | gMSA configuration, principals allowed to retrieve managed passwords, and traditional service accounts that are candidates for migration to gMSA. |
 | `golden_gmsa` | KDS root-key exposure and excessive gMSA password-reader conditions associated with Golden gMSA attack paths. KDS objects are located from RootDSE `configurationNamingContext`, not from `CN=Configuration,<domain DN>`. |
 | `krbtgt` | KRBTGT password age and encryption configuration indicators that affect Golden Ticket resilience. |
+| `authentication_policy` | Authentication Policy and Authentication Policy Silo inventory, privileged-account assignment, missing enforcement, orphaned references, and sensitive accounts outside enforced silos. |
+| `key_credential_forensics` | `msDS-KeyCredentialLink` presence, parsed device/key identifiers when available, privileged-object concentration, duplicate material, and malformed or review-required key-credential records. The analyzer reports metadata and does not export private key material. |
+| `windows_laps_v2` | Windows LAPS encrypted-password deployment, password-expiration metadata, missing encryption, stale expiration, and recovery/decryption authorization indicators. Password values are not placed in findings. |
+| `certificate_mapping` | Strong certificate-binding readiness from domain-controller and Schannel mapping settings, including weak mapping modes and enforcement/backdating configuration that can preserve certificate impersonation paths. |
+| `kerberos_rc4_readiness` | Account and domain readiness for retiring RC4, including explicit RC4/DES flags, AES availability, privileged/service-account exposure, and migration blockers. Zero or absent account encryption flags are treated as inherited KDC policy, not direct proof of RC4-only use. |
 
 ### Authorization, ACLs, and Attack Paths
 
@@ -138,6 +151,9 @@ The following tables describe every analysis step registered by the application.
 | `lateral_movement` | Unrestricted privileged logon opportunities, tier-boundary violations, and broad Remote Desktop exposure inferred from directory relationships. Privileged membership uses exact CN/SAM names, not DN substrings. |
 | `machine_quota` | `ms-DS-MachineAccountQuota`, account-creation exposure, and creator-SID concentration that can contribute to machine-account abuse paths. |
 | `replication_metadata` | Recent sensitive-object changes and tombstone-lifetime settings relevant to change monitoring and recovery. Forest configuration objects (tombstone lifetime) are resolved from RootDSE. |
+| `adminsdholder_drift` | AdminSDHolder/SDProp protection drift, protected-object descriptor divergence, stale `adminCount`, missing protection, and dangerous broad ACEs identified from parsed security descriptors. |
+| `gmsa_reader_graph` | Effective gMSA managed-password reader relationships, broad reader principals, privileged readers, and graph edges that expose a managed identity to lower-trust principals. |
+| `attack_graph_v2` | Deterministic evidence graph combining memberships, parsed ACL findings, and Package B control-plane relationships. It computes shortest paths to Tier-0, shared chokepoints, and reachable Tier-0 blast radius with bounded graph traversal. |
 
 ### Domain, Trust, PKI, and Control-Plane Security
 
@@ -158,6 +174,22 @@ The following tables describe every analysis step registered by the application.
 | `audit_policy` | Audit-related GPO discovery, AdminSDHolder and domain-root SACL review guidance, and the critical Windows event IDs recommended for monitoring. |
 | `coercion` | Print Spooler, DFS, and WebClient-related directory indicators that may expose authentication-coercion paths. No coercion request is sent. |
 | `misconfiguration` | Cross-cutting checklist for password policy, administrative hygiene, delegation, ACL, trust, and tiering weaknesses based on the collected inventory. |
+| `adcs_control_plane` | ACL-based ownership and write-control paths across certification authorities, certificate templates, NTAuth, enrollment services, and PKI containers. It records exact trustee/target evidence in a component graph. |
+| `trust_security_v2` | Direction, transitivity, SID-filtering/quarantine, selective authentication, forest-wide scope, and trust-account encryption conditions, with cross-domain graph relationships. |
+| `ad_dns_security` | AD-integrated DNS zones and nodes, insecure or nonsecure dynamic-update settings, stale/tombstoned data, and dangerous ACL control over DNS records or zone containers. |
+| `hybrid_identity_v2` | Entra Connect, Seamless SSO, and AD FS control-plane identities, privileged placement, credential age, delegation/SPN exposure, and relationship edges into sensitive on-premises assets. |
+
+### Modern Analysis Packages
+
+The modern modules are deliberately layered so each later package can reuse evidence produced earlier:
+
+| Package | Focus | Output |
+| --- | --- | --- |
+| A — Identity hardening | Authentication Policies/Silos, KeyCredentialLink forensics, Windows LAPS v2, strong certificate mapping, RC4 retirement, and AdminSDHolder drift | Stable risk identifiers and LDAP/security-descriptor evidence suitable for English or Turkish reporting |
+| B — Control-plane graphing | gMSA readers, AD CS ACLs, trusts, AD DNS, hybrid identity, and a combined Tier-0 attack graph | Component graphs, shortest Tier-0 paths, chokepoints, blast radius, and an OpenGraph-shaped representation |
+| C — Evidence and change | Offline Windows events, exported endpoint/GPO posture, full snapshot deltas, and confidence scoring | Correlated telemetry findings, verified posture gaps, risk/object/edge drift, and a transparent evidence chain for every consolidated finding |
+
+Package C is optional-input aware. A normal LDAP scan still runs without extra files and every finding receives a confidence assessment. `--event-log`, `--posture-file`, and `--baseline` add direct evidence or change context before risk scoring. These inputs can also enrich a full `--resume` checkpoint without repeating LDAP collection.
 
 ### Full and Fast Profiles
 
@@ -168,6 +200,10 @@ The following tables describe every analysis step registered by the application.
 - `adcs_extended`
 - `coercion`
 - `replication_metadata`
+- `adminsdholder_drift`
+- `adcs_control_plane`
+- `ad_dns_security`
+- `attack_graph_v2`
 
 Use `--skip-analysis KEY` for explicit control. Skipped modules produce empty result sections instead of breaking report generation, which keeps the JSON and HTML schemas predictable.
 
@@ -304,6 +340,7 @@ By default, the tool writes:
 - HTML report
 - Optional JSON export
 - Optional Kerberoasting export
+- Optional Tier-0 attack-graph export
 - Optional checkpoint file
 
 Reports, exports, and checkpoints are written atomically with owner-only file permissions. The checkpoint directory is owner-accessible only.
@@ -473,7 +510,53 @@ Create a machine-readable result and use it as the baseline for a later scan:
 ./run.sh --baseline baseline.json --json-export current.json
 ```
 
-The comparison matches findings by risk type and affected object, then reports new, resolved, unchanged, and net drift counts. Baseline comparison is independent from incremental directory-object comparison.
+The snapshot comparison matches findings by risk type and affected object and also compares security-relevant object fields and attack-graph edges. It reports new/resolved risks, newly introduced critical findings, privilege-bearing membership changes, selected account/configuration field changes, and added or removed graph edges. The resulting delta risks enter normal scoring and reporting. Baseline comparison is independent from incremental directory-object comparison.
+
+### Offline Windows Event Correlation
+
+One or more exported Windows event files can be correlated with the current LDAP assessment:
+
+```bash
+./run.sh \
+  --event-log dc-security.json \
+  --event-log ca-events.xml \
+  --json-export correlated.json
+```
+
+`--event-log FILE` is repeatable and accepts JSON arrays/objects, newline-delimited JSON, Windows Event XML, and native `.evtx` when the optional `python-evtx` package is installed. Each input is limited to 512 MiB and event processing is bounded. Current correlations cover:
+
+- Kerberos RC4 service tickets and Kerberoasting-style 4769 bursts
+- AS-REP requests without preauthentication from event 4768
+- Sensitive directory changes from event 5136
+- Replication-right activity from event 4662
+- Strong certificate-mapping failures from KDC events 39, 40, and 41
+- Certificate issuance events 4886/4887 when the template is already flagged by LDAP analysis
+
+The importer is offline and read-only: it parses supplied files, does not connect to event collectors, and does not retain raw secret values in finding narratives.
+
+### DC and GPO Posture Evidence
+
+Use exported registry, resultant-policy, or configuration evidence to verify controls that LDAP alone cannot prove:
+
+```bash
+./run.sh \
+  --posture-file dc-registry.json \
+  --posture-file resultant-policy.xml \
+  --lan tr \
+  --output assessment-tr.html
+```
+
+`--posture-file FILE` is repeatable and accepts JSON, XML, INI-style `key=value`, and `key: value` text. It currently recognizes LDAP signing, LDAP channel binding, NTLM restrictions, SMB signing, Kerberos supported-encryption policy, and Schannel certificate-mapping methods. Missing settings are reported as unknown coverage, not as proof that the control is weak. Each posture input is limited to 64 MiB.
+
+### Tier-0 Attack Graph Export
+
+Export the evidence graph for graph tooling or downstream transformation:
+
+```bash
+./run.sh --attack-graph-export tier0-opengraph.json
+```
+
+The file contains the graph schema version, summary, nodes, edges, shortest paths, chokepoints, blast-radius metadata, and a BloodHound OpenGraph-shaped `opengraph` object. Node IDs and relationship types remain stable in both report languages. This export is evidence for defensive review; it does not execute an attack path.
 
 ### Check One User's Escalation Path
 
@@ -534,9 +617,12 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `--no-single-file-report`: Write a report that references a copied `vendor/` asset directory
 - `--json-export`: JSON export output path
 - `--kerberoasting-export`: Kerberoasting target export path
+- `--attack-graph-export`: Tier-0 evidence graph export path using a BloodHound OpenGraph-shaped JSON structure
 - `--checkpoint`: Save a checkpoint
 - `--resume`: Resume from a checkpoint
-- `--baseline`: Compare current findings with a prior `--json-export` file
+- `--baseline`: Compare risks, security-relevant object state, and attack-graph edges with a prior `--json-export` file
+- `--event-log FILE`: Correlate an offline Windows event file; repeatable; accepts JSON, JSONL, XML, and optional native EVTX
+- `--posture-file FILE`: Verify DC/GPO posture from an offline JSON, XML, INF, or text export; repeatable
 
 ### Risk Management
 
@@ -564,9 +650,10 @@ Turkish mode localizes the report presentation end to end, including:
 
 - Document metadata, report title, header, navigation, breadcrumbs, buttons, filters, sorting controls, pagination, empty states, and browser notifications
 - Executive dashboard KPIs, severity labels, charts, analysis summaries, account statistics, and action priorities
-- Finding titles, descriptions, impact statements, attack scenarios, mitigation and remediation guidance, and exploitability labels
+- Finding titles, descriptions, impact statements, attack scenarios, mitigation and remediation guidance, exploitability labels, confidence levels, and evidence-chain explanations
 - Directory views, risk category tabs, compliance views, risk-management sections, and the Domain Admin takeover map
 - Red Team and Blue Team explanatory text while retaining authorized validation commands and defensive event identifiers
+- Domain Admin takeover PoC roadmap narratives and command labels while retaining paste-ready command bodies
 - Client-side CSV column headings, export messages, and the visible values used in interactive detail dialogs
 
 Localization is deterministic and offline. It does not call an external translation service and does not add a network dependency to report generation.
@@ -581,9 +668,9 @@ The HTML report includes:
 
 - An executive dashboard with the domain score, critical/high counts, privileged-account and delegation KPIs, risk distribution, category breakdown, top risky objects, action priorities, password statistics, account activity, administrative-group membership, and account status
 - Dedicated views for all risks, critical and high risks, privileged accounts (including a dedicated list of disabled Domain Admin and Enterprise Admin accounts), delegation, password issues, users, computers, groups, Kerberos findings, attack paths, service accounts, GPO abuse, DCSync, password policy, trusts, AD CS, GPP, LAPS, vulnerability indicators, legacy operating systems, and ACL security
-- A Domain Admin takeover map that lists every pentest technique that can reach Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a privileged certificate), with the assumed starting access, why the path works, logical stages, scan evidence, how to break the path, and detection guidance
+- A Domain Admin takeover map that lists every pentest technique that can reach Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a privileged certificate), with the assumed starting access, why the path works, logical stages, a detailed PoC roadmap tied to scan evidence, usable verification and authorized-assessment command templates (domain/DC/target filled when known), how to break the path, and detection guidance
 - Advanced-analysis sections for account-level Kerberos encryption and delegation protection, weak fine-grained password policy overrides, KRBTGT health, gMSA, machine quota, lateral movement, coercion, and extended AD CS findings
-- Finding cards with severity, affected object, technical description, business impact, attack scenario, mitigation guidance, MITRE ATT&CK references, and exploitability context when available
+- Finding cards with severity, affected object, technical description, business impact, attack scenario, mitigation guidance, MITRE ATT&CK references, exploitability context, a confidence badge, and an expandable evidence chain
 - Search, sorting, pagination, object-detail dialogs, and client-side CSV export for the relevant directory and risk tables
 - Compliance views for CIS, NIST CSF, ISO 27001, and GDPR
 - A risk-management heat map, remediation estimates, prioritized actions, and ROI-style planning values
@@ -604,9 +691,12 @@ Use `--no-single-file-report` when you prefer a smaller HTML file that reference
 - Consolidated and scored risks
 - Domain score and executive summary
 - All registered analysis result categories
-- Domain Admin takeover map (open paths, evidence, and the unobserved technique catalog)
+- Domain Admin takeover map (open paths, evidence, PoC roadmaps, command templates, and the unobserved technique catalog)
 - Compliance data and risk-management data
 - Baseline comparison data when `--baseline` is used
+- Package B component graphs and the combined Tier-0 evidence graph
+- Event-correlation, posture-evidence, and snapshot-delta summaries when their inputs are supplied
+- Per-finding confidence scores, confidence basis, source identifiers, and evidence-chain claims
 
 JSON output is intended for downstream processing and contains substantially more sensitive directory data than the summary HTML views. Store and transmit it accordingly. In Turkish mode, consumers should continue using the unchanged JSON keys and stable risk identifiers instead of depending on localized display text.
 
@@ -614,13 +704,17 @@ JSON output is intended for downstream processing and contains substantially mor
 
 `--kerberoasting-export FILE` writes a focused JSON list of identified SPN targets, privilege context, and prepared command templates supplied by the analyzer. The export does not request service tickets or crack credentials.
 
+### Tier-0 Graph Export
+
+`--attack-graph-export FILE` writes the complete Package B graph plus its BloodHound OpenGraph-shaped representation. The export uses stable node IDs and relation names and is intentionally not translated, so the same integration works with default English reports and `--lan tr` reports.
+
 ### Additional Export APIs
 
 The `reporting.export_formats.ExportFormats` Python API also provides CSV risk export, simplified Nessus-compatible XML, newline-delimited SIEM JSON, and CEF output for integrations. These formats are library APIs and do not currently have dedicated CLI flags.
 
 ### Output Naming and File Safety
 
-When `--output` is omitted or retains its default `report.html`, AtilKurt generates `AtilKurt_<domain>_<timestamp>.html`. Explicit output, JSON, and Kerberoasting paths are validated before use. Sensitive files are committed with atomic replacement and `0600` permissions so a partial write does not replace a previously valid artifact.
+When `--output` is omitted or retains its default `report.html`, AtilKurt generates `AtilKurt_<domain>_<timestamp>.html`. Explicit HTML, JSON, Kerberoasting, and attack-graph paths are validated before use. Sensitive files are committed with atomic replacement and `0600` permissions so a partial write does not replace a previously valid artifact.
 
 ## Checkpoints, Incremental State, and Caching
 
@@ -631,6 +725,7 @@ When `--output` is omitted or retains its default `report.html`, AtilKurt genera
 - The checkpoint directory uses `0700`; individual checkpoint files use `0600` and are atomically replaced.
 - Incremental comparison uses deterministic SHA-256 identity hashes and reports new, changed, and deleted objects separately.
 - Checkpoints and JSON baselines are not encrypted. Their filesystem permissions reduce accidental local disclosure but do not replace full-disk encryption or an organizational secrets/data handling policy.
+- Supplying `--event-log`, `--posture-file`, or `--baseline` with `--resume` replaces the matching Package C evidence section and recalculates scores/compliance from the checkpoint state without recollecting LDAP data.
 
 ## Performance and Scalability
 
@@ -732,6 +827,9 @@ The report may include offensive validation commands in its Red Team playbook. T
 - A read-only account can receive incomplete results when ACLs hide attributes or containers. LDAP errors are reported, but the tool cannot infer data it is not authorized to read.
 - Compliance percentages are technical mappings for prioritization and are not legal advice, an audit opinion, or certification evidence.
 - Incremental comparison identifies directory-record drift; it is not continuous monitoring and does not replace event collection from domain controllers.
+- `--event-log` performs bounded offline correlation over the files supplied for that run. It is not a SIEM, does not maintain a live event cursor, and cannot establish that an unobserved event never occurred.
+- `--posture-file` trusts the provenance and collection time of the supplied export. A missing value is reported as a coverage gap; a present value should still be validated against resultant policy on every relevant domain controller.
+- The Tier-0 graph contains only relationships evidenced by collected LDAP data and component analyzers. No path means “not observed in this data set,” not proof that no attack path exists.
 - The application does not rotate credentials, remediate findings, modify GPOs, or change Active Directory configuration.
 
 ## Testing
@@ -766,6 +864,7 @@ The repository includes tests for:
 - Secure atomic files, checkpoint traversal, and symbolic-link resistance
 - CLI validation and launcher `.env` parsing
 - Risk scoring, compliance mapping, and analysis deduplication
+- Modern Packages A/B/C: identity hardening, control-plane graphing, event/posture correlation, snapshot deltas, confidence scoring, and OpenGraph export
 - Performance controls and representative analyzer edge cases
 
 ## Project Structure
@@ -804,7 +903,7 @@ Main areas:
 - `reporting/` generates the offline HTML application, English/Turkish presentation layer, compliance views, dashboard, purple-team guidance, and integration exports.
 - `tests/` covers the orchestration boundaries as well as individual analyzers and security regressions.
 
-Runtime dependencies are intentionally small: `ldap3` provides LDAP protocol support and `pycryptodome` supports cryptographic parsing/decryption needed by specific analyses. Report UI assets are vendored for offline use; no CDN is required when opening the default report.
+Runtime dependencies are intentionally small: `ldap3` provides LDAP protocol support and `pycryptodome` supports cryptographic parsing/decryption needed by specific analyses. Native EVTX import is optional and requires `python-evtx`; JSON/JSONL/XML event correlation works without it. Report UI assets are vendored for offline use; no CDN is required when opening the default report.
 
 ## License
 

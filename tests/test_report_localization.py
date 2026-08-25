@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
 from reporting.html_report import HTMLReportGenerator
+from analysis.confidence_scorer import ConfidenceScorer
 from reporting.compliance_reporter import ComplianceReporter
 from reporting.localization import (
     localize_export_payload,
@@ -28,7 +31,11 @@ def _sample_risk() -> dict:
     }
 
 
-def _render(language: str, compliance_data: dict | None = None) -> str:
+def _render(
+    language: str,
+    compliance_data: dict | None = None,
+    risks: list[dict] | None = None,
+) -> str:
     return HTMLReportGenerator(language=language)._generate_html(
         users=[{
             "sAMAccountName": "svc_backup",
@@ -39,7 +46,7 @@ def _render(language: str, compliance_data: dict | None = None) -> str:
         computers=[],
         groups=[],
         gpos=[],
-        risks=[_sample_risk()],
+        risks=risks or [_sample_risk()],
         misconfig_findings=[],
         domain_score=28.0,
         executive_summary={"summary": "English summary", "top_critical_risks": []},
@@ -112,7 +119,10 @@ def test_turkish_report_localizes_compliance_views():
     assert "Genel Uyumluluk Puanı" in report
     assert "Kullanıcı Parolasının Süresiz Olması" in report
     assert "NIST Siber Güvenlik Çerçevesi" in report
-    assert "Protect" not in report
+    # NIST CSF function label must be Turkish; keep "Protected Users" (AD group) intact.
+    assert "Koru" in report
+    assert re.search(r">\s*Protect\s*<", report) is None
+    assert "Protect -" not in report
 
 
 def test_html_localization_does_not_modify_bundled_vendor_javascript():
@@ -125,3 +135,31 @@ def test_html_localization_does_not_modify_bundled_vendor_javascript():
 
     assert 'const label="Title"' in localized
     assert "<p>Başlık</p>" in localized
+
+
+def test_confidence_and_evidence_chain_are_bilingual():
+    risk = {
+        "type": "event_dcsync_activity",
+        "title": "DCSync activity observed in event logs",
+        "description": "Matching replication events were observed.",
+        "affected_object": "DC1",
+        "severity": "critical",
+        "evidence": {"event_ids": [4662], "event_count": 2},
+    }
+    ConfidenceScorer().enrich(risk)
+
+    english = _render("en", risks=[risk])
+    turkish = _render("tr", risks=[risk])
+    localized = localize_export_payload({"risks": [risk]}, "tr")["risks"][0]
+
+    assert "Confidence: High (99.0%)" in english
+    assert "Observed security telemetry" in english
+    assert "Güven Düzeyi: Yüksek (99.0%)" in turkish
+    assert "Gözlemlenen güvenlik telemetrisi" in turkish
+    assert "Eşleşen bir Windows güvenlik olayı gözlemlendi" in turkish
+    assert "Observed security telemetry" not in turkish
+    assert localized["confidence"]["basis"] == "Gözlemlenen güvenlik telemetrisi"
+    assert localized["confidence"]["level"] == "high"
+    assert localized["confidence"]["level_label"] == "Yüksek"
+    assert localized["evidence_chain"][0]["source"] == "directory_object"
+    assert localized["evidence_chain"][0]["source_label"] == "Dizin nesnesi"

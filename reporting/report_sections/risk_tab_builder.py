@@ -247,7 +247,7 @@ class RiskTabBuilderMixin:
         """
         domain_admin_tab = f"""
         <div id="domain-admin-takeover" class="tab-pane" role="tabpanel" aria-labelledby="domain-admin-takeover-tab">
-            {self._generate_domain_admin_takeover_section(domain_admin_takeover)}
+            {self._generate_domain_admin_takeover_section(domain_admin_takeover, domain=domain, dc_ip=dc_ip)}
         </div>
         """
         return f"""

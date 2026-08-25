@@ -183,6 +183,65 @@ RISK_TYPE_TITLES_TR = {
     "sccm_management_point": "SCCM Yönetim Noktası",
     "windows_laps_not_deployed": "Windows LAPS Dağıtılmamış",
     "windows_laps_plaintext": "Windows LAPS Parolası Düz Metin Olarak Saklanıyor",
+    "auth_policy_not_deployed": "Kimlik Doğrulama İlkeleri Dağıtılmamış",
+    "auth_policy_audit_only": "Kimlik Doğrulama İlkesi Yalnızca Denetim Modunda",
+    "auth_policy_broken_assignment": "Bozuk Kimlik Doğrulama İlkesi Ataması",
+    "auth_policy_excessive_tgt_lifetime": "Aşırı Uzun Kimlik Doğrulama İlkesi TGT Süresi",
+    "auth_policy_privileged_unprotected": "İlke ile Korunmayan Ayrıcalıklı Hesap",
+    "key_credential_malformed": "Hatalı Anahtar Kimlik Bilgisi",
+    "key_credential_anomaly": "Şüpheli Anahtar Kimlik Bilgisi Meta Verisi",
+    "key_credential_privileged": "Ayrıcalıklı Hesapta Anahtar Kimlik Bilgisi",
+    "key_credential_duplicate_device": "Birden Fazla Hesapta Yinelenen Anahtar Aygıt Kimliği",
+    "windows_laps_encryption_gap": "Windows LAPS Şifreleme Kapsamı Eksikliği",
+    "windows_laps_dsrm_not_backed_up": "Windows LAPS DSRM Parolası Yedeklenmiyor",
+    "windows_laps_history_disabled": "Windows LAPS Şifreli Parola Geçmişi Devre Dışı",
+    "windows_laps_broad_acl": "Windows LAPS Nesnelerinde Geniş ACL Yetkisi",
+    "certificate_weak_explicit_mapping": "Zayıf Açık Sertifika Eşlemesi",
+    "certificate_sid_extension_disabled": "Sertifika SID Güvenlik Uzantısı Devre Dışı",
+    "kerberos_rc4_only": "AES Desteklemeyen Kerberos Hesabı veya Güveni",
+    "kerberos_aes_readiness_unknown": "Kerberos AES Hazırlığı Doğrulanamadı",
+    "adminsdholder_dangerous_ace": "AdminSDHolder Üzerinde Tehlikeli ACE",
+    "adminsdholder_acl_drift": "AdminSDHolder ACL Sapması",
+    "adminsdholder_orphaned_admincount": "Sahipsiz adminCount İşareti",
+    "adminsdholder_inheritance_enabled": "Korumalı Nesnede ACL Devralması Etkin",
+    "gmsa_broad_password_reader": "Geniş Kapsamlı gMSA Parola Okuyucusu",
+    "gmsa_privileged_reader_path": "Ayrıcalıklı gMSA Parolasına Erişim Yolu",
+    "gmsa_excessive_effective_readers": "Aşırı Sayıda Etkin gMSA Parola Okuyucusu",
+    "adcs_control_plane_acl": "AD CS Kontrol Düzlemi ACL Riski",
+    "adcs_ntauth_acl": "NTAuthCertificates ACL Riski",
+    "trust_selective_auth_disabled": "Güven İlişkisinde Seçmeli Kimlik Doğrulama Kapalı",
+    "trust_sid_filtering_weak": "Güven İlişkisinde Zayıf SID Filtreleme",
+    "trust_tgt_delegation_enabled": "Güven İlişkisinde TGT Yetkilendirmesi Etkin",
+    "trust_rc4_dependency": "Güven İlişkisinde RC4 Bağımlılığı",
+    "trust_stale_configuration": "Eski Güven İlişkisi Yapılandırması",
+    "ad_dns_broad_zone_acl": "AD DNS Bölgesinde Geniş ACL Yetkisi",
+    "ad_dns_high_risk_node": "Yüksek Riskli AD DNS Kaydı",
+    "ad_dns_stale_delegation": "Atıl AD DNS Yetkilendirmesi",
+    "hybrid_cloud_kerberos_account": "Hibrit Cloud Kerberos Hesabı Riski",
+    "hybrid_cloud_kerberos_stale_key": "Eski Cloud Kerberos Anahtarı",
+    "hybrid_seamless_sso_stale_key": "Eski Seamless SSO Anahtarı",
+    "hybrid_adfs_dkm_broad_acl": "ADFS DKM Üzerinde Geniş ACL Yetkisi",
+    "hybrid_entra_connect_excessive_rights": "Entra Connect Üzerinde Aşırı Çoğaltma Yetkisi",
+    "attack_graph_tier0_path": "Tier-0 Saldırı Grafiği Yolu",
+    "attack_graph_chokepoint": "Saldırı Grafiği Darboğazı",
+    "event_kerberos_rc4_observed": "Olay Kayıtlarında Kerberos RC4 Kullanımı",
+    "event_kerberoasting_burst": "Kerberoasting Benzeri Bilet İsteği Yoğunluğu",
+    "event_asrep_activity": "Ön Kimlik Doğrulamasız AS-REP Etkinliği",
+    "event_dcsync_activity": "Olay Kayıtlarında DCSync Etkinliği",
+    "event_sensitive_directory_change": "Hassas Dizin Özniteliği Değişikliği",
+    "event_certificate_mapping_failure": "Güçlü Sertifika Eşleme Hatası",
+    "event_suspicious_certificate_issuance": "Şüpheli Sertifika Verilmesi",
+    "posture_ldap_signing_weak": "Doğrulanmış Zayıf LDAP İmzalama Duruşu",
+    "posture_channel_binding_weak": "Doğrulanmış Zayıf LDAP Kanal Bağlama Duruşu",
+    "posture_ntlm_restriction_weak": "Doğrulanmış Zayıf NTLM Kısıtlaması",
+    "posture_smb_signing_weak": "Doğrulanmış Zayıf SMB İmzalama Duruşu",
+    "posture_kerberos_rc4_allowed": "Etki Alanı Denetleyicisinde RC4 Kullanımına İzin Veriliyor",
+    "posture_certificate_mapping_weak": "Zayıf Schannel Sertifika Eşleme Yöntemleri Etkin",
+    "posture_evidence_incomplete": "Eksik DC/GPO Duruş Kanıtı",
+    "snapshot_new_critical_risk": "Temel Çizgiden Sonra Yeni Yüksek Etkili Risk",
+    "snapshot_privilege_change": "Temel Çizgiden Sonra Ayrıcalık Değişikliği",
+    "snapshot_security_control_change": "Temel Çizgiden Sonra Güvenlik Denetimi Değişikliği",
+    "snapshot_attack_edge_added": "Temel Çizgiden Sonra Yeni Saldırı Grafiği Kenarı",
 }
 
 
@@ -330,6 +389,9 @@ def _localize_finding(finding: dict[str, Any], finding_kind: str = "risk") -> di
             localized[key] = narrative["impact"]
     if isinstance(localized.get("exploitability"), dict):
         localized["exploitability"] = _localize_structure(localized["exploitability"])
+    for key in ("confidence", "evidence_chain"):
+        if key in localized:
+            localized[key] = _localize_structure(localized[key])
     return localized
 
 
@@ -384,6 +446,30 @@ TEXT_TRANSLATIONS_TR = {
     "Type": "Tür", "Type:": "Tür:", "Name": "Ad", "Title": "Başlık",
     "Description": "Açıklama", "Description:": "Açıklama:", "Status": "Durum",
     "Score": "Puan", "Risk Score": "Risk Puanı", "Risk Count": "Risk Sayısı",
+    "Confidence": "Güven Düzeyi", "Confidence:": "Güven Düzeyi:",
+    "Confidence Score": "Güven Puanı", "Confidence Score:": "Güven Puanı:",
+    "Evidence Chain": "Kanıt Zinciri", "Evidence source": "Kanıt kaynağı",
+    "Evidence strength": "Kanıt gücü", "Basis": "Dayanak", "Basis:": "Dayanak:",
+    "Event log": "Olay günlüğü", "LDAP security descriptor": "LDAP güvenlik tanımlayıcısı",
+    "LDAP attribute": "LDAP özniteliği", "Analyzer rule": "Analiz kuralı",
+    "Runtime coverage gap": "Çalışma zamanı kapsam boşluğu",
+    "Directory object": "Dizin nesnesi", "Analyzer conclusion": "Analiz sonucu",
+    "Direct": "Doğrudan", "Inferred": "Çıkarımsal", "Coverage gap": "Kapsam boşluğu",
+    "Context": "Bağlam", "Derived": "Türetilmiş",
+    "Observed security telemetry": "Gözlemlenen güvenlik telemetrisi",
+    "Parsed directory security descriptor": "Ayrıştırılmış dizin güvenlik tanımlayıcısı",
+    "Exact LDAP attribute or graph evidence": "Kesin LDAP özniteliği veya grafik kanıtı",
+    "Configuration heuristic": "Yapılandırma sezgisi",
+    "Static evidence; runtime validation required": "Statik kanıt; çalışma zamanı doğrulaması gerekli",
+    "Heuristic or coverage-gap finding": "Sezgisel veya kapsam boşluğu bulgusu",
+    "Version/configuration heuristic; no active probe": "Sürüm/yapılandırma sezgisi; etkin doğrulama yok",
+    "A matching Windows security event was observed": "Eşleşen bir Windows güvenlik olayı gözlemlendi",
+    "An access-control entry directly supports the finding": "Bir erişim denetimi girdisi bulguyu doğrudan destekliyor",
+    "Directory attributes or graph relationships support the finding": "Dizin öznitelikleri veya grafik ilişkileri bulguyu destekliyor",
+    "The analyzer inferred the condition from collected configuration": "Analiz, koşulu toplanan yapılandırmadan çıkardı",
+    "Event or endpoint evidence is required for confirmation": "Doğrulama için olay veya uç nokta kanıtı gerekiyor",
+    "The affected directory object was identified": "Etkilenen dizin nesnesi belirlendi",
+    "The rule mapped the evidence to a security finding": "Kural, kanıtı bir güvenlik bulgusuyla eşleştirdi",
     "Risk Count:": "Risk Sayısı:", "Total Risk Score": "Toplam Risk Puanı",
     "Number of Risks": "Risk Sayısı", "Total risks:": "Toplam risk:",
     "Affected": "Etkilenen", "Affected:": "Etkilenen:",
@@ -473,6 +559,25 @@ TEXT_TRANSLATIONS_TR = {
     "How to break the path": "Yol nasıl kesilir", "No named object": "Adlandırılmış nesne yok",
     "DA equivalent": "Etki alanı yöneticisine eşdeğer", "Enables DA targeting": "Etki alanı yöneticisinin hedeflenmesini sağlar",
     "open": "açık", "not observed": "gözlemlenmedi",
+    "PoC roadmap": "PoC yol haritası", "Expected evidence:": "Beklenen kanıt:",
+    "Usable commands": "Kullanılabilir komutlar",
+    "Finding verification commands": "Bulgu doğrulama komutları",
+    "Authorized assessment commands": "Yetkili değerlendirme komutları",
+    "Assessment tools:": "Değerlendirme araçları:",
+    "Finding-specific proof path from this scan to Domain Admin (or equivalent).":
+        "Bu taramadan Etki Alanı Yöneticisine (veya eşdeğerine) giden bulguya özgü kanıt yolu.",
+    "Stop after evidence is recorded; do not persist privileged access.":
+        "Kanıt kaydedildikten sonra durun; ayrıcalıklı erişimi sürdürmeyin.",
+    "Placeholders are filled from this scan when possible":
+        "Yer tutucular mümkün olduğunda bu taramadan doldurulur",
+    "Use only in authorized engagements.": "Yalnızca yetkili çalışmalar kapsamında kullanın.",
+    "Each catalog entry still includes the PoC roadmap":
+        "Her katalog kaydı yine de PoC yol haritasını",
+    "and command templates.": "ve komut şablonlarını içerir.",
+    "includes a detailed PoC roadmap and the verification and authorized-assessment commands":
+        "ayrıntılı bir PoC yol haritası ile doğrulama ve yetkili değerlendirme komutlarını içerir",
+    "a tester would use. Commands are templates for authorized engagements only.":
+        "Test uzmanının kullanacağı komutlar yalnızca yetkili çalışmalar için şablondur.",
     "ACL Security Analysis": "ACL Güvenlik Analizi", "Legacy Operating Systems": "Eski İşletim Sistemleri",
     "Privilege Escalation Paths": "Yetki Yükseltme Yolları", "Escalation Path": "Yetki Yükseltme Yolu",
     "Misconfiguration Checklist": "Yanlış Yapılandırma Kontrol Listesi",
@@ -483,6 +588,21 @@ TEXT_TRANSLATIONS_TR = {
     "LDAP Directory Exposure": "LDAP Dizin Açıklığı", "Hidden Privilege & Primary Group": "Gizli Ayrıcalık ve Birincil Grup",
     "Hybrid Identity (Entra / ADFS)": "Hibrit Kimlik (Entra / ADFS)", "RODC Password Replication": "RODC Parola Çoğaltması",
     "Delegated MSA / BadSuccessor": "Yetkilendirilmiş MSA / BadSuccessor", "SCCM Attack Surface": "SCCM Saldırı Yüzeyi",
+    "Authentication Policy and Silo": "Kimlik Doğrulama İlkesi ve Silosu",
+    "KeyCredentialLink forensics": "KeyCredentialLink Adli Analizi",
+    "Windows LAPS v2": "Windows LAPS v2",
+    "Strong certificate mapping": "Güçlü Sertifika Eşlemesi",
+    "Kerberos RC4 retirement readiness": "Kerberos RC4 Kullanımdan Kaldırma Hazırlığı",
+    "AdminSDHolder / SDProp drift": "AdminSDHolder / SDProp Sapması",
+    "gMSA effective password-reader graph": "gMSA Etkin Parola Okuyucu Grafiği",
+    "AD CS control-plane ACL graph": "AD CS Kontrol Düzlemi ACL Grafiği",
+    "Trust Security v2": "Güven İlişkisi Güvenliği v2",
+    "AD-integrated DNS security": "AD ile Bütünleşik DNS Güvenliği",
+    "Hybrid identity control plane": "Hibrit Kimlik Kontrol Düzlemi",
+    "Tier-0 attack graph v2": "Tier-0 Saldırı Grafiği v2",
+    "Offline event correlation": "Çevrimdışı Olay Korelasyonu",
+    "DC/GPO posture evidence": "DC/GPO Duruş Kanıtı",
+    "Security snapshot delta": "Güvenlik Anlık Görüntü Farkı",
     "Password Spray Risk": "Parola Püskürtme Riski", "Golden gMSA Exposure": "Golden gMSA Açıklığı",
     "Honeypot & Deception": "Aldatma Sistemleri", "Stale & Dormant Objects": "Atıl Nesneler",
     "Fine-Grained Password Policy Overrides": "Ayrıntılı Parola İlkesi Geçersiz Kılmaları",
@@ -658,6 +778,9 @@ def _translate_simple_text(value: str) -> str:
         (r"^Final Score:\s*(.+)$", r"Nihai Puan: \1"),
         (r"^Score:\s*(.+)$", r"Puan: \1"),
         (r"^Domain score:\s*(.+)$", r"Etki alanı puanı: \1"),
+        (r"^Confidence:\s*(.+)$", r"Güven Düzeyi: \1"),
+        (r"^Confidence Score:\s*(.+)$", r"Güven Puanı: \1"),
+        (r"^Basis:\s*(.+)$", r"Dayanak: \1"),
         (r"^(\d+) risks?$", r"\1 risk"),
         (r"^(\d+) findings?$", r"\1 bulgu"),
         (r"^(\d+) instances$", r"\1 örnek"),
@@ -685,7 +808,7 @@ _HUMAN_KEYS = frozenset({
     "article_name", "objective", "prerequisites", "detection", "detection_note",
     "response", "why", "why_da", "action", "starting_access", "issue", "detail",
     "details_str", "business_impact", "risk_explanation", "what_attackers_can_do",
-    "ciso_summary",
+    "ciso_summary", "basis", "claim", "source_label", "strength_label", "level_label",
 })
 
 
@@ -761,71 +884,10 @@ def _human_value_for_key(key: str, value: str) -> str:
     return translated
 
 
-_DA_PATH_NAMES_TR = {
-    "dcsync": "DCSync / Dizin Çoğaltma Hakları",
-    "kerberoasting": "Ayrıcalıklı veya Zayıf Hizmet Hesaplarında Kerberoasting",
-    "asrep": "Ön Kimlik Doğrulaması Kapalı Hesaplarda AS-REP Roasting",
-    "unconstrained_delegation": "Sınırlandırılmamış Kerberos Yetkilendirmesi",
-    "constrained_delegation": "Ayrıcalıklı Hizmete Kısıtlanmış Yetkilendirme / S4U",
-    "rbcd": "Kaynak Tabanlı Kısıtlanmış Yetkilendirme (RBCD)",
-    "shadow_credentials": "Gölge Kimlik Bilgileri (Key Credential Link)",
-    "adcs": "AD CS Şablon / CA Kötüye Kullanımı (ESC1–ESC16)",
-    "gpo_acl": "Etki Alanı Denetleyicileri veya Ayrıcalıklı OU'larda GPO Değişikliği",
-    "gpp_passwords": "GPP / SYSVOL İçinde Saklanan Parolalar",
-    "acl_generic_all": "Ayrıcalıklı Nesnelerde Tehlikeli ACL",
-    "escalation_graph": "Etki Alanı Yöneticilerine Uzanan Zincirleme Yetki Yolu",
-    "ops_groups": "Yerleşik Operatör Grupları",
-    "laps": "Okunabilir LAPS / Windows LAPS Yerel Yönetici Sırları",
-    "machine_quota": "Makine Hesabı Kotası ve Bilgisayar Yazma Yetkisi",
-    "nopac": "Makine Kotasıyla noPac Güvenlik Açığı",
-    "relay_coerce": "Kimlik Doğrulama Zorlaması ve Eksik LDAP/SMB İmzalama",
-    "krbtgt": "Eski KRBTGT Sırrı (Golden Ticket Penceresi)",
-    "gmsa_kds": "Golden gMSA / Okunabilir KDS Kök Anahtarı",
-    "trusts": "Güven SID Geçmişi / SID Filtreleme Riski",
-    "hybrid": "Entra Connect, Seamless SSO veya AD FS Kimliği",
-    "rodc": "RODC Üzerinde Önbelleğe Alınmış Ayrıcalıklı Sırlar",
-    "dmsa": "Yetkilendirilmiş MSA / BadSuccessor Yolu",
-    "sccm": "SCCM Üzerinden Etki Alanı Denetimi",
-    "password_spray": "Ayrıcalıklı Hesaplara Parola Püskürtme Yolu",
-    "hidden_primary_group": "Birincil Grup Üzerinden Gizli Ayrıcalık",
-    "ldap_recon": "Anonim veya Geniş LDAP Dizin Keşfi",
-}
-
-
 def _localize_domain_admin_takeover(data: Any) -> Any:
-    localized = deepcopy(data)
-    if not isinstance(localized, dict):
-        return localized
-    summary = localized.get("summary")
-    if isinstance(summary, dict):
-        count = int(summary.get("open_path_count") or 0)
-        summary["headline"] = f"Bu taramada Etki Alanı Yöneticisine ulaşabilen {count} açık saldırı yolu belirlendi."
-    for collection in ("open_paths", "unobserved_paths"):
-        for path in localized.get(collection) or []:
-            if not isinstance(path, dict):
-                continue
-            path_id = str(path.get("id") or "")
-            path["name"] = _DA_PATH_NAMES_TR.get(path_id, risk_type_label(path_id, "tr"))
-            path["why_da"] = "Bu yol ayrıcalıklı kimliklere, etki alanı sırlarına veya Etki Alanı Yöneticisine eşdeğer denetime ulaşılmasını sağlayabilir."
-            path["starting_access"] = "Taramada gösterilen hesaba, sisteme veya yazma yetkisine erişebilen düşük ayrıcalıklı bir başlangıç oturumu."
-            markers = _technical_markers(str(path.get("detection") or ""))
-            path["detection"] = "İlgili kimlik doğrulama, çoğaltma ve dizin değişikliği olaylarını izleyin."
-            if markers:
-                path["detection"] += f" Teknik göstergeler: {markers}."
-            for index, stage in enumerate(path.get("stages") or [], 1):
-                if isinstance(stage, dict):
-                    stage["title"] = f"{index}. yol aşamasını doğrulayın"
-                    stage["why"] = "Bu aşama, tespit edilen erişimin daha yüksek ayrıcalığa dönüştüğü mantıksal bağlantıyı gösterir."
-                    stage["action"] = "İlgili yetkiyi ve hedef nesneyi inceleyin; gereksiz erişimi kaldırıp sonucu yeniden tarayın."
-            if path.get("break_path"):
-                path["break_path"] = [
-                    "Gereksiz yetkiyi veya yapılandırmayı kaldırın ve en az ayrıcalık ilkesini uygulayın.",
-                    "Etkilenen kimlik bilgilerini yenileyin; ilgili olayları SIEM üzerinde izleyin.",
-                ]
-            for evidence in path.get("evidence_summaries") or []:
-                if isinstance(evidence, dict):
-                    evidence["title"] = risk_type_label(evidence.get("type"), "tr")
-    return localized
+    from reporting.domain_admin_takeover_i18n import localize_domain_admin_takeover_tr
+
+    return localize_domain_admin_takeover_tr(data)
 
 
 def _localize_structure(data: Any, parent_key: str = "") -> Any:
@@ -1003,12 +1065,12 @@ def localize_html_document(html: str, language: str = "en") -> str:
                        flags=re.IGNORECASE | re.DOTALL)
     localized = re.sub(
         r"This view is written the way an internal penetration test is scoped:.*?"
-        r"not exploit procedures\.",
+        r"Commands are templates for authorized engagements only\.",
         (
             "Bu görünüm iç sızma testi kapsamına göre hazırlanmıştır. Etki Alanı Yöneticisine "
             "veya eşdeğer denetime dönüşebilecek teknikleri, bu taramadaki kanıtlarla birlikte "
-            "gösterir. Aşamalar kötüye kullanım prosedürlerini değil, değerlendirme ve savunma "
-            "için saldırı mantığını açıklar."
+            "gösterir. Her yol, ayrıntılı bir PoC yol haritası ile doğrulama ve yetkili "
+            "değerlendirme komutlarını içerir. Komutlar yalnızca yetkili çalışmalar için şablondur."
         ),
         localized,
         flags=re.IGNORECASE | re.DOTALL,

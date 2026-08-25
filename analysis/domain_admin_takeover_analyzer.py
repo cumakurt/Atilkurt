@@ -2,10 +2,8 @@
 
 Synthesizes every registered finding into pentest-oriented Domain Admin
 (and Domain Admin-equivalent) paths: why the path works, which scan evidence
-supports it, the logical stages, and how to break it.
-
-This module describes attack *logic* for assessment and defense. It does not
-emit exploit code, payloads, or reproduction procedures.
+supports it, the logical stages, a detailed PoC roadmap, usable commands,
+and how to break it.
 """
 
 from __future__ import annotations
@@ -13,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from analysis.domain_admin_takeover_playbooks import fill_playbook_fields, playbook_for
 from core.constants import MITRETechniques, Severity
 
 logger = logging.getLogger(__name__)
@@ -940,10 +939,16 @@ class DomainAdminTakeoverAnalyzer:
         users: list[dict[str, Any]] | None = None,
         groups: list[dict[str, Any]] | None = None,
         computers: list[dict[str, Any]] | None = None,
+        domain: str | None = None,
+        dc_ip: str | None = None,
     ) -> dict[str, Any]:
         """Return open paths, supporting evidence, and the unobserved technique catalog."""
         del users, groups, computers  # reserved for future object-aware ranking
         risks = list(risks or [])
+        context = {
+            "domain": str(domain or "").strip() or "DOMAIN",
+            "dc_ip": str(dc_ip or "").strip() or "DC_IP",
+        }
         open_paths: list[dict[str, Any]] = []
         observed_ids: set[str] = set()
 
@@ -952,12 +957,12 @@ class DomainAdminTakeoverAnalyzer:
             if not evidence:
                 continue
             observed_ids.add(spec["id"])
-            open_paths.append(self._build_path(spec, evidence, status="open"))
+            open_paths.append(self._build_path(spec, evidence, status="open", **context))
 
         open_paths.sort(key=lambda item: (-SEVERITY_RANK.get(item.get("severity"), 0), item.get("name", "")))
 
         unobserved = [
-            self._build_path(spec, [], status="not_observed")
+            self._build_path(spec, [], status="not_observed", **context)
             for spec in DA_PATH_CATALOG
             if spec["id"] not in observed_ids
         ]
@@ -989,9 +994,20 @@ class DomainAdminTakeoverAnalyzer:
         spec: dict[str, Any],
         evidence: list[dict[str, Any]],
         status: str,
+        domain: str = "DOMAIN",
+        dc_ip: str = "DC_IP",
     ) -> dict[str, Any]:
         severity = self._severity_for(spec, evidence) if evidence else Severity.LOW
         objects = self._evidence_objects(evidence)
+        target = objects[0] if objects else "TARGET"
+        targets = ", ".join(objects[:8]) if objects else "TARGET"
+        playbook = fill_playbook_fields(
+            playbook_for(spec["id"]),
+            target=target,
+            targets=targets,
+            domain=domain,
+            dc_ip=dc_ip,
+        )
         return {
             "id": spec["id"],
             "name": spec["name"],
@@ -1005,6 +1021,10 @@ class DomainAdminTakeoverAnalyzer:
             "stages": list(spec.get("stages") or []),
             "break_path": list(spec.get("break_path") or []),
             "detection": spec.get("detection") or "",
+            "poc_roadmap": playbook.get("poc_roadmap") or [],
+            "verify_commands": playbook.get("verify_commands") or [],
+            "assessment_commands": playbook.get("assessment_commands") or [],
+            "tools": playbook.get("tools") or [],
             "evidence_count": len(evidence),
             "evidence_objects": objects[:12],
             "evidence_types": sorted({self._risk_type(item) for item in evidence if self._risk_type(item)}),

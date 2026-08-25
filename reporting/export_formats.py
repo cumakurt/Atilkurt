@@ -173,6 +173,16 @@ class ExportFormats:
         logger.info(f"SIEM JSON export saved to {output_file}")
 
     @staticmethod
+    def export_attack_graph(graph: dict[str, Any], output_file: str) -> None:
+        """Export BloodHound OpenGraph-shaped evidence graph JSON."""
+        payload = graph.get("opengraph") if isinstance(graph, dict) else None
+        if not isinstance(payload, dict):
+            payload = {"graph": {"nodes": [], "edges": []}}
+        with atomic_text_writer(output_file, encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, indent=2, default=str, ensure_ascii=False)
+        logger.info("Attack graph export saved to %s", output_file)
+
+    @staticmethod
     def export_cef(
         risks: list[dict[str, Any]],
         output_file: str,

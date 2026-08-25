@@ -65,6 +65,21 @@ CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "rodc_attack_surface_risks",
     "delegated_msa_risks",
     "sccm_attack_surface_risks",
+    "authentication_policy_risks",
+    "key_credential_forensic_risks",
+    "windows_laps_v2_risks",
+    "certificate_mapping_risks",
+    "kerberos_rc4_readiness_risks",
+    "adminsdholder_drift_risks",
+    "gmsa_reader_graph_risks",
+    "adcs_control_plane_risks",
+    "trust_security_v2_risks",
+    "ad_dns_security_risks",
+    "hybrid_identity_v2_risks",
+    "attack_graph_v2_risks",
+    "event_correlation_risks",
+    "posture_evidence_risks",
+    "snapshot_delta_risks",
 )
 
 # Mapping: export_data key -> analysis key (for JSON export).
@@ -122,6 +137,30 @@ EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
     "rodc_attack_surface_risks": "rodc_attack_surface_risks",
     "delegated_msa_risks": "delegated_msa_risks",
     "sccm_attack_surface_risks": "sccm_attack_surface_risks",
+    "authentication_policy_risks": "authentication_policy_risks",
+    "key_credential_forensic_risks": "key_credential_forensic_risks",
+    "windows_laps_v2_risks": "windows_laps_v2_risks",
+    "certificate_mapping_risks": "certificate_mapping_risks",
+    "kerberos_rc4_readiness_risks": "kerberos_rc4_readiness_risks",
+    "adminsdholder_drift_risks": "adminsdholder_drift_risks",
+    "gmsa_reader_graph_risks": "gmsa_reader_graph_risks",
+    "gmsa_reader_graph": "gmsa_reader_graph",
+    "adcs_control_plane_risks": "adcs_control_plane_risks",
+    "adcs_control_plane_graph": "adcs_control_plane_graph",
+    "trust_security_v2_risks": "trust_security_v2_risks",
+    "trust_security_v2_graph": "trust_security_v2_graph",
+    "ad_dns_security_risks": "ad_dns_security_risks",
+    "ad_dns_security_graph": "ad_dns_security_graph",
+    "hybrid_identity_v2_risks": "hybrid_identity_v2_risks",
+    "hybrid_identity_v2_graph": "hybrid_identity_v2_graph",
+    "attack_graph_v2_risks": "attack_graph_v2_risks",
+    "attack_graph_v2": "attack_graph_v2",
+    "event_correlation_risks": "event_correlation_risks",
+    "event_correlation": "event_correlation",
+    "posture_evidence_risks": "posture_evidence_risks",
+    "posture_evidence": "posture_evidence",
+    "snapshot_delta_risks": "snapshot_delta_risks",
+    "snapshot_delta": "snapshot_delta",
     "domain_admin_takeover": "domain_admin_takeover",
 }
 
@@ -157,7 +196,12 @@ def deduplicate_risks(risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_export_analysis_slice(analysis: dict[str, Any]) -> dict[str, Any]:
     """Build the analysis portion of JSON export from analysis dict."""
     out: dict[str, Any] = {}
-    dict_only_keys = {"legacy_os_data", "acl_security_data", "tier_data", "domain_admin_takeover"}
+    dict_only_keys = {
+        "legacy_os_data", "acl_security_data", "tier_data", "domain_admin_takeover",
+        "gmsa_reader_graph", "adcs_control_plane_graph", "trust_security_v2_graph",
+        "ad_dns_security_graph", "hybrid_identity_v2_graph", "attack_graph_v2",
+        "event_correlation", "posture_evidence", "snapshot_delta",
+    }
     for export_key, analysis_key in EXPORT_KEY_TO_ANALYSIS_KEY.items():
         default: Any = None if export_key in dict_only_keys else []
         out[export_key] = analysis.get(analysis_key, default)
@@ -463,6 +507,90 @@ def _run_sccm_attack_surface(ldap_conn: Any, data: dict[str, Any]) -> dict[str, 
     return {"sccm_attack_surface_risks": analyzer.analyze()}
 
 
+def _run_authentication_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.authentication_policy_analyzer import AuthenticationPolicyAnalyzer
+    analyzer = AuthenticationPolicyAnalyzer(ldap_conn)
+    return {"authentication_policy_risks": analyzer.analyze(data["users"])}
+
+
+def _run_key_credential_forensics(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.key_credential_analyzer import KeyCredentialAnalyzer
+    analyzer = KeyCredentialAnalyzer(ldap_conn)
+    return {"key_credential_forensic_risks": analyzer.analyze()}
+
+
+def _run_windows_laps_v2(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.laps_v2_analyzer import WindowsLAPSV2Analyzer
+    analyzer = WindowsLAPSV2Analyzer(ldap_conn)
+    return {"windows_laps_v2_risks": analyzer.analyze(data["computers"])}
+
+
+def _run_certificate_mapping(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.certificate_mapping_analyzer import CertificateMappingAnalyzer
+    analyzer = CertificateMappingAnalyzer(ldap_conn)
+    return {"certificate_mapping_risks": analyzer.analyze()}
+
+
+def _run_kerberos_rc4_readiness(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.kerberos_rc4_analyzer import KerberosRC4ReadinessAnalyzer
+    analyzer = KerberosRC4ReadinessAnalyzer(ldap_conn)
+    return {
+        "kerberos_rc4_readiness_risks": analyzer.analyze(
+            data["users"], data["computers"]
+        )
+    }
+
+
+def _run_adminsdholder_drift(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.adminsdholder_analyzer import AdminSDHolderAnalyzer
+    analyzer = AdminSDHolderAnalyzer(ldap_conn)
+    return {
+        "adminsdholder_drift_risks": analyzer.analyze(
+            data["users"], data["groups"]
+        )
+    }
+
+
+def _run_gmsa_reader_graph(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.gmsa_reader_graph_analyzer import GMSAReaderGraphAnalyzer
+    result = GMSAReaderGraphAnalyzer(ldap_conn).analyze(
+        data["users"], data["groups"], data["computers"]
+    )
+    return {"gmsa_reader_graph_risks": result["risks"], "gmsa_reader_graph": result["graph"]}
+
+
+def _run_adcs_control_plane(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.adcs_control_plane_analyzer import ADCSControlPlaneAnalyzer
+    result = ADCSControlPlaneAnalyzer(ldap_conn).analyze(data["users"], data["groups"])
+    return {"adcs_control_plane_risks": result["risks"], "adcs_control_plane_graph": result["graph"]}
+
+
+def _run_trust_security_v2(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.trust_security_v2_analyzer import TrustSecurityV2Analyzer
+    result = TrustSecurityV2Analyzer(ldap_conn).analyze()
+    return {"trust_security_v2_risks": result["risks"], "trust_security_v2_graph": result["graph"]}
+
+
+def _run_ad_dns_security(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.ad_dns_security_analyzer import ADDNSSecurityAnalyzer
+    result = ADDNSSecurityAnalyzer(ldap_conn).analyze()
+    return {"ad_dns_security_risks": result["risks"], "ad_dns_security_graph": result["graph"]}
+
+
+def _run_hybrid_identity_v2(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.hybrid_identity_v2_analyzer import HybridIdentityV2Analyzer
+    result = HybridIdentityV2Analyzer(ldap_conn).analyze(data["users"], data["computers"])
+    return {"hybrid_identity_v2_risks": result["risks"], "hybrid_identity_v2_graph": result["graph"]}
+
+
+def _run_attack_graph_v2(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from analysis.attack_graph_v2_analyzer import AttackGraphV2Analyzer
+    result = AttackGraphV2Analyzer().analyze(
+        data["users"], data["groups"], data["computers"], data.get("_analysis_results") or {}
+    )
+    return {"attack_graph_v2_risks": result["risks"], "attack_graph_v2": result["graph"]}
+
+
 # (key, description, runner) for each analysis step.
 ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dict[str, Any]]]] = [
     ("user_risks", "User risk analysis", _run_user_risks),
@@ -517,6 +645,18 @@ ANALYSIS_STEP_REGISTRY: list[tuple[str, str, Callable[[Any, dict[str, Any]], dic
     ("rodc_attack_surface", "RODC password-replication attack surface", _run_rodc_attack_surface),
     ("delegated_msa", "Delegated MSA / BadSuccessor analysis", _run_delegated_msa),
     ("sccm_attack_surface", "SCCM System Management attack surface", _run_sccm_attack_surface),
+    ("authentication_policy", "Authentication Policy and Silo analysis", _run_authentication_policy),
+    ("key_credential_forensics", "KeyCredentialLink forensic analysis", _run_key_credential_forensics),
+    ("windows_laps_v2", "Windows LAPS encryption and recovery analysis", _run_windows_laps_v2),
+    ("certificate_mapping", "Strong certificate mapping analysis", _run_certificate_mapping),
+    ("kerberos_rc4_readiness", "Kerberos RC4 retirement readiness analysis", _run_kerberos_rc4_readiness),
+    ("adminsdholder_drift", "AdminSDHolder and SDProp drift analysis", _run_adminsdholder_drift),
+    ("gmsa_reader_graph", "gMSA effective password-reader graph", _run_gmsa_reader_graph),
+    ("adcs_control_plane", "AD CS control-plane ACL graph", _run_adcs_control_plane),
+    ("trust_security_v2", "Trust Security v2 analysis", _run_trust_security_v2),
+    ("ad_dns_security", "AD-integrated DNS security analysis", _run_ad_dns_security),
+    ("hybrid_identity_v2", "Hybrid identity control-plane analysis", _run_hybrid_identity_v2),
+    ("attack_graph_v2", "Evidence-based Tier-0 attack graph", _run_attack_graph_v2),
 ]
 
 # Backward-compatible view used by existing tests and external imports.
@@ -592,6 +732,18 @@ ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
     "rodc_attack_surface": {"rodc_attack_surface_risks": []},
     "delegated_msa": {"delegated_msa_risks": []},
     "sccm_attack_surface": {"sccm_attack_surface_risks": []},
+    "authentication_policy": {"authentication_policy_risks": []},
+    "key_credential_forensics": {"key_credential_forensic_risks": []},
+    "windows_laps_v2": {"windows_laps_v2_risks": []},
+    "certificate_mapping": {"certificate_mapping_risks": []},
+    "kerberos_rc4_readiness": {"kerberos_rc4_readiness_risks": []},
+    "adminsdholder_drift": {"adminsdholder_drift_risks": []},
+    "gmsa_reader_graph": {"gmsa_reader_graph_risks": [], "gmsa_reader_graph": {}},
+    "adcs_control_plane": {"adcs_control_plane_risks": [], "adcs_control_plane_graph": {}},
+    "trust_security_v2": {"trust_security_v2_risks": [], "trust_security_v2_graph": {}},
+    "ad_dns_security": {"ad_dns_security_risks": [], "ad_dns_security_graph": {}},
+    "hybrid_identity_v2": {"hybrid_identity_v2_risks": [], "hybrid_identity_v2_graph": {}},
+    "attack_graph_v2": {"attack_graph_v2_risks": [], "attack_graph_v2": {}},
 }
 
 FAST_PROFILE_EXCLUDED: set[str] = {
@@ -600,6 +752,10 @@ FAST_PROFILE_EXCLUDED: set[str] = {
     "adcs_extended",
     "coercion",
     "replication_metadata",
+    "adminsdholder_drift",
+    "adcs_control_plane",
+    "ad_dns_security",
+    "attack_graph_v2",
 }
 
 
@@ -656,7 +812,9 @@ def run_all_analyses(
             status_callback(description)
         start_time = time.perf_counter()
         try:
-            step_result = runner(ldap_conn, data)
+            step_data = dict(data)
+            step_data["_analysis_results"] = results
+            step_result = runner(ldap_conn, step_data)
         except (KeyboardInterrupt, SystemExit):
             raise
         except (AnalysisError, LDAPSearchError, LDAPConnectionError):

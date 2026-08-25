@@ -10,12 +10,14 @@ from analysis.domain_admin_takeover_analyzer import (
     DA_PATH_CATALOG,
     DomainAdminTakeoverAnalyzer,
 )
+from analysis.domain_admin_takeover_playbooks import DA_PATH_PLAYBOOKS
 from analysis.registry import (
     CONSOLIDATION_RISK_KEYS,
     EXPORT_KEY_TO_ANALYSIS_KEY,
     build_export_analysis_slice,
 )
 from reporting.html_report import HTMLReportGenerator
+from reporting.localization import localize_report_structure
 from reporting.report_sections.domain_admin_section import DomainAdminSectionMixin
 
 
@@ -31,6 +33,10 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
             self.assertTrue(spec.get("starting_access"))
             self.assertTrue(spec.get("stages"))
             self.assertTrue(spec.get("break_path"))
+            self.assertIn(spec["id"], DA_PATH_PLAYBOOKS)
+            playbook = DA_PATH_PLAYBOOKS[spec["id"]]
+            self.assertTrue(playbook.get("poc_roadmap"))
+            self.assertTrue(playbook.get("verify_commands") or playbook.get("assessment_commands"))
 
     def test_dcsync_finding_opens_dcsync_path(self):
         result = DomainAdminTakeoverAnalyzer().analyze(
@@ -41,7 +47,9 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
                     "title": "DCSync rights on helper",
                     "affected_object": "helper",
                 }
-            ]
+            ],
+            domain="contoso.com",
+            dc_ip="10.0.0.5",
         )
         open_ids = [path["id"] for path in result["open_paths"]]
         self.assertEqual(open_ids, ["dcsync"])
@@ -51,6 +59,13 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
         self.assertIn("helper", path["evidence_objects"])
         self.assertEqual(result["summary"]["open_path_count"], 1)
         self.assertEqual(result["summary"]["unobserved_count"], len(DA_PATH_CATALOG) - 1)
+        self.assertGreaterEqual(len(path["poc_roadmap"]), 3)
+        self.assertTrue(path["verify_commands"])
+        self.assertTrue(path["assessment_commands"])
+        joined = "\n".join(item["command"] for item in path["assessment_commands"])
+        self.assertIn("helper", joined)
+        self.assertIn("10.0.0.5", joined)
+        self.assertIn("contoso.com", joined)
 
     def test_empty_risks_leave_catalog_unobserved(self):
         result = DomainAdminTakeoverAnalyzer().analyze([])
@@ -108,14 +123,84 @@ class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):
                     "title": "DCSync rights on helper",
                     "affected_object": "helper",
                 }
-            ]
+            ],
+            domain="contoso.com",
+            dc_ip="10.0.0.5",
         )
-        html = DomainAdminSectionMixin()._generate_domain_admin_takeover_section(takeover)
+        html = DomainAdminSectionMixin()._generate_domain_admin_takeover_section(
+            takeover, domain="contoso.com", dc_ip="10.0.0.5"
+        )
         self.assertIn("Domain Admin takeover map", html)
         self.assertIn("Why this becomes Domain Admin", html)
         self.assertIn("DCSync", html)
         self.assertIn("helper", html)
         self.assertIn("How to break the path", html)
+        self.assertIn("PoC roadmap", html)
+        self.assertIn("Usable commands", html)
+        self.assertIn("Finding verification commands", html)
+        self.assertIn("Authorized assessment commands", html)
+        self.assertIn("secretsdump.py", html)
+        self.assertIn("10.0.0.5", html)
+
+    def test_turkish_localization_keeps_commands_and_details_poc(self):
+        takeover = DomainAdminTakeoverAnalyzer().analyze(
+            [
+                {
+                    "type": "dcsync_rights",
+                    "severity": "critical",
+                    "title": "DCSync rights on helper",
+                    "affected_object": "helper",
+                }
+            ],
+            domain="contoso.com",
+            dc_ip="10.0.0.5",
+        )
+        localized = localize_report_structure(
+            takeover, "tr", structure_kind="domain_admin_takeover"
+        )
+        path = localized["open_paths"][0]
+        english = takeover["open_paths"][0]
+        self.assertIn("DCSync", path["name"])
+        self.assertIn("Dizin", path["name"])
+        self.assertNotEqual(path["poc_roadmap"][0]["step"], english["poc_roadmap"][0]["step"])
+        self.assertEqual(
+            path["assessment_commands"][0]["command"],
+            english["assessment_commands"][0]["command"],
+        )
+        self.assertIn("helper", path["assessment_commands"][0]["command"])
+        html = DomainAdminSectionMixin()._generate_domain_admin_takeover_section(
+            localized, domain="contoso.com", dc_ip="10.0.0.5"
+        )
+        self.assertIn("PoC roadmap", html)
+        report = HTMLReportGenerator(language="tr")._generate_html(
+            users=[{"sAMAccountName": "helper", "memberOf": [], "distinguishedName": "CN=helper,DC=contoso,DC=com"}],
+            computers=[],
+            groups=[],
+            gpos=[],
+            risks=[{
+                "type": "dcsync_rights",
+                "title": "DCSync rights on helper",
+                "description": "Replication rights grant hash retrieval.",
+                "affected_object": "helper",
+                "object_type": "user",
+                "severity": "critical",
+                "impact": "Domain Admin equivalent",
+                "attack_scenario": "Request KRBTGT hashes",
+                "mitigation": "Remove the replication ACE",
+            }],
+            misconfig_findings=[],
+            domain_score=40.0,
+            executive_summary={"top_critical_risks": [], "summary": "Test"},
+            domain="contoso.com",
+            dc_ip="10.0.0.5",
+            domain_admin_takeover=takeover,
+            inline_assets=False,
+        )
+        self.assertIn("PoC yol haritası", report)
+        self.assertIn("Kullanılabilir komutlar", report)
+        self.assertIn("secretsdump.py", report)
+        self.assertIn("helper", report)
+        self.assertIn("Dizin Çoğaltma", report)
 
     def test_full_report_includes_takeover_tab(self):
         risks = [

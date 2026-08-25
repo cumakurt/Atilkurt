@@ -14,6 +14,7 @@ import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from core.ldap_connection import LDAPConnection
@@ -214,6 +215,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--baseline',
                         help='Baseline JSON file for drift comparison '
                              '(from previous --json-export)')
+    parser.add_argument(
+        '--event-log', action='append', default=[], metavar='FILE',
+        help='Offline Windows event evidence (.json, .jsonl, .xml, or optional .evtx); repeatable',
+    )
+    parser.add_argument(
+        '--posture-file', action='append', default=[], metavar='FILE',
+        help='Offline DC/GPO posture evidence (.json, .xml, .inf, or text); repeatable',
+    )
+    parser.add_argument(
+        '--attack-graph-export',
+        help='Export the Tier-0 evidence graph in BloodHound OpenGraph-shaped JSON',
+    )
 
     # Logging
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -238,6 +251,13 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error("--page-size must be between 1 and 5000")
     if args.max_workers > 64:
         parser.error("--max-workers must be between 1 and 64")
+    for option, paths in (("--event-log", args.event_log), ("--posture-file", args.posture_file)):
+        for path_value in paths:
+            path = Path(path_value)
+            if not path.is_file():
+                parser.error(f"{option} must reference a readable regular file: {path_value}")
+    if args.baseline and not Path(args.baseline).is_file():
+        parser.error(f"--baseline must reference a readable regular file: {args.baseline}")
 
 
 def setup_logging(args: argparse.Namespace) -> None:
@@ -275,6 +295,8 @@ def validate_output_paths(args: argparse.Namespace) -> None:
             args.json_export = validate_output_file(args.json_export)
         if args.kerberoasting_export:
             args.kerberoasting_export = validate_output_file(args.kerberoasting_export)
+        if args.attack_graph_export:
+            args.attack_graph_export = validate_output_file(args.attack_graph_export)
     except ValidationError as e:
         print(f"[-] Invalid output path: {e}", file=sys.stderr)
         sys.exit(1)
@@ -505,6 +527,48 @@ def run_security_analysis(
     return results
 
 
+def apply_package_c_evidence(
+    args: argparse.Namespace,
+    data: dict[str, Any],
+    analysis: dict[str, Any],
+) -> None:
+    """Apply optional offline telemetry, posture, and snapshot evidence."""
+    if args.event_log:
+        from analysis.event_correlation_analyzer import EventCorrelationAnalyzer
+
+        print(f"[*] Correlating offline event evidence from {len(args.event_log)} file(s)...")
+        existing = deduplicate_risks(list(itertools.chain(*get_consolidated_risk_lists(analysis))))
+        result = EventCorrelationAnalyzer().analyze(args.event_log, existing)
+        analysis["event_correlation_risks"] = result["risks"]
+        analysis["event_correlation"] = result["summary"]
+        print(f"[+] Event correlation: {len(result['risks'])} findings from {result['summary']['parsed_events']} events")
+
+    if args.posture_file:
+        from analysis.posture_evidence_analyzer import PostureEvidenceAnalyzer
+
+        print(f"[*] Verifying DC/GPO posture evidence from {len(args.posture_file)} file(s)...")
+        result = PostureEvidenceAnalyzer().analyze(args.posture_file)
+        analysis["posture_evidence_risks"] = result["risks"]
+        analysis["posture_evidence"] = {
+            "summary": result["summary"],
+            "evidence": result["evidence"],
+        }
+        print(f"[+] Posture evidence: {len(result['risks'])} findings")
+
+    if args.baseline:
+        print("[*] Building security snapshot delta...")
+        current = deduplicate_risks(list(itertools.chain(*get_consolidated_risk_lists(analysis))))
+        result = BaselineComparator().compare_snapshot(data, analysis, current, args.baseline)
+        analysis["snapshot_delta_risks"] = result.get("risks", [])
+        analysis["snapshot_delta"] = result
+        summary = result.get("summary") or {}
+        print(
+            f"[+] Snapshot delta: {summary.get('new_risks', 0)} new risks, "
+            f"{summary.get('object_field_changes', 0)} object changes, "
+            f"{summary.get('added_attack_edges', 0)} new attack edges"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Risk scoring & consolidation
 # ---------------------------------------------------------------------------
@@ -512,6 +576,8 @@ def run_security_analysis(
 def score_and_consolidate(
     analysis: dict[str, Any],
     data: dict[str, Any],
+    domain: str | None = None,
+    dc_ip: str | None = None,
 ) -> dict[str, Any]:
     """Score risks, generate executive summary, and produce consolidated risk list.
 
@@ -573,6 +639,9 @@ def score_and_consolidate(
     )
     all_risks = deduplicate_risks(list(all_risks_iter))
 
+    from analysis.confidence_scorer import ConfidenceScorer
+    ConfidenceScorer().enrich_risks(all_risks)
+
     print("[*] Calculating exploitability scores...")
     exploitability_scorer = ExploitabilityScorer()
     for risk in all_risks:
@@ -590,7 +659,12 @@ def score_and_consolidate(
 
     print("[*] Mapping Domain Admin takeover paths...")
     takeover = DomainAdminTakeoverAnalyzer().analyze(
-        scored_risks, users=users, groups=groups, computers=computers
+        scored_risks,
+        users=users,
+        groups=groups,
+        computers=computers,
+        domain=domain,
+        dc_ip=dc_ip,
     )
     print(
         f"[+] Domain Admin takeover paths: {takeover['summary']['open_path_count']} open "
@@ -747,23 +821,8 @@ def generate_reports(
     )
     print(f"[+] HTML report generated: {output_file}")
 
-    # Baseline comparison
-    baseline_comparison = None
-    if args.baseline:
-        print("[*] Comparing with baseline...")
-        comparator = BaselineComparator()
-        baseline_comparison = comparator.compare_full(
-            {'risks': scoring['scored_risks']},
-            args.baseline,
-        )
-        if baseline_comparison.get('comparison'):
-            comp = baseline_comparison['comparison']
-            print(
-                f"[+] Baseline: {comp['summary']['new_count']} new, "
-                f"{comp['summary']['resolved_count']} resolved risks"
-            )
-        else:
-            print("[-] Baseline comparison failed", file=sys.stderr)
+    # Baseline comparison (the enriched snapshot delta is built before scoring).
+    baseline_comparison = analysis.get("snapshot_delta")
 
     # JSON export
     if args.json_export:
@@ -777,6 +836,11 @@ def generate_reports(
             analysis['kerberoasting_targets'], args.kerberoasting_export
         )
         print(f"[+] Kerberoasting targets export saved: {args.kerberoasting_export}")
+
+    if args.attack_graph_export:
+        print("[*] Exporting Tier-0 evidence graph...")
+        ExportFormats.export_attack_graph(analysis.get("attack_graph_v2") or {}, args.attack_graph_export)
+        print(f"[+] Attack graph export saved: {args.attack_graph_export}")
 
     return baseline_comparison
 
@@ -1043,11 +1107,14 @@ def main() -> None:
                 analysis_profile=args.analysis_profile,
                 skip_analyses=args.skip_analysis,
             )
+            apply_package_c_evidence(args, data, analysis)
             if incremental_diff:
                 analysis["incremental_diff"] = incremental_diff
 
             # --- Risk scoring ------------------------------------------------
-            scoring = score_and_consolidate(analysis, data)
+            scoring = score_and_consolidate(
+                analysis, data, domain=args.domain, dc_ip=args.dc_ip
+            )
 
             # --- Compliance & risk management --------------------------------
             compliance = generate_compliance_and_risk(
@@ -1064,6 +1131,17 @@ def main() -> None:
                     build_checkpoint_payload(args, data, analysis, scoring, compliance),
                 )
                 print(f"[+] Checkpoint saved: {checkpoint_id}")
+
+        elif args.event_log or args.posture_file or args.baseline:
+            # A full checkpoint can be enriched with newly supplied offline
+            # evidence without repeating LDAP collection and registered analyses.
+            apply_package_c_evidence(args, data, analysis)
+            scoring = score_and_consolidate(
+                analysis, data, domain=args.domain, dc_ip=args.dc_ip
+            )
+            compliance = generate_compliance_and_risk(
+                ldap_conn, scoring['scored_risks'], data, args.hourly_rate
+            )
 
         # --- Reports & export ------------------------------------------------
         generate_reports(args, data, analysis, scoring, compliance, ldap_conn)
