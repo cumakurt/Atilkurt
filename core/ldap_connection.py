@@ -12,6 +12,7 @@ import time
 from threading import Lock
 
 from core.exceptions import LDAPConnectionError, LDAPSearchError
+from core.assessment_scope import ScopeLimitError
 from core.validators import validate_domain, validate_server_address, validate_username, validate_password, validate_timeout
 from core.cache import LDAPQueryCache
 from core.config import get_config
@@ -159,7 +160,7 @@ class LDAPConnection:
                         get_info=ALL,
                         connect_timeout=self.base_timeout,
                     )
-                except (LDAPException, Exception) as server_error:
+                except Exception as server_error:
                     # If get_info=ALL fails, try without it
                     logger.debug(f"Server creation with get_info=ALL failed: {str(server_error)}")
                     try:
@@ -189,6 +190,7 @@ class LDAPConnection:
                             user=self.username,
                             password=self.password,
                             authentication=auth_method,
+                            auto_referrals=False,
                             auto_bind=True,
                             receive_timeout=self.base_timeout
                         )
@@ -216,6 +218,10 @@ class LDAPConnection:
                 logger.debug(f"All authentication methods failed for {self.dc_ip}:{port}")
                 continue
 
+            except ScopeLimitError:
+                # Workers use this distinction to retain partial collection
+                # diagnostics rather than treating a budget stop as a bind fault.
+                raise
             except LDAPException as e:
                 error_msg = str(e).lower()
                 if 'invalid server address' in error_msg or 'connection' in error_msg:
@@ -283,7 +289,6 @@ class LDAPConnection:
             if not self.connection:
                 raise LDAPSearchError('LDAP connection is not established')
             if self.assessment_scope and not self.assessment_scope.allows_dn(dn):
-                from core.assessment_scope import ScopeLimitError
                 raise ScopeLimitError('LDAP object is outside directory scope')
             if self.pre_search_hook:
                 self.pre_search_hook()
@@ -459,6 +464,8 @@ class LDAPConnection:
 
                     return results
 
+            except ScopeLimitError:
+                raise
             except LDAPConnectionError as e:
                 # Re-raise connection errors immediately (no retry)
                 logger.error(f"LDAP connection error: {str(e)}")

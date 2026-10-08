@@ -5,7 +5,8 @@ Analyzes computer objects for security risks including EOL OS detection
 
 import logging
 from datetime import datetime
-from core.constants import RiskTypes, Severity
+from core.constants import BROAD_DELEGATION_SERVICE_THRESHOLD, RiskTypes, Severity
+from core.ad_security import as_list
 
 logger = logging.getLogger(__name__)
 
@@ -166,13 +167,11 @@ class ComputerRiskAnalyzer:
         """Check for constrained delegation configurations."""
         risks = []
 
-        allowed_to_delegate = computer.get('msDS-AllowedToDelegateTo', [])
-        if not allowed_to_delegate:
-            allowed_to_delegate = []
+        allowed_to_delegate = as_list(computer.get('msDS-AllowedToDelegateTo'))
 
         if len(allowed_to_delegate) > 0:
             # Check if delegation list is too broad
-            if len(allowed_to_delegate) > 10:
+            if len(allowed_to_delegate) > BROAD_DELEGATION_SERVICE_THRESHOLD:
                 risks.append({
                     'type': RiskTypes.COMPUTER_BROAD_CONSTRAINED_DELEGATION,
                     'severity': Severity.HIGH,

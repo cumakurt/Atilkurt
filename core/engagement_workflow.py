@@ -25,7 +25,7 @@ def prepare_engagement_inputs(args):
     if documents.get('protocol_evidence'):
         from core.protocol_checks import verify_protocols
         verify_protocols([], [], args._assessment_scope, local_evidence=documents['protocol_evidence'])
-    from core.graph_import import import_bloodhound
+    from core.graph_import import import_bloodhound, validate_graph
     imports = getattr(args, 'bloodhound_import', [])
     if imports:
         if getattr(args, 'require_signed_evidence', False):
@@ -37,6 +37,7 @@ def prepare_engagement_inputs(args):
         graph = document.get('federated_graph') or document.get('attack_graph_v2')
         if not isinstance(graph, dict) or not document.get('domain'):
             raise ValidationError('Federation inputs require domain and an exported graph')
+        validate_graph(graph)
         context = document.get('scan_context') or {}
         from datetime import datetime, timedelta, timezone
         try:
@@ -63,6 +64,9 @@ def prepare_engagement_inputs(args):
     for field, service in (('protocol_target', 'smb'), ('sysvol_host', 'smb')):
         for host in getattr(args, field, []):
             args._assessment_scope.check_host(host, service)
+    from urllib.parse import urlsplit
+    for endpoint in getattr(args, 'adcs_endpoint', []):
+        args._assessment_scope.check_host(urlsplit(endpoint).hostname, 'adcs_http')
     return documents
 
 

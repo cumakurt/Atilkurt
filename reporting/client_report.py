@@ -14,8 +14,13 @@ import zipfile
 
 from core.exceptions import ExportError
 
-SECRET_KEYS = re.compile(r'(?i)(?:password|cpassword|secret|credential|private.?key|tokenvalue|ms.?mcs.?admpwd|mslaps.?password)$')
-SECRET_ASSIGNMENT = re.compile(r'''(?im)(\b(?:password|passwd|pwd|cpassword|secret|api[_-]?key)\b\s*[=:]\s*)["']?[^\s"';]+''')
+SECRET_FIELDS = r'password|passwd|pwd|cpassword|secret|credential|private.?key|api[_-]?key|(?:access|refresh|auth)[_-]?token|tokenvalue|authorization|connection[_-]?string|ms.?mcs.?admpwd|mslaps.?password'
+SECRET_KEYS = re.compile(r'(?i)(?:' + SECRET_FIELDS + r')$')
+SECRET_ASSIGNMENT = re.compile(
+    r'(?im)(\b(?:' + SECRET_FIELDS + r')\b\s*[=:]\s*)'
+    r'''(?:"(?:\\.|[^"\\\r\n])*(?:"|$)|'(?:\\.|[^'\\\r\n])*(?:'|$)|(?:Bearer|Basic)\s+[^\s"';]+|[^\s"';]+)'''
+)
+IDENTITY_KEY = re.compile(r'(?i)(?:,\s*DC=|^S-1-\d+-|@|(?:[a-z0-9_-]+\.)+[a-z]{2,}|^(?:\d{1,3}\.){3}\d{1,3}$)')
 
 
 def _sanitize(value):
@@ -55,6 +60,8 @@ def client_document(domain, data, risks, workspace, *, masked=False):
     def collect(value, field=''):
         if isinstance(value, dict):
             for key, item in value.items():
+                if isinstance(key, str) and IDENTITY_KEY.search(key):
+                    identities.add(key)
                 collect(item, key)
         elif isinstance(value, list):
             for item in value:
@@ -75,7 +82,8 @@ def client_document(domain, data, risks, workspace, *, masked=False):
 
     def mask(value):
         if isinstance(value, dict):
-            return {key: mask(item) for key, item in value.items()}
+            return {mask(key) if isinstance(key, str) and IDENTITY_KEY.search(key) else key: mask(item)
+                    for key, item in value.items()}
         if isinstance(value, list):
             return [mask(item) for item in value]
         if isinstance(value, str) and pattern:

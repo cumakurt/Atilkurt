@@ -50,6 +50,9 @@ class ParallelLDAPExecutor:
         }
         self.max_workers = max_workers
         self.rate_limit = rate_limit
+        self.base_connection = ldap_connection
+        self.assessment_scope = getattr(ldap_connection, 'assessment_scope', None)
+        self.pre_search_hook = getattr(ldap_connection, 'pre_search_hook', None)
         self.executor: Optional[ThreadPoolExecutor] = None
         self._thread_local = threading.local()
         self._connections = []
@@ -61,6 +64,8 @@ class ParallelLDAPExecutor:
         if not hasattr(self._thread_local, 'ldap_conn'):
             from core.ldap_connection import LDAPConnection
             conn = LDAPConnection(**self.base_ldap_config)
+            conn.assessment_scope = self.assessment_scope
+            conn.pre_search_hook = self.pre_search_hook
             try:
                 conn.connect()
                 self._thread_local.ldap_conn = conn
@@ -156,6 +161,10 @@ class ParallelLDAPExecutor:
         with self._connections_lock:
             connections, self._connections = self._connections, []
         for connection in connections:
+            if hasattr(self.base_connection, 'merge_query_audit'):
+                self.base_connection.merge_query_audit(getattr(connection, 'query_audit', []))
+                if getattr(connection, 'query_audit_overflow', False):
+                    self.base_connection.query_audit_overflow = True
             try:
                 connection.disconnect()
             except Exception:

@@ -3,6 +3,8 @@ Constants Module
 Centralized constants for UAC flags, risk types, and other configuration values
 """
 
+BROAD_DELEGATION_SERVICE_THRESHOLD = 10
+
 # User Account Control (UAC) Flags
 class UACFlags:
     """User Account Control flag constants."""

@@ -7,6 +7,7 @@ import hashlib
 from uuid import UUID
 
 from core.ad_security import as_int, as_list, as_text, security_descriptor_bytes, sid_text
+from core.constants import BROAD_DELEGATION_SERVICE_THRESHOLD, UACFlags
 from core.security_descriptor_parser import directory_right_granted
 from core.exceptions import ValidationError
 
@@ -83,11 +84,16 @@ def verify_selected_findings(ldap, previous, selected_ids):
                     result['evidence'].append({'target': ldap.base_dn, 'attribute': 'nTSecurityDescriptor',
                                                'sha256': hashlib.sha256(descriptor).hexdigest()})
                 elif 'unconstrained' in kind:
-                    present = bool(uac & 0x80000)
+                    present = bool(uac & UACFlags.TRUSTED_FOR_DELEGATION)
+                elif kind == 'constrained_delegation':
+                    present = bool(uac & UACFlags.TRUSTED_TO_AUTH_FOR_DELEGATION)
                 else:
                     if 'msDS-AllowedToDelegateTo' not in row:
                         raise ValidationError('Delegation target attribute was not observed')
-                    present = bool(row['msDS-AllowedToDelegateTo'])
+                    targets = as_list(row['msDS-AllowedToDelegateTo'])
+                    if any(not isinstance(target, str) or not target for target in targets):
+                        raise ValidationError('Delegation targets are malformed')
+                    present = len(targets) > BROAD_DELEGATION_SERVICE_THRESHOLD
                 result['evidence'].append({'target': dn, 'sid': current_sid, 'userAccountControl': uac,
                                            'delegation_targets': as_list(row.get('msDS-AllowedToDelegateTo'))})
                 result['status'] = 'still_present' if present else 'configuration_resolved'

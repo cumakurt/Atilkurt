@@ -82,7 +82,9 @@ def verify_remediation(
             status, reason = "still_present", "The current assessment contains this finding"
         elif sufficient and present is None:
             kind = str(old.get("type") or "").casefold()
-            if old["_saved_pending"] or old["_requires_independent_retest"]:
+            if (old["_saved_pending"] or old["_requires_independent_retest"]
+                    or kind.startswith(('protocol_', 'sysvol_'))
+                    or old.get('source') in {'protocol_verification', 'sysvol_read_only'}):
                 reason = "This condition needs independent validation; LDAP absence cannot prove remediation"
             elif descriptor_gap and any(word in kind for word in ("acl", "dcsync", "replication", "path", "gpo")):
                 reason = "Security descriptor visibility is incomplete; absence cannot prove remediation"

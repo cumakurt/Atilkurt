@@ -24,6 +24,27 @@ def gpo_id(value):
     return match.group(1).casefold() if match else str(value).casefold()
 
 
+def _validate_policy_fields(policy):
+    for field in ('settings', 'target_security'):
+        value = policy.get(field)
+        if value is not None and not isinstance(value, dict):
+            raise ValidationError(f'GPO {field} must be an object')
+    filtering = policy.get('security_filter')
+    if filtering is not None:
+        if not isinstance(filtering, dict):
+            raise ValidationError('GPO security_filter must be an object')
+        for field in ('read', 'apply', 'deny'):
+            values = filtering.get(field, [])
+            if (not isinstance(values, list) or len(values) > 10000
+                    or any(not isinstance(value, str) or not value for value in values)):
+                raise ValidationError('GPO effective permission filters require bounded SID lists')
+    for decision in (policy.get('target_security') or {}).values():
+        if not isinstance(decision, dict) or any(
+            key in decision and not isinstance(decision[key], bool) for key in ('read', 'apply')
+        ):
+            raise ValidationError('GPO target permissions require boolean Read/Apply decisions')
+
+
 def parse_rsop(path):
     path = Path(path)
     if path.stat().st_size > 16 * 1024 * 1024:
@@ -109,14 +130,25 @@ def collect_gpo_context(ldap, target_dns, gpos):
 
 
 def analyze_effective_gpo(document, rsop=None, *, now=None):
-    if document.get('schema_version') != 1:
+    if not isinstance(document, dict) or document.get('schema_version') != 1:
         raise ValidationError('Effective GPO input requires schema_version 1')
     for field in ('targets', 'containers', 'gpos'):
         rows = document.get(field, [])
         if not isinstance(rows, list) or len(rows) > 10000 or any(not isinstance(row, dict) for row in rows):
             raise ValidationError('Effective GPO input collections are invalid or too large')
+    from core.assessment_scope import dn_parts
+
+    containers = {}
+    for container in document.get('containers', []):
+        identifier = dn_parts(container.get('dn') or container.get('distinguishedName'))
+        # Two inheritance descriptions for one DN cannot establish precedence.
+        normalized = {key: value for key, value in container.items() if key not in {'dn', 'distinguishedName'}}
+        if identifier in containers and containers[identifier][1] != normalized:
+            raise ValidationError('Conflicting GPO container metadata')
+        containers.setdefault(identifier, (container, normalized))
     policies, conflicts = {}, set()
     for policy in document.get('gpos', []):
+        _validate_policy_fields(policy)
         identifier = gpo_id(policy.get('id') or policy.get('name'))
         if identifier in policies and policies[identifier] != policy:
             conflicts.add(identifier)
@@ -127,9 +159,8 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
         dn, kind = target.get('dn'), target.get('kind', 'computer')
         if not isinstance(dn, str) or kind not in ('computer', 'user'):
             raise ValidationError('GPO targets require a distinguished name and user/computer kind')
-        ancestors = [row for row in document.get('containers', []) if under_dn(dn, row.get('dn') or row.get('distinguishedName'))]
+        ancestors = [row for row, _ in containers.values() if under_dn(dn, row.get('dn') or row.get('distinguishedName'))]
         ancestors.sort(key=lambda row: len(parse_dn(row.get('dn') or row.get('distinguishedName'))))
-        from core.assessment_scope import dn_parts
         observed_containers = {dn_parts(row.get('dn') or row.get('distinguishedName')) for row in ancestors}
         target_parts = parse_dn(dn)
         first_dc = next((index for index, (name, _, _) in enumerate(target_parts) if name.casefold() == 'dc'), None)
@@ -161,7 +192,12 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
                          for index, match in enumerate(matches)]
             if not isinstance(links, list) or any(not isinstance(link, dict) for link in links):
                 raise ValidationError('GPO links must be a list')
-            for link in sorted(links, key=lambda row: int(row.get('order', 1)), reverse=True):
+            for link in links:
+                order = link.get('order', 1)
+                if (isinstance(order, bool) or not isinstance(order, int) or not 1 <= order <= 10000
+                        or any(field in link and not isinstance(link[field], bool) for field in ('disabled', 'enforced'))):
+                    raise ValidationError('GPO link order must be positive and enabled/enforced fields must be booleans')
+            for link in sorted(links, key=lambda row: row.get('order', 1), reverse=True):
                 if not link.get('disabled'):
                     candidates.append({'gpo_id': gpo_id(link.get('id')), 'enforced': bool(link.get('enforced')),
                                        'level': level, 'order': int(link.get('order', 1)),
@@ -178,6 +214,13 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
                 policy = {}
             if candidate['gpo_id'] in conflicts:
                 missing.append('Conflicting GPO metadata')
+                # Do not use the first snapshot's flags, filters or settings to
+                # exclude a policy or choose a winner when another contradicts it.
+                policy = {}
+            if 'GPO metadata unavailable' in missing or 'Conflicting GPO metadata' in missing:
+                for setting in settings.values():
+                    setting['status'] = 'conditional'
+                    setting.setdefault('prerequisites', []).append('Higher-precedence GPO metadata is unavailable or conflicting')
             flags = as_int(policy.get('flags'))
             if flags is None:
                 missing.append('GPO component enablement unknown')
@@ -188,7 +231,8 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
             if isinstance(effective, dict) and isinstance(effective.get('read'), bool) and isinstance(effective.get('apply'), bool):
                 if not effective['read'] or not effective['apply']:
                     status = 'excluded'
-            elif not isinstance(filtering, dict) or target.get('token_complete') is not True:
+            elif (not isinstance(filtering, dict) or target.get('token_complete') is not True
+                  or not {'read', 'apply'} <= set(filtering)):
                 missing.append('Effective Read and Apply Group Policy permissions unknown')
             else:
                 # The supplied allow lists represent both Read and Apply permissions, not raw membership.
