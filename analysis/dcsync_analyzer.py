@@ -6,8 +6,11 @@ Detects accounts with DCSync rights (DS-Replication-Get-Changes and DS-Replicati
 import logging
 from typing import Any, Optional
 from ldap3.utils.conv import escape_filter_chars
+from uuid import UUID
+from core.ad_identity import ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS, ROLE_DOMAIN_CONTROLLERS, group_is_role
+from core.ad_security import as_int, principal_group_tokens, sid_text
 from core.constants import RiskTypes, Severity, MITRETechniques
-from core.security_descriptor_parser import SecurityDescriptorParser, parse_security_descriptor
+from core.security_descriptor_parser import SecurityDescriptorParser, directory_right_granted, parse_security_descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -55,58 +58,6 @@ class DCSyncAnalyzer:
 
                 risks.append(self._create_dcsync_risk(account_info))
 
-            # Also check well-known privileged groups that typically have DCSync
-            # Use a set to avoid duplicate risks
-            processed_users = set()
-            privileged_groups = ['Domain Admins', 'Enterprise Admins', 'Administrators']
-            for group in groups:
-                group_name = group.get('name') or group.get('sAMAccountName')
-                if group_name and any(priv in group_name for priv in privileged_groups):
-                    # Check members of these groups
-                    members = group.get('member', []) or []
-                    if not isinstance(members, list):
-                        members = [members] if members else []
-
-                    for member_dn in members:
-                        member_name = self._extract_name_from_dn(member_dn)
-                        if member_name and member_name not in processed_users:
-                            # Check if this user is in the list
-                            for user in users:
-                                username = user.get('sAMAccountName')
-                                if username == member_name:
-                                    processed_users.add(username)
-                                    risks.append({
-                                        'type': RiskTypes.DCSYNC_RIGHTS,
-                                        'severity': Severity.CRITICAL,
-                                        'title': f'DCSync via Privileged Group: {username}',
-                                        'description': (
-                                            f"User '{username}' is member of '{group_name}' which has "
-                                            "implicit DCSync rights through Domain Admin privileges."
-                                        ),
-                                        'affected_object': username,
-                                        'object_type': 'user',
-                                        'privileged_group': group_name,
-                                        'impact': (
-                                            'Members of Domain Admins, Enterprise Admins, or Administrators '
-                                            'have implicit DCSync rights and can extract all password hashes.'
-                                        ),
-                                        'attack_scenario': (
-                                            f"An attacker who compromises '{username}' can use DCSync "
-                                            "to extract all domain password hashes."
-                                        ),
-                                        'mitigation': (
-                                            'Apply principle of least privilege. Remove unnecessary members '
-                                            'from privileged groups. Use privileged access management.'
-                                        ),
-                                        'cis_reference': 'CIS Benchmark requires minimal membership in privileged groups',
-                                        'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_DCSYNC,
-                                        'exploitation_tools': [
-                                            'Mimikatz lsadump::dcsync',
-                                            'Impacket secretsdump'
-                                        ]
-                                    })
-                                    break
-
             logger.info(f"Found {len(risks)} DCSync rights risks")
             return risks
 
@@ -148,25 +99,32 @@ class DCSyncAnalyzer:
                 return accounts_with_rights
 
             parsed_sd = parse_security_descriptor(sd)
-            for ace in parsed_sd.get('dacl', []):
-                permissions = ace.get('permissions', {})
-                rights = [
-                    right for right in (
-                        'DS-Replication-Get-Changes',
-                        'DS-Replication-Get-Changes-All',
-                        'DS-Replication-Get-Changes-In-Filtered-Set',
-                        'AllExtendedRights',
-                    )
-                    if right in permissions
-                ]
-                if not rights:
+            expected_sids = {'S-1-5-18', 'S-1-5-32-544', 'S-1-5-9'}
+            for group in groups:
+                if any(group_is_role(group, role) for role in (
+                    ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS, ROLE_DOMAIN_CONTROLLERS,
+                )):
+                    expected_sids.add(sid_text(group.get('objectSid')))
+            # Default administrative replication rights are expected, not an escalation.
+            disabled_sids = {
+                sid_text(user.get('objectSid')) for user in users
+                if (as_int(user.get('userAccountControl')) or 0) & 0x02
+            }
+            candidates = {ace.get('sid') for ace in parsed_sd.get('dacl', []) if ace.get('sid')}
+            tokens = principal_group_tokens(users, groups)
+            candidates.update(sid for sid, memberships in tokens.items() if memberships & candidates)
+            required = {
+                'DS-Replication-Get-Changes': UUID(self.DS_REPLICATION_GET_CHANGES).bytes_le,
+                'DS-Replication-Get-Changes-All': UUID(self.DS_REPLICATION_GET_CHANGES_ALL).bytes_le,
+            }
+            for sid in sorted(candidates - expected_sids - disabled_sids):
+                if tokens.get(sid, set()) & expected_sids:
                     continue
-
-                sid = ace.get('sid')
-                account = sid_map.get(sid, {
-                    'account_name': sid or 'Unknown SID',
-                    'account_type': 'sid',
-                })
+                rights = [name for name, guid in required.items()
+                          if directory_right_granted(parsed_sd, sid, 0x100, guid, tokens.get(sid))]
+                if len(rights) != len(required):
+                    continue
+                account = sid_map.get(sid, {'account_name': sid, 'account_type': 'sid'})
                 accounts_with_rights.append({
                     'account_name': account['account_name'],
                     'account_type': account['account_type'],
@@ -196,6 +154,8 @@ class DCSyncAnalyzer:
             'object_type': account_info['account_type'],
             'target_object': target_object,
             'dcsync_rights': account_info['rights'],
+            'evidence': {'trustee_sid': account_info.get('sid'), 'rights': account_info['rights'],
+                         'target_dn': target_object},
             'impact': (
                 'Accounts with DCSync rights can replicate all domain data including '
                 'password hashes. This is equivalent to having Domain Admin privileges. '

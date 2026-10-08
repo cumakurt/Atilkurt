@@ -5,6 +5,7 @@ Risk heat map, business impact assessment, remediation cost estimation, ROI calc
 
 import logging
 from typing import Any, Optional
+from core.finding_evidence import is_score_excluded
 import math
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,7 @@ class RiskManager:
         Returns:
             Dict with heat map data
         """
+        risks = [risk for risk in risks if not is_score_excluded(risk)]
         heat_map = {
             'critical_high': [],
             'critical_medium': [],
@@ -376,6 +378,8 @@ class RiskManager:
         prioritized = []
 
         for risk in risks:
+            if is_score_excluded(risk):
+                continue
             impact = self.calculate_business_impact(risk, business_context)
             cost = self.estimate_remediation_cost(risk)
             roi = self.calculate_roi(risk, business_context)

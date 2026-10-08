@@ -4,6 +4,7 @@ Mixin for risk list rendering, risk grouping, severity helpers, exploitability, 
 
 from collections import defaultdict
 import html as html_stdlib
+from core.finding_evidence import requires_validation
 
 
 
@@ -18,6 +19,12 @@ class RiskSectionsMixin:
 
     def _generate_exploitability_badge(self, risk):
         """Generate exploitability badge for risk card."""
+        if risk.get('finding_status') == 'false_positive':
+            return '<span class="badge bg-secondary">False positive</span>'
+        if risk.get('exception_status') == 'active':
+            return '<span class="badge bg-secondary">Accepted risk exception</span>'
+        if requires_validation(risk):
+            return '<span class="badge bg-secondary">Requires validation</span>'
         exploitability = risk.get('exploitability')
         if not exploitability:
             return ""

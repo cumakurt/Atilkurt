@@ -1327,7 +1327,7 @@ def localize_domain_admin_takeover_tr(data: Any) -> Any:
                 f"Bu taramada Etki Alanı Yöneticisine ulaşabilen {count} açık saldırı yolu belirlendi."
             )
 
-    for collection in ("open_paths", "unobserved_paths"):
+    for collection in ("open_paths", "pending_paths", "unobserved_paths"):
         paths = localized.get(collection) or []
         if not isinstance(paths, list):
             continue
@@ -1349,4 +1349,3 @@ def localize_domain_admin_takeover_tr(data: Any) -> Any:
         localized[collection] = new_paths
 
     return localized
-

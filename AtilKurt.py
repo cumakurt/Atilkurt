@@ -4,6 +4,8 @@ AtilKurt - Active Directory Security Health Check Tool
 Main execution file
 """
 
+from __future__ import annotations
+
 import argparse
 import itertools
 import json
@@ -15,7 +17,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.ldap_connection import LDAPConnection
 from core.validators import validate_output_file
@@ -44,7 +46,6 @@ from reporting.export_formats import ExportFormats
 from reporting.compliance_reporter import ComplianceReporter
 from core.secure_password import SecurePasswordManager
 from core.progress_persistence import ProgressPersistence, IncrementalScanner
-from core.secure_file import atomic_text_writer
 from risk.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,10 @@ class _PrivateFileHandler(logging.StreamHandler):
 
         descriptor = os.open(filename, flags, 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, 0o600)
+            else:
+                os.chmod(filename, 0o600)
             stream = os.fdopen(descriptor, "a", encoding="utf-8")
         except Exception:
             os.close(descriptor)
@@ -127,12 +131,13 @@ def _finite_nonnegative_float(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description='AtilKurt - Active Directory Security Health Check Tool'
+        description='AtilKurt - Active Directory Security Health Check Tool',
+        epilog='Operational commands: Atilkurt doctor | quality | verify-finding | keygen | sign | verify | audit | watch. Use COMMAND --help for details.',
     )
     parser.add_argument('--version', action='version', version=f'AtilKurt {_package_version()}')
     parser.add_argument('-d', '--domain', required=True,
                         help='Domain name (e.g., example.com)')
-    parser.add_argument('-u', '--username', required=True,
+    parser.add_argument('-u', '--username',
                         help='LDAP username (without domain prefix)')
     parser.add_argument('-p', '--password',
                         help='[DEPRECATED] LDAP password via CLI — use env var '
@@ -227,6 +232,37 @@ def build_parser() -> argparse.ArgumentParser:
         '--attack-graph-export',
         help='Export the Tier-0 evidence graph in BloodHound OpenGraph-shaped JSON',
     )
+    parser.add_argument('--review-file', help='Finding decisions and expiring exceptions JSON')
+    parser.add_argument('--validation-evidence', action='append', default=[], metavar='FILE',
+                        help='Local collector evidence JSON; repeatable')
+    parser.add_argument('--validation-script', help='Write the local read-only PowerShell evidence collector')
+    parser.add_argument('--review-export', help='Write the current review document as JSON')
+    parser.add_argument('--evidence-max-age-days', type=_positive_int, default=30,
+                        help='Maximum age of review evidence (default: 30, maximum: 365 days)')
+    parser.add_argument('--remediation-scenario', help='JSON scenario with removed_edge_ids to simulate')
+    parser.add_argument('--offline-snapshot', help='Regenerate reports from a JSON export without LDAP or credentials')
+    parser.add_argument('--verify-effective-access', action='store_true', help='Read bounded tokenGroups for principals in critical/ACL findings')
+    parser.add_argument('--token-limit', type=_positive_int, default=50, help='Maximum token-group reads (1..500, default: 50)')
+    parser.add_argument('--token-delay', type=_finite_nonnegative_float, default=0.1, help='Seconds between token-group reads (default: 0.1)')
+    parser.add_argument('--quality-dataset', help='Labelled offline rule evaluation dataset JSON')
+    parser.add_argument('--quality-export', help='Export rule fixture metrics')
+    parser.add_argument('--retest', help='Previous JSON assessment whose selected findings will be rechecked')
+    parser.add_argument('--retest-finding', action='append', default=[], metavar='ID', help='Finding ID to recheck; repeatable; defaults to all findings in --retest')
+    parser.add_argument('--retest-export', help='Export remediation verification results')
+    parser.add_argument('--history-db', help='Private SQLite database for scan history, notifications, tasks and audit')
+    parser.add_argument('--notifications-export', help='Export only new critical, reopened or expired-exception notifications')
+    parser.add_argument('--ticket-file', help='Import assigned work items with owner, status and due date')
+    parser.add_argument('--tickets-export', '--ticket-export', dest='tickets_export', help='Export stable work items for issue-tracker ingestion')
+    parser.add_argument('--audit-export', help='Export the verified audit hash chain')
+    parser.add_argument('--csv-export', help='Export findings to CSV')
+    parser.add_argument('--siem-export', help='Export findings to newline-delimited SIEM JSON')
+    parser.add_argument('--cef-export', help='Export findings to CEF')
+    parser.add_argument('--export-changes-only', action='store_true', help='Integration exports contain only findings changed since the previous history run')
+    parser.add_argument('--trusted-key', action='append', default=[], metavar='FILE', help='Trusted public evidence-signing key; repeatable')
+    parser.add_argument('--require-signed-evidence', action='store_true', help='Reject unsigned review, collector, offline and retest evidence')
+    parser.add_argument('--signing-key', help='Private key used to sign JSON workflow exports')
+    from core.engagement_cli import add_engagement_arguments
+    add_engagement_arguments(parser)
 
     # Logging
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -243,6 +279,12 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
     """Validate relationships and upper bounds that argparse types cannot express."""
     if not args.dc_ip:
         args.dc_ip = args.domain
+    from core.engagement_cli import validate_engagement_arguments
+    validate_engagement_arguments(parser, args)
+    if not args.username and not args.offline_snapshot:
+        parser.error('--username is required unless --offline-snapshot is supplied')
+    if args.evidence_max_age_days > 365:
+        parser.error('--evidence-max-age-days must be between 1 and 365')
     if args.random_delay and args.random_delay[0] > args.random_delay[1]:
         parser.error("--random-delay MIN must not exceed MAX")
     if args.timeout > 300:
@@ -251,6 +293,16 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error("--page-size must be between 1 and 5000")
     if args.max_workers > 64:
         parser.error("--max-workers must be between 1 and 64")
+    if args.token_limit > 500 or args.token_delay > 60:
+        parser.error('--token-limit must be <=500 and --token-delay <=60')
+    if args.retest_finding and not args.retest:
+        parser.error('--retest-finding requires --retest')
+    if args.require_signed_evidence and not args.trusted_key:
+        parser.error('--require-signed-evidence requires at least one --trusted-key')
+    if (args.ticket_file or args.tickets_export or args.notifications_export or args.audit_export) and not args.history_db:
+        args.history_db = '.atilkurt_history.sqlite3'
+    if args.export_changes_only and not args.history_db:
+        parser.error('--export-changes-only requires --history-db')
     for option, paths in (("--event-log", args.event_log), ("--posture-file", args.posture_file)):
         for path_value in paths:
             path = Path(path_value)
@@ -258,6 +310,15 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
                 parser.error(f"{option} must reference a readable regular file: {path_value}")
     if args.baseline and not Path(args.baseline).is_file():
         parser.error(f"--baseline must reference a readable regular file: {args.baseline}")
+    for option in ('review_file', 'remediation_scenario', 'offline_snapshot'):
+        if getattr(args, option) and not Path(getattr(args, option)).is_file():
+            parser.error(f"--{option.replace('_', '-')} must reference a readable regular file")
+    for path in args.validation_evidence:
+        if not Path(path).is_file():
+            parser.error('--validation-evidence must reference a readable regular file')
+    for path in [args.quality_dataset, args.retest, args.ticket_file, args.signing_key, *args.trusted_key]:
+        if path and not Path(path).is_file():
+            parser.error('Workflow input must reference a readable regular file')
 
 
 def setup_logging(args: argparse.Namespace) -> None:
@@ -297,9 +358,52 @@ def validate_output_paths(args: argparse.Namespace) -> None:
             args.kerberoasting_export = validate_output_file(args.kerberoasting_export)
         if args.attack_graph_export:
             args.attack_graph_export = validate_output_file(args.attack_graph_export)
+        for option in ('validation_script', 'review_export', 'quality_export', 'retest_export',
+                       'notifications_export', 'tickets_export', 'audit_export', 'csv_export', 'siem_export', 'cef_export',
+                       'engagement_export', 'docx_export', 'pdf_export'):
+            if getattr(args, option, None):
+                setattr(args, option, validate_output_file(getattr(args, option)))
+        from core.validators import validate_distinct_paths
+        outputs = {name: getattr(args, name, None) for name in (
+            'output', 'json_export', 'kerberoasting_export', 'attack_graph_export', 'validation_script',
+            'review_export', 'quality_export', 'retest_export', 'notifications_export', 'tickets_export',
+            'audit_export', 'csv_export', 'siem_export', 'cef_export', 'history_db', 'log_file',
+            'engagement_export', 'docx_export', 'pdf_export',
+        )}
+        args._report_output_path = _report_output_path(args)
+        outputs['output'] = args._report_output_path
+        inputs = {name: getattr(args, name, None) for name in (
+            'baseline', 'review_file', 'remediation_scenario', 'offline_snapshot', 'quality_dataset',
+            'retest', 'ticket_file', 'signing_key', 'scope_file', 'protocol_evidence', 'gpo_context', 'rsop_file',
+        )}
+        for name in ('event_log', 'posture_file', 'validation_evidence', 'trusted_key', 'bloodhound_import', 'federation_snapshot'):
+            inputs.update({f'{name}[{index}]': path for index, path in enumerate(getattr(args, name, []))})
+        from core.progress_persistence import validate_checkpoint_id
+        for name in ('resume', 'checkpoint'):
+            if getattr(args, name, None):
+                try:
+                    validate_checkpoint_id(getattr(args, name))
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+                checkpoint_path = str(Path('.atilkurt_checkpoints') / f'{getattr(args, name)}.json')
+                if name == 'resume':
+                    inputs['resume'] = checkpoint_path
+                elif args.checkpoint != args.resume:
+                    outputs['checkpoint'] = checkpoint_path
+        validate_distinct_paths(outputs, inputs)
+        from core.engagement_cli import validate_shared_file_outputs
+        validate_shared_file_outputs(args, outputs)
     except ValidationError as e:
         print(f"[-] Invalid output path: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _report_output_path(args) -> str:
+    if args.output != 'report.html':
+        return args.output
+    safe_domain = re.sub(r'[^\w\-_\.]', '_', args.domain)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return f'AtilKurt_{safe_domain}_{timestamp}.html'
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +445,7 @@ def collect_data(
     show_progress: bool,
     use_parallel: bool = False,
     max_workers: int = 5,
-    stealth_settings: Optional[dict[str, Any]] = None,
+    stealth_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect all AD objects via LDAP.
 
@@ -354,19 +458,19 @@ def collect_data(
         return _collect_data_parallel(ldap_conn, show_progress, max_workers, stealth_settings)
 
     user_collector = UserCollector(ldap_conn, show_progress=show_progress)
-    users = user_collector.collect()
+    users = _collect_scoped(user_collector, ldap_conn)
     print(f"[+] Collected {len(users)} users")
 
     computer_collector = ComputerCollector(ldap_conn, show_progress=show_progress)
-    computers = computer_collector.collect()
+    computers = _collect_scoped(computer_collector, ldap_conn)
     print(f"[+] Collected {len(computers)} computers")
 
     group_collector = GroupCollector(ldap_conn, show_progress=show_progress)
-    groups = group_collector.collect()
+    groups = _collect_scoped(group_collector, ldap_conn)
     print(f"[+] Collected {len(groups)} groups")
 
     gpo_collector = GPOCollector(ldap_conn, show_progress=show_progress)
-    gpos = gpo_collector.collect()
+    gpos = _collect_scoped(gpo_collector, ldap_conn)
     print(f"[+] Collected {len(gpos)} GPOs")
 
     return {
@@ -377,9 +481,20 @@ def collect_data(
     }
 
 
+def _collect_scoped(collector, ldap_conn):
+    from core.assessment_scope import ScopeLimitError
+    try:
+        return collector.collect()
+    except ScopeLimitError as exc:
+        print(f'[*] Collection not assessed: {exc}')
+        ldap_conn.merge_query_audit([{'status': 'failed', 'reason': str(exc), 'scope': 'engagement',
+                                    'attributes': [], 'unobserved_attributes': []}])
+        return []
+
+
 def _clone_ldap_connection(ldap_conn: LDAPConnection) -> LDAPConnection:
     """Create a new LDAP connection with the same runtime settings."""
-    return LDAPConnection(
+    connection = LDAPConnection(
         domain=ldap_conn.domain,
         username=ldap_conn.username,
         password=ldap_conn.password,
@@ -394,9 +509,11 @@ def _clone_ldap_connection(ldap_conn: LDAPConnection) -> LDAPConnection:
         enable_cache=ldap_conn.enable_cache,
         validate_certificate=ldap_conn.validate_certificate,
     )
+    connection.assessment_scope = getattr(ldap_conn, 'assessment_scope', None)
+    return connection
 
 
-def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: Optional[dict[str, Any]]) -> None:
+def _apply_stealth_to_connection(ldap_conn: LDAPConnection, stealth_settings: dict[str, Any] | None) -> None:
     """Attach rate limiting to a connection's search method when requested."""
     if not stealth_settings:
         return
@@ -409,16 +526,25 @@ def _collect_with_new_connection(
     base_conn: LDAPConnection,
     collector_cls: Any,
     show_progress: bool,
-    stealth_settings: Optional[dict[str, Any]],
+    stealth_settings: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     """Run one collector with an isolated LDAP connection."""
+    from core.assessment_scope import ScopeLimitError
     conn = _clone_ldap_connection(base_conn)
     try:
         _apply_stealth_to_connection(conn, stealth_settings)
         conn.connect()
         collector = collector_cls(conn, show_progress=show_progress)
-        return collector.collect()
+        return _collect_scoped(collector, conn)
+    except ScopeLimitError as exc:
+        conn.merge_query_audit([{'status': 'failed', 'reason': str(exc), 'scope': 'engagement',
+                                'attributes': [], 'unobserved_attributes': []}])
+        return []
     finally:
+        if hasattr(base_conn, 'merge_query_audit'):
+            base_conn.merge_query_audit(getattr(conn, 'query_audit', []))
+            if getattr(conn, 'query_audit_overflow', False):
+                base_conn.query_audit_overflow = True
         conn.disconnect()
 
 
@@ -426,7 +552,7 @@ def _collect_data_parallel(
     ldap_conn: LDAPConnection,
     show_progress: bool,
     max_workers: int,
-    stealth_settings: Optional[dict[str, Any]],
+    stealth_settings: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Collect top-level AD object sets concurrently with isolated connections."""
     collectors = {
@@ -471,7 +597,7 @@ def run_security_analysis(
     ldap_conn: LDAPConnection,
     data: dict[str, Any],
     analysis_profile: str = "full",
-    skip_analyses: Optional[list[str]] = None,
+    skip_analyses: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run all security analyzers and return consolidated results.
 
@@ -482,7 +608,7 @@ def run_security_analysis(
     Returns:
         Dictionary with all analysis results.
     """
-    def progress_callback(description: str, step_result: dict[str, Any], duration: Optional[float] = None) -> None:
+    def progress_callback(description: str, step_result: dict[str, Any], duration: float | None = None) -> None:
         duration_suffix = f" in {duration:.1f}s" if duration is not None else ""
         counts = [len(v) for v in step_result.values() if isinstance(v, list)]
         if counts:
@@ -533,6 +659,8 @@ def apply_package_c_evidence(
     analysis: dict[str, Any],
 ) -> None:
     """Apply optional offline telemetry, posture, and snapshot evidence."""
+    from core.engagement_workflow import apply_engagement
+    apply_engagement(args, data, analysis)
     if args.event_log:
         from analysis.event_correlation_analyzer import EventCorrelationAnalyzer
 
@@ -543,11 +671,18 @@ def apply_package_c_evidence(
         analysis["event_correlation"] = result["summary"]
         print(f"[+] Event correlation: {len(result['risks'])} findings from {result['summary']['parsed_events']} events")
 
-    if args.posture_file:
+    posture_paths = args.posture_file
+    observations = []
+    review_document = getattr(args, '_workflow_review_document', None)
+    if review_document and review_document.get('observations'):
+        from core.finding_review import FindingReviewManager
+        observations = FindingReviewManager().apply([], data, args.domain, review_document,
+                                                    max_age_days=args.evidence_max_age_days)['observations']
+    if posture_paths or observations:
         from analysis.posture_evidence_analyzer import PostureEvidenceAnalyzer
 
-        print(f"[*] Verifying DC/GPO posture evidence from {len(args.posture_file)} file(s)...")
-        result = PostureEvidenceAnalyzer().analyze(args.posture_file)
+        print(f"[*] Verifying DC/GPO posture evidence from {len(posture_paths)} file(s)...")
+        result = PostureEvidenceAnalyzer().analyze(posture_paths, observations=observations)
         analysis["posture_evidence_risks"] = result["risks"]
         analysis["posture_evidence"] = {
             "summary": result["summary"],
@@ -558,7 +693,13 @@ def apply_package_c_evidence(
     if args.baseline:
         print("[*] Building security snapshot delta...")
         current = deduplicate_risks(list(itertools.chain(*get_consolidated_risk_lists(analysis))))
-        result = BaselineComparator().compare_snapshot(data, analysis, current, args.baseline)
+        from core.product_workflow import load_workflow_document
+        baseline = load_workflow_document(args.baseline, args)
+        baseline_domain = baseline.get('domain') or (baseline.get('data') or {}).get('domain')
+        if baseline_domain and str(baseline_domain).casefold().strip('.') != args.domain.casefold().strip('.'):
+            from core.exceptions import ValidationError
+            raise ValidationError('Baseline snapshot belongs to a different domain')
+        result = BaselineComparator().compare_snapshot(data, analysis, current, args.baseline, baseline_document=baseline)
         analysis["snapshot_delta_risks"] = result.get("risks", [])
         analysis["snapshot_delta"] = result
         summary = result.get("summary") or {}
@@ -578,6 +719,10 @@ def score_and_consolidate(
     data: dict[str, Any],
     domain: str | None = None,
     dc_ip: str | None = None,
+    review_document: dict[str, Any] | None = None,
+    evidence_max_age_days: int = 30,
+    input_risks: list[dict[str, Any]] | None = None,
+    removed_edge_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Score risks, generate executive summary, and produce consolidated risk list.
 
@@ -598,7 +743,7 @@ def score_and_consolidate(
 
     # Convert shadow admins to risk format
     shadow_admin_risks: list[dict[str, Any]] = []
-    for sa in analysis.get('shadow_admins', []):
+    for sa in analysis.get('shadow_admins') or []:
         shadow_admin_risks.append({
             'type': 'shadow_admin',
             'severity': sa.get('risk_level', 'high'),
@@ -615,7 +760,7 @@ def score_and_consolidate(
         })
 
     acl_escalation_risks: list[dict[str, Any]] = []
-    for path in analysis.get('acl_escalation_paths', []):
+    for path in analysis.get('acl_escalation_paths') or []:
         acl_escalation_risks.append({
             'type': 'acl_privilege_escalation_path',
             'severity': 'high',
@@ -638,6 +783,38 @@ def score_and_consolidate(
         acl_escalation_risks,
     )
     all_risks = deduplicate_risks(list(all_risks_iter))
+    if input_risks is not None:
+        all_risks = input_risks
+
+    from core.finding_review import FindingReviewManager
+    review_center = FindingReviewManager().apply(
+        all_risks, data, domain or '', review_document, max_age_days=evidence_max_age_days,
+    )
+    if review_document and review_document.get('reviews') and analysis.get('attack_graph_v2'):
+        from analysis.attack_graph_v2_analyzer import AttackGraphV2Analyzer
+        from core.finding_evidence import is_disproved
+        acl_findings = analysis.get('comprehensive_acl_risks') or []
+        FindingReviewManager().apply(acl_findings, data, domain or '', review_document,
+                                    max_age_days=evidence_max_age_days)
+        refreshed = AttackGraphV2Analyzer().analyze(users, groups, computers, analysis)
+        analysis['attack_graph_v2'] = refreshed['graph']
+        analysis['attack_graph_v2_risks'] = refreshed['risks']
+        all_risks = [risk for risk in all_risks if not str(risk.get('type') or '').startswith('attack_graph_')]
+        all_risks.extend(refreshed['risks'])
+        # Legacy ACL-derived summaries lack edge-level provenance. Recheck any
+        # summary sourced by a principal whose supporting grant was disproved.
+        from core.ad_security import sid_text
+        disproved_sids = {finding.get('trustee') for finding in acl_findings if is_disproved(finding)}
+        impacted_names = {str(obj.get('sAMAccountName') or obj.get('name') or '').casefold()
+                          for obj in users + groups if sid_text(obj.get('objectSid')) in disproved_sids}
+        for risk in all_risks:
+            if risk.get('type') in {'shadow_admin', 'acl_privilege_escalation_path'} and str(risk.get('affected_object') or '').casefold() in impacted_names:
+                basis = risk['review_basis']
+                basis['requires_validation'] = True
+                basis['evidence'] = {'requires_runtime_validation': True, 'reason': 'Supporting ACL grant was disproved; re-evaluate this derived summary'}
+        review_center = FindingReviewManager().apply(
+            all_risks, data, domain or '', review_document, max_age_days=evidence_max_age_days,
+        )
 
     from analysis.confidence_scorer import ConfidenceScorer
     ConfidenceScorer().enrich_risks(all_risks)
@@ -671,6 +848,11 @@ def score_and_consolidate(
         f"({takeover['summary']['da_equivalent_open_count']} DA-equivalent)"
     )
 
+    from analysis.scan_coverage import build_scan_coverage
+    from analysis.remediation_simulator import simulate_remediation
+    coverage = build_scan_coverage(analysis, scored_risks, review_center)
+    simulation = simulate_remediation(analysis.get('attack_graph_v2') or {}, removed_edge_ids)
+
     return {
         'scored_risks': scored_risks,
         'domain_score': domain_score,
@@ -678,6 +860,9 @@ def score_and_consolidate(
         'shadow_admin_risks': shadow_admin_risks,
         'acl_escalation_risks': acl_escalation_risks,
         'domain_admin_takeover': takeover,
+        'review_center': review_center,
+        'scan_coverage': coverage,
+        'remediation_simulation': simulation,
     }
 
 
@@ -768,27 +953,33 @@ def generate_reports(
     scoring: dict[str, Any],
     compliance: dict[str, Any],
     ldap_conn: LDAPConnection,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Generate HTML report, JSON export, and baseline comparison.
 
     Returns:
         Baseline comparison data (or None).
     """
+    from core.product_workflow import product_workspace_transaction
+    from core.engagement_workflow import refresh_engagement_graph
+    refresh_engagement_graph(args, data, analysis)
+
+    with product_workspace_transaction(args, data, analysis, scoring) as workspace:
+        return _write_reports(args, data, analysis, scoring, compliance, workspace)
+
+
+def _write_reports(args, data, analysis, scoring, compliance, product_workspace):
+    """Publish reports while the caller holds the history transaction."""
+    from core.product_workflow import export_product_workspace
+
     print("[*] Generating HTML report...")
+    scoring['product_workspace'] = product_workspace
 
-    # Build output filename
-    safe_domain = re.sub(r'[^\w\-_\.]', '_', args.domain)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-    if args.output == 'report.html':
-        output_file = f"AtilKurt_{safe_domain}_{timestamp}.html"
-    else:
-        output_file = args.output
+    output_file = getattr(args, '_report_output_path', None) or _report_output_path(args)
 
     # Build analysis summary counts for Executive Summary (all analyses overview)
     analysis_summary_counts = {k: len(analysis.get(k, [])) for k in CONSOLIDATION_RISK_KEYS}
-    analysis_summary_counts['shadow_admins'] = len(analysis.get('shadow_admins', []))
-    analysis_summary_counts['acl_escalation_paths'] = len(analysis.get('acl_escalation_paths', []))
+    analysis_summary_counts['shadow_admins'] = len(analysis.get('shadow_admins') or [])
+    analysis_summary_counts['acl_escalation_paths'] = len(analysis.get('acl_escalation_paths') or [])
     analysis_summary_counts['misconfig_findings'] = len(analysis.get('misconfig_findings', []))
     takeover = scoring.get('domain_admin_takeover') or {}
     analysis['domain_admin_takeover'] = takeover
@@ -818,6 +1009,10 @@ def generate_reports(
         analysis_summary_counts=analysis_summary_counts,
         domain_admin_takeover=takeover,
         inline_assets=args.single_file_report,
+        review_center=scoring.get('review_center'),
+        scan_coverage=scoring.get('scan_coverage'),
+        remediation_simulation=scoring.get('remediation_simulation'),
+        product_workspace=product_workspace,
     )
     print(f"[+] HTML report generated: {output_file}")
 
@@ -827,7 +1022,7 @@ def generate_reports(
     # JSON export
     if args.json_export:
         _export_json(args.json_export, data, analysis, scoring, compliance,
-                     baseline_comparison, language=args.language)
+                     baseline_comparison, language=args.language, signing_key=getattr(args, 'signing_key', None))
 
     # Kerberoasting export
     if args.kerberoasting_export:
@@ -842,6 +1037,19 @@ def generate_reports(
         ExportFormats.export_attack_graph(analysis.get("attack_graph_v2") or {}, args.attack_graph_export)
         print(f"[+] Attack graph export saved: {args.attack_graph_export}")
 
+    if args.validation_script:
+        from core.validation_collector import build_validation_script
+        from core.secure_file import atomic_write_text
+        atomic_write_text(args.validation_script, build_validation_script(scoring['review_center']))
+        print(f'[+] Validation collector saved: {args.validation_script}')
+    if args.review_export:
+        from core.evidence_signing import write_document
+        write_document(args.review_export, scoring['review_center']['document'], getattr(args, 'signing_key', None))
+        print(f'[+] Review document saved: {args.review_export}')
+    export_product_workspace(args, product_workspace, scoring['scored_risks'])
+    from core.engagement_workflow import export_engagement
+    export_engagement(args, product_workspace, data, scoring['scored_risks'])
+
     return baseline_comparison
 
 
@@ -851,11 +1059,14 @@ def _export_json(
     analysis: dict[str, Any],
     scoring: dict[str, Any],
     compliance: dict[str, Any],
-    baseline_comparison: Optional[dict[str, Any]],
+    baseline_comparison: dict[str, Any] | None,
     language: str = 'en',
+    signing_key: str | None = None,
 ) -> None:
     """Write full results to a JSON file."""
     export_data = {
+        'schema_version': 2,
+        'domain': (scoring.get('review_center') or {}).get('domain'),
         "users": data["users"],
         "computers": data["computers"],
         "groups": data["groups"],
@@ -866,13 +1077,24 @@ def _export_json(
         "compliance_data": compliance["compliance_data"],
         "risk_management_data": compliance["risk_management_data"],
         "baseline_comparison": baseline_comparison,
+        'review_center': scoring.get('review_center'),
+        'scan_coverage': scoring.get('scan_coverage'),
+        'remediation_simulation': scoring.get('remediation_simulation'),
+        'analysis_execution': analysis.get('analysis_execution'),
+        'scan_context': data.get('scan_context'),
+        'collection_health': data.get('collection_health'),
+        'effective_access': analysis.get('effective_access'),
+        'product_workspace': scoring.get('product_workspace'),
+        'engagement_scope': data.get('engagement_scope'),
+        'engagement': analysis.get('engagement'),
+        'federated_graph': analysis.get('federated_graph'),
     }
     export_data.update(build_export_analysis_slice(analysis))
     if language == 'tr':
         from reporting.localization import localize_export_payload
         export_data = localize_export_payload(export_data, language)
-    with atomic_text_writer(path, encoding="utf-8") as f:
-        json.dump(export_data, f, indent=2, default=str, ensure_ascii=False)
+    from core.evidence_signing import write_document
+    write_document(path, export_data, signing_key)
     print(f"[+] JSON export saved: {path}")
 
 
@@ -901,8 +1123,8 @@ def calculate_incremental_diff(
     persistence: ProgressPersistence,
     domain: str,
     current_data: dict[str, Any],
-    current_checkpoint_id: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
+    current_checkpoint_id: str | None = None,
+) -> dict[str, Any] | None:
     """Compare current collection data with the latest compatible checkpoint."""
     checkpoints = persistence.list_checkpoints(domain)
     previous_checkpoint = None
@@ -923,6 +1145,10 @@ def calculate_incremental_diff(
         return None
 
     previous_data = previous_payload.get("data", previous_payload)
+    if not isinstance(previous_data, dict):
+        raise ValidationError('Incremental checkpoint data must be an object')
+    if previous_payload.get('domain') and str(previous_payload['domain']).casefold().strip('.') != domain.casefold().strip('.'):
+        raise ValidationError('Incremental checkpoint belongs to a different domain')
     scanner = IncrementalScanner(persistence)
     key_fields = {
         "users": ["sAMAccountName"],
@@ -938,6 +1164,8 @@ def calculate_incremental_diff(
     for collection_name, fields in key_fields.items():
         current_items = current_data.get(collection_name, []) or []
         previous_items = previous_data.get(collection_name, []) or []
+        if not isinstance(previous_items, list) or any(not isinstance(row, dict) for row in previous_items):
+            raise ValidationError(f'Incremental checkpoint {collection_name} must be a list of objects')
         collection_diff = {
             "new": scanner.find_new_items(current_items, previous_items, fields),
             "changed": scanner.find_changed_items(current_items, previous_items, fields),
@@ -982,8 +1210,192 @@ def build_checkpoint_payload(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def load_workflow_inputs(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """Merge endpoint observations while keeping reviewer decisions explicit."""
+    from core.finding_review import empty_review_document, load_review_document
+    signature_options = {'trusted_keys': args.trusted_key, 'require_signed': args.require_signed_evidence}
+    document = load_review_document(args.review_file, args.domain, **signature_options) if args.review_file else empty_review_document(args.domain)
+    args._signature_verifications = []
+    if args.review_file:
+        args._signature_verifications.append({'source': args.review_file, **document.get('signature_verification', {})})
+    for path in args.validation_evidence:
+        observations = load_review_document(path, args.domain, **signature_options)
+        args._signature_verifications.append({'source': path, **observations.get('signature_verification', {})})
+        document['observations'].extend(observations.get('observations', []))
+        if len(document['observations']) > 10000:
+            raise ValidationError('Too many endpoint observations')
+    removed = []
+    if args.remediation_scenario:
+        scenario = _load_bounded_json(args.remediation_scenario)
+        removed = scenario.get('removed_edge_ids')
+        if not isinstance(removed, list) or len(removed) > 100000 or any(not isinstance(item, str) for item in removed):
+            raise ValidationError('Remediation scenario requires a list of removed_edge_ids')
+    args._workflow_review_document = document
+    return document, removed
+
+
+def _load_bounded_json(path: str) -> dict[str, Any]:
+    with Path(path).open('rb') as stream:
+        payload = stream.read(64 * 1024 * 1024 + 1)
+    if len(payload) > 64 * 1024 * 1024:
+        raise ValidationError('Snapshot or scenario exceeds the 64 MiB limit')
+    try:
+        document = json.loads(payload.decode('utf-8-sig'))
+    except (ValueError, UnicodeError) as exc:
+        raise ValidationError('Snapshot or scenario is not valid JSON') from exc
+    if not isinstance(document, dict):
+        raise ValidationError('Snapshot or scenario must be a JSON object')
+    return document
+
+
+def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], removed: list[str]) -> None:
+    """Re-evaluate saved evidence and review expiry without opening a connection."""
+    from analysis.registry import EXPORT_KEY_TO_ANALYSIS_KEY
+    from core.product_workflow import load_workflow_document
+    snapshot = load_workflow_document(args.offline_snapshot, args)
+    if str(snapshot.get('domain') or '').casefold().strip('.') != args.domain.casefold().strip('.'):
+        raise ValidationError('Offline snapshot belongs to a different domain or lacks domain metadata')
+    if not args.review_file:
+        saved_document = (snapshot.get('review_center') or {}).get('document')
+        if saved_document:
+            saved_document.setdefault('observations', []).extend(document['observations'])
+            document = saved_document
+    args._workflow_review_document = document
+    data = {key: snapshot.get(key, []) for key in ('users', 'computers', 'groups', 'gpos')}
+    if any(not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) for rows in data.values()):
+        raise ValidationError('Offline snapshot contains invalid directory collections')
+    _restore_snapshot_binary_attributes(data)
+    data['collection_health'] = snapshot.get('collection_health') or {'status': 'unknown', 'queries': []}
+    data['scan_context'] = {**(snapshot.get('scan_context') or {}), 'fresh_ldap': False}
+    risks = snapshot.get('risks', [])
+    if not isinstance(risks, list) or any(not isinstance(risk, dict) for risk in risks):
+        raise ValidationError('Offline snapshot contains invalid findings')
+    analysis = {key: snapshot.get(export_key) for export_key, key in EXPORT_KEY_TO_ANALYSIS_KEY.items()}
+    analysis['analysis_execution'] = snapshot.get('analysis_execution')
+    analysis['effective_access'] = snapshot.get('effective_access')
+    analysis['engagement'] = snapshot.get('engagement') or {}
+    analysis['federated_graph'] = snapshot.get('federated_graph')
+    args._saved_federated_graph = snapshot.get('federated_graph')
+    data['engagement_scope'] = snapshot.get('engagement_scope')
+    for key in CONSOLIDATION_RISK_KEYS:
+        if not isinstance(analysis.get(key), list):
+            analysis[key] = []
+    for key in ('misconfig_findings', 'kerberoasting_targets', 'asrep_targets'):
+        analysis[key] = analysis.get(key) or []
+    analysis['legacy_os_results'] = analysis.get('legacy_os_results') or {}
+    analysis['acl_security_results'] = analysis.get('acl_security_results') or {}
+    apply_package_c_evidence(args, data, analysis)
+    replacements = []
+    if args.event_log:
+        replacements.append(('event_', 'event_correlation_risks'))
+    if args.posture_file or args.validation_evidence:
+        replacements.append(('posture_', 'posture_evidence_risks'))
+    if args.baseline:
+        replacements.append(('snapshot_', 'snapshot_delta_risks'))
+    if getattr(args, 'sysvol_dir', []):
+        replacements.append(('sysvol_', 'shared_file_risks'))
+    if getattr(args, 'protocol_evidence', None):
+        replacements.append(('protocol_', 'protocol_verification_risks'))
+    for prefix, key in replacements:
+        risks = [risk for risk in risks if not str(risk.get('type') or '').startswith(prefix)]
+        risks.extend(analysis.get(key) or [])
+    scoring = score_and_consolidate(
+        analysis, data, domain=args.domain, dc_ip=args.dc_ip, review_document=document,
+        evidence_max_age_days=args.evidence_max_age_days, input_risks=risks, removed_edge_ids=removed,
+    )
+    manager = RiskManager(hourly_rate=args.hourly_rate)
+    compliance = {
+        'compliance_data': ComplianceReporter().generate_compliance_report(scoring['scored_risks']),
+        'risk_management_data': {
+            'heat_map': manager.generate_risk_heat_map(scoring['scored_risks']),
+            'prioritized_risks': manager.prioritize_risks(scoring['scored_risks']),
+        },
+    }
+    generate_reports(args, data, analysis, scoring, compliance, None)
+    print('[+] Offline report completed. Directory evidence was reused; no LDAP connection was opened.')
+
+
+def _restore_snapshot_binary_attributes(data: dict[str, Any]) -> None:
+    """Restore the bytes repr emitted by existing JSON exports, without eval."""
+    import ast
+    binary_fields = {'objectSid', 'nTSecurityDescriptor', 'msDS-AllowedToActOnBehalfOfOtherIdentity',
+                     'msDS-GroupMSAMembership', 'objectGUID'}
+
+    def restore(value):
+        if isinstance(value, list):
+            return [restore(item) for item in value]
+        if isinstance(value, str) and value.startswith(("b'", 'b"')):
+            if len(value) > 1024 * 1024:
+                raise ValidationError('Snapshot binary attribute exceeds the size limit')
+            try:
+                decoded = ast.literal_eval(value)
+            except (ValueError, SyntaxError) as exc:
+                raise ValidationError('Snapshot contains an invalid binary attribute') from exc
+            if not isinstance(decoded, bytes):
+                raise ValidationError('Snapshot binary attribute is not bytes')
+            return decoded
+        return value
+
+    for key in ('users', 'groups', 'computers', 'gpos'):
+        rows = data.get(key) or []
+        for obj in rows:
+            for field in binary_fields & obj.keys():
+                obj[field] = restore(obj[field])
+
+
+def load_resume_checkpoint(persistence, checkpoint_id: str, domain: str):
+    """Reject invalid resume requests before credentials or LDAP are used."""
+    try:
+        payload = persistence.load_checkpoint(checkpoint_id)
+    except ValueError as exc:
+        raise ValidationError('Invalid resume checkpoint identifier') from exc
+    if not isinstance(payload, dict):
+        raise ValidationError('Resume checkpoint was not found or could not be read')
+    if str(payload.get('domain') or '').casefold().strip('.') != domain.casefold().strip('.'):
+        raise ValidationError('Resume checkpoint belongs to a different or unspecified domain')
+    sections = ('data', 'analysis', 'scoring', 'compliance')
+    if not all(key in payload for key in sections):
+        return None  # A valid partial checkpoint still requires fresh collection.
+    if any(not isinstance(payload[key], dict) for key in sections):
+        raise ValidationError('Resume checkpoint sections must be objects')
+    data, analysis = payload['data'], payload['analysis']
+    for key in ('users', 'computers', 'groups', 'gpos'):
+        if not isinstance(data.get(key), list) or any(not isinstance(row, dict) for row in data[key]):
+            raise ValidationError(f'Resume checkpoint {key} must be a list of objects')
+    required_analysis = {'misconfig_findings': list, 'kerberoasting_targets': list, 'asrep_targets': list,
+                         'legacy_os_results': dict, 'acl_security_results': dict}
+    for key, expected_type in required_analysis.items():
+        if not isinstance(analysis.get(key), expected_type):
+            raise ValidationError(f'Resume checkpoint is missing valid {key} analysis results')
+    for key in (*CONSOLIDATION_RISK_KEYS, 'misconfig_findings', 'kerberoasting_targets', 'asrep_targets'):
+        if key in analysis and (
+            not isinstance(analysis[key], list) or any(not isinstance(row, dict) for row in analysis[key])
+        ):
+            raise ValidationError(f'Resume checkpoint analysis {key} must be a list of objects')
+    for parent, key in ((data, 'scan_context'), (analysis, 'analysis_execution'),
+                        (payload['scoring'], 'review_center')):
+        if parent.get(key) is not None and not isinstance(parent[key], dict):
+            raise ValidationError(f'Resume checkpoint {key} must be an object')
+    saved_reviews = (payload['scoring'].get('review_center') or {}).get('document')
+    if saved_reviews is not None:
+        from core.finding_review import validate_review_document
+        validate_review_document(saved_reviews, domain)
+    execution = analysis.get('analysis_execution') or {}
+    completed = execution.get('completed_steps', [])
+    if not isinstance(completed, list) or any(not isinstance(key, str) for key in completed):
+        raise ValidationError('Resume checkpoint completed_steps must be a list of analysis keys')
+    for key in ('skipped_steps', 'partial_steps'):
+        if not isinstance(execution.get(key, {}), dict):
+            raise ValidationError(f'Resume checkpoint {key} must be an object')
+    _restore_snapshot_binary_attributes(data)
+    return payload
+
+
 def main() -> None:
     """AtilKurt — Active Directory Security Health Check Tool."""
+    from core.utility_cli import COMMANDS, utility_main
+    if len(sys.argv) > 1 and sys.argv[1] in COMMANDS:
+        sys.exit(utility_main(sys.argv[1:], resolve_password))
     parser = build_parser()
     args = parser.parse_args()
     validate_cli_arguments(parser, args)
@@ -994,10 +1406,22 @@ def main() -> None:
     print("[*] AtilKurt - Active Directory Security Health Check")
     print("[*] Starting analysis...")
 
-    password_manager: Optional[SecurePasswordManager] = None
-    ldap_conn: Optional[LDAPConnection] = None
+    password_manager: SecurePasswordManager | None = None
+    ldap_conn: LDAPConnection | None = None
 
     try:
+        from core.engagement_workflow import prepare_engagement_inputs
+        prepare_engagement_inputs(args)
+        review_document, removed_edge_ids = load_workflow_inputs(args)
+        if args.offline_snapshot:
+            generate_offline_report(args, review_document, removed_edge_ids)
+            return
+        persistence = ProgressPersistence() if args.resume or args.checkpoint or args.incremental else None
+        checkpoint_payload = None
+        if args.resume:
+            checkpoint_payload = load_resume_checkpoint(persistence, args.resume, args.domain)
+            if checkpoint_payload is None:
+                print('[*] Partial checkpoint validated; running a fresh scan')
         # --- Password -------------------------------------------------------
         password, password_manager = resolve_password(args)
 
@@ -1028,13 +1452,6 @@ def main() -> None:
         else:
             print("[*] Rate limiting disabled")
 
-        # --- Progress persistence -------------------------------------------
-        persistence = None
-        if args.resume or args.checkpoint or args.incremental:
-            persistence = ProgressPersistence()
-            if args.resume:
-                print(f"[*] Resuming from checkpoint: {args.resume}")
-
         # --- LDAP connection -------------------------------------------------
         print("[*] Establishing LDAP connection...")
         # Avoid logging username in production; keep dc_ip only
@@ -1051,6 +1468,8 @@ def main() -> None:
             max_retries=args.max_retries,
             validate_certificate=not args.no_validate_cert,
         )
+        ldap_conn.assessment_scope = args._assessment_scope
+        args._active_ldap = ldap_conn
 
         try:
             ldap_conn.connect()
@@ -1059,6 +1478,11 @@ def main() -> None:
             sys.exit(1)
 
         print("[+] LDAP connection established successfully")
+        if not args.scope_file:
+            from core.ad_identity import forest_configuration_dn
+            configuration_dn = forest_configuration_dn(ldap_conn)
+            if configuration_dn:
+                args._assessment_scope.metadata_roots.append(configuration_dn)
         if not args.ssl:
             print(
                 "[!] LDAP is using port 389 without TLS. Prefer --ssl so credentials "
@@ -1067,18 +1491,19 @@ def main() -> None:
         if stealth.enabled:
             ldap_conn.pre_search_hook = stealth.apply_delay
 
-        resumed_from_checkpoint = False
-        if args.resume and persistence:
-            checkpoint_payload = persistence.load_checkpoint(args.resume)
-            if checkpoint_payload and all(k in checkpoint_payload for k in ("data", "analysis", "scoring", "compliance")):
-                data = checkpoint_payload["data"]
-                analysis = checkpoint_payload["analysis"]
-                scoring = checkpoint_payload["scoring"]
-                compliance = checkpoint_payload["compliance"]
-                resumed_from_checkpoint = True
-                print(f"[+] Loaded full checkpoint: {args.resume}")
-            else:
-                print("[*] Checkpoint does not contain a full scan state; running a fresh scan")
+        resumed_from_checkpoint = checkpoint_payload is not None
+        if resumed_from_checkpoint:
+            data = checkpoint_payload["data"]
+            analysis = checkpoint_payload["analysis"]
+            scoring = checkpoint_payload["scoring"]
+            compliance = checkpoint_payload["compliance"]
+            if not args.review_file:
+                saved_reviews = (scoring.get('review_center') or {}).get('document')
+                if saved_reviews:
+                    saved_reviews.setdefault('observations', []).extend(review_document['observations'])
+                    review_document = saved_reviews
+                    args._workflow_review_document = review_document
+            print(f"[+] Loaded full checkpoint: {args.resume}")
 
         if not resumed_from_checkpoint:
             # --- Data collection ---------------------------------------------
@@ -1107,19 +1532,37 @@ def main() -> None:
                 analysis_profile=args.analysis_profile,
                 skip_analyses=args.skip_analysis,
             )
+            if args.verify_effective_access:
+                from core.effective_access import collect_effective_tokens
+                from analysis.registry import ANALYSIS_STEP_REGISTRY
+                initial_risks = [risk for rows in get_consolidated_risk_lists(analysis) for risk in rows]
+                analysis['effective_access'] = collect_effective_tokens(ldap_conn, data, initial_risks,
+                                                                       limit=args.token_limit, delay=args.token_delay)
+                completed = set(analysis['analysis_execution']['completed_steps'])
+                runners = {key: runner for key, _, runner in ANALYSIS_STEP_REGISTRY}
+                for key in ('acl_security', 'dcsync', 'attack_graph_v2'):
+                    if key in completed:
+                        analysis.update(runners[key](ldap_conn, {**data, '_analysis_results': analysis}))
+            from core.diagnostics import collection_health
+            from datetime import timezone
+            data['collection_health'] = collection_health(ldap_conn, data)
+            data['scan_context'] = {'fresh_ldap': True, 'collected_at': datetime.now(timezone.utc).isoformat(),
+                                    'profile': args.analysis_profile}
             apply_package_c_evidence(args, data, analysis)
             if incremental_diff:
                 analysis["incremental_diff"] = incremental_diff
 
             # --- Risk scoring ------------------------------------------------
             scoring = score_and_consolidate(
-                analysis, data, domain=args.domain, dc_ip=args.dc_ip
+                analysis, data, domain=args.domain, dc_ip=args.dc_ip, review_document=review_document,
+                evidence_max_age_days=args.evidence_max_age_days, removed_edge_ids=removed_edge_ids,
             )
 
             # --- Compliance & risk management --------------------------------
             compliance = generate_compliance_and_risk(
                 ldap_conn, scoring['scored_risks'], data, args.hourly_rate
             )
+            data['collection_health'] = collection_health(ldap_conn, data)
 
             # --- Checkpoint --------------------------------------------------
             checkpoint_id = args.checkpoint
@@ -1132,12 +1575,14 @@ def main() -> None:
                 )
                 print(f"[+] Checkpoint saved: {checkpoint_id}")
 
-        elif args.event_log or args.posture_file or args.baseline:
+        else:
+            data['scan_context'] = {**(data.get('scan_context') or {}), 'fresh_ldap': False}
             # A full checkpoint can be enriched with newly supplied offline
             # evidence without repeating LDAP collection and registered analyses.
             apply_package_c_evidence(args, data, analysis)
             scoring = score_and_consolidate(
-                analysis, data, domain=args.domain, dc_ip=args.dc_ip
+                analysis, data, domain=args.domain, dc_ip=args.dc_ip, review_document=review_document,
+                evidence_max_age_days=args.evidence_max_age_days, removed_edge_ids=removed_edge_ids,
             )
             compliance = generate_compliance_and_risk(
                 ldap_conn, scoring['scored_risks'], data, args.hourly_rate

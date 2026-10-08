@@ -29,7 +29,7 @@ class PostureEvidenceAnalyzer:
         "certificate_mapping": ("certificatemappingmethods",),
     }
 
-    def analyze(self, paths: list[str]) -> dict[str, Any]:
+    def analyze(self, paths: list[str], observations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         values: dict[str, list[dict[str, Any]]] = {}
         errors: list[dict[str, str]] = []
         for raw_path in paths:
@@ -43,6 +43,11 @@ class PostureEvidenceAnalyzer:
                 logger.warning("Could not parse posture evidence %s: %s", path, exc)
                 errors.append({"path": str(path), "error": str(exc)})
 
+        for observation in observations or []:
+            if observation.get('status') == 'available':
+                normalized = self._normalize_key(observation.get('name') or '')
+                values.setdefault(normalized, []).append({key: observation.get(key) for key in
+                                                          ('value', 'source', 'target', 'collected_at')})
         resolved: dict[str, list[dict[str, Any]]] = {}
         for control, aliases in self.CONTROL_ALIASES.items():
             matches = []
@@ -50,7 +55,10 @@ class PostureEvidenceAnalyzer:
                 if any(key.endswith(alias) for alias in aliases):
                     matches.extend(records)
             if matches:
-                resolved[control] = matches
+                valid = [record for record in matches
+                         if self._int(record['value']) is not None and self._int(record['value']) >= 0]
+                if valid:
+                    resolved[control] = valid
 
         risks: list[dict[str, Any]] = []
         risks.extend(self._check_minimum(resolved, "ldap_signing", 2, RiskTypes.POSTURE_LDAP_SIGNING_WEAK,
@@ -63,7 +71,7 @@ class PostureEvidenceAnalyzer:
                                          "SMB signing is not required", Severity.HIGH))
         risks.extend(self._check_kerberos(resolved.get("kerberos_encryption") or []))
         risks.extend(self._check_certificate_mapping(resolved.get("certificate_mapping") or []))
-        if paths and len(resolved) < len(self.CONTROL_ALIASES):
+        if (paths or observations) and len(resolved) < len(self.CONTROL_ALIASES):
             missing = sorted(set(self.CONTROL_ALIASES) - set(resolved))
             risks.append({
                 "type": RiskTypes.POSTURE_EVIDENCE_INCOMPLETE,
@@ -152,7 +160,8 @@ class PostureEvidenceAnalyzer:
 
     def _check_minimum(self, resolved: dict[str, list[dict[str, Any]]], control: str,
                        minimum: int, risk_type: str, title: str, severity: str) -> list[dict[str, Any]]:
-        weak = [record for record in resolved.get(control, []) if (self._int(record["value"]) or 0) < minimum]
+        weak = [record for record in resolved.get(control, [])
+                if self._int(record['value']) is not None and 0 <= self._int(record['value']) < minimum]
         return [self._risk(
             risk_type, severity, title,
             f"One or more supplied posture values for {control} are below the required value {minimum}.",

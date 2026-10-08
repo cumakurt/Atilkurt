@@ -9,6 +9,7 @@ from ldap3.core.exceptions import LDAPException
 import ssl
 import logging
 import time
+from threading import Lock
 
 from core.exceptions import LDAPConnectionError, LDAPSearchError
 from core.validators import validate_domain, validate_server_address, validate_username, validate_password, validate_timeout
@@ -84,10 +85,15 @@ class LDAPConnection:
         self.connection: Optional[Connection] = None
         self.base_dn = self._get_base_dn(self.domain)
         self.pre_search_hook: Optional[Callable[[], None]] = None
+        self.assessment_scope = None
 
         # Adaptive timeout tracking
         self.estimated_result_size = 0
         self.last_query_duration = 0.0
+        self.query_audit = []
+        self.query_audit_overflow = False
+        self.query_failure_count = 0
+        self._audit_lock = Lock()
 
     def _normalize_username(self, username: str, domain: str) -> str:
         """
@@ -175,6 +181,8 @@ class LDAPConnection:
                 auth_methods = [NTLM, SIMPLE] if use_ssl_attempt else [NTLM]
 
                 for auth_method in auth_methods:
+                    if self.assessment_scope:
+                        self.assessment_scope.consume(self.dc_ip, 'ldaps' if use_ssl_attempt else 'ldap')
                     try:
                         candidate_connection = Connection(
                             server,
@@ -236,6 +244,109 @@ class LDAPConnection:
                size_limit: int = 0,
                progress_callback: Optional[callable] = None,
                use_cache: bool = True) -> list[dict[str, Any]]:
+        """Record query completion and attribute visibility without storing values."""
+        if self.assessment_scope:
+            try:
+                plan = self.assessment_scope.query_plan(search_base or self.base_dn, search_filter)
+            except LDAPSearchError as exc:
+                def rejected(error=exc):
+                    raise error
+                return self._audited_query(rejected, search_base or self.base_dn, search_filter, attributes, size_limit, 'SUBTREE')
+            rows, seen = [], set()
+            for base, query_filter in plan:
+                found = self._audited_query(
+                    lambda b=base, f=query_filter: self._search_impl(b, f, attributes, size_limit,
+                                                                    progress_callback, use_cache),
+                    base, query_filter, attributes, size_limit, 'SUBTREE')
+                for row in found:
+                    dn = row.get('distinguishedName') or row.get('dn')
+                    if isinstance(dn, list):
+                        dn = dn[0] if dn else None
+                    if not dn or not self.assessment_scope.allows_dn(dn):
+                        continue
+                    if str(dn).casefold() not in seen:
+                        seen.add(str(dn).casefold())
+                        rows.append(row)
+                    if size_limit and len(rows) >= size_limit:
+                        return rows
+            return rows
+        return self._audited_query(
+            lambda: self._search_impl(search_base, search_filter, attributes, size_limit,
+                                      progress_callback, use_cache),
+            search_base or self.base_dn, search_filter, attributes, size_limit, 'SUBTREE',
+        )
+
+    def base_search(self, dn: str, attributes: list[str]) -> list[dict[str, Any]]:
+        """Read one object without paging/cache; tokenGroups requires BASE scope."""
+        from ldap3 import BASE
+        def query():
+            if not self.connection:
+                raise LDAPSearchError('LDAP connection is not established')
+            if self.assessment_scope and not self.assessment_scope.allows_dn(dn):
+                from core.assessment_scope import ScopeLimitError
+                raise ScopeLimitError('LDAP object is outside directory scope')
+            if self.pre_search_hook:
+                self.pre_search_hook()
+            self._consume_request()
+            succeeded = self.connection.search(search_base=dn, search_filter='(objectClass=*)',
+                                               search_scope=BASE, attributes=attributes)
+            self._validate_search_result(succeeded)
+            return [self._entry_to_dict(entry) for entry in self.connection.entries]
+        return self._audited_query(query, dn, '(objectClass=*)', attributes, 0, 'BASE')
+
+    def _consume_request(self):
+        if self.assessment_scope:
+            self.assessment_scope.consume(self.dc_ip, 'ldaps' if self.use_ssl else 'ldap')
+
+    def _audited_query(self, query, base, ldap_filter, attributes, limit, scope):
+        import hashlib
+        started = time.monotonic()
+        record = {'base': base, 'query_id': hashlib.sha256(
+            repr((base, ldap_filter, attributes, limit, scope)).encode()).hexdigest()[:24],
+            'attributes': list(attributes or []), 'scope': scope, 'size_limit': limit}
+        try:
+            results = query()
+            missing = {name: len(results) for name in attributes or []}
+            for row in results:
+                observed = {str(key).casefold() for key, value in row.items()
+                            if value is not None and value != '' and value != [] and value != b''}
+                for name in missing:
+                    if name.casefold() in observed:
+                        missing[name] -= 1
+            record.update(status='completed', returned_objects=len(results),
+                          unobserved_attributes=[name for name, count in missing.items() if count == len(results)],
+                          unobserved_attribute_counts=missing)
+            return results
+        except Exception:
+            record.update(status='failed', returned_objects=0,
+                          unobserved_attributes=list(attributes or []))
+            raise
+        finally:
+            record['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
+            result = getattr(self.connection, 'result', None)
+            record['result_code'] = result.get('result') if isinstance(result, dict) else None
+            self.merge_query_audit([record])
+
+    def merge_query_audit(self, records):
+        """Merge worker diagnostics with a bounded record list."""
+        lock = self.__dict__.setdefault('_audit_lock', Lock())
+        with lock:
+            if not hasattr(self, 'query_audit'):
+                self.query_audit = []
+            self.query_failure_count = getattr(self, 'query_failure_count', 0) + sum(
+                record.get('status') == 'failed' for record in records
+            )
+            remaining = max(0, 10000 - len(self.query_audit))
+            self.query_audit.extend(records[:remaining])
+            if len(records) > remaining:
+                self.query_audit_overflow = True
+
+    def _search_impl(self, search_base: Optional[str] = None,
+               search_filter: str = '(objectClass=*)',
+               attributes: Optional[list[str]] = None,
+               size_limit: int = 0,
+               progress_callback: Optional[callable] = None,
+               use_cache: bool = True) -> list[dict[str, Any]]:
         """
         Perform LDAP search operation (READ-ONLY) with optional paging support and retry logic.
 
@@ -280,9 +391,6 @@ class LDAPConnection:
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                if self.pre_search_hook:
-                    self.pre_search_hook()
-
                 # Use paged search for large result sets if enabled
                 # But skip paging for single object searches (size_limit=1) to avoid retry issues
                 if self.enable_paging and (size_limit == 0 or size_limit > self.page_size) and size_limit != 1:
@@ -312,6 +420,9 @@ class LDAPConnection:
                     return results
                 else:
                     # Standard search for small result sets
+                    if self.pre_search_hook:
+                        self.pre_search_hook()
+                    self._consume_request()
                     start_time = time.time()
                     search_succeeded = self.connection.search(
                         search_base=search_base,
@@ -512,6 +623,7 @@ class LDAPConnection:
         """
         results: list[dict[str, Any]] = []
         seen_entries = set()
+        seen_cookies = set()
         cookie = None
         total_count = 0
         start_time = time.monotonic()
@@ -522,6 +634,9 @@ class LDAPConnection:
         try:
             # Use ldap3's paged search with manual cookie management
             while True:
+                if self.pre_search_hook:
+                    self.pre_search_hook()
+                self._consume_request()
                 # Check timeout
                 elapsed = time.monotonic() - start_time
                 if elapsed > timeout:
@@ -538,6 +653,8 @@ class LDAPConnection:
                     paged_cookie=cookie
                 )
                 self._validate_search_result(search_succeeded)
+                if time.monotonic() - start_time > timeout:
+                    raise LDAPSearchError('LDAP paged search timed out; partial results discarded')
 
                 # Process entries in current page
                 # ldap3 accumulates entries, so we only process new ones
@@ -576,11 +693,6 @@ class LDAPConnection:
 
                 logger.info(f"Paged search: retrieved {total_count} entries so far (page had {page_count} entries)")
 
-                # If no entries in this page, we're done
-                if page_count == 0:
-                    logger.info("No entries in current page, ending paged search")
-                    break
-
                 # Check if we've reached size limit
                 if size_limit > 0 and total_count >= size_limit:
                     logger.info(f"Reached size limit of {size_limit}, ending paged search")
@@ -600,6 +712,12 @@ class LDAPConnection:
                     logger.debug(f"Empty cookie returned after {total_count} entries - all results retrieved")
                     break
 
+                if page_count == 0 or next_cookie in seen_cookies:
+                    raise LDAPSearchError(
+                        "LDAP paging did not advance; partial results discarded"
+                    )
+                seen_cookies.add(next_cookie)
+
                 # Continue with next page
                 cookie = next_cookie
                 logger.debug(f"Continuing paged search with cookie (length: {len(cookie) if isinstance(cookie, bytes) else 'N/A'}) - total so far: {total_count}")
@@ -616,249 +734,39 @@ class LDAPConnection:
             raise LDAPSearchError(error_msg) from e
 
     def _get_paged_cookie(self) -> Optional[bytes]:
-        """
-        Get paged search cookie from LDAP result.
-        In ldap3, cookie is in connection.result['controls'], NOT connection.response!
-
-        Returns:
-            Cookie bytes or None if no more pages
-        """
-        try:
-            paged_oid = '1.2.840.113556.1.4.319'  # Paged results control OID
-
-            # Method 1: connection.result['controls'] - THIS IS THE CORRECT METHOD!
-            # ldap3 stores paging cookie in result, not response!
-            try:
-                if hasattr(self.connection, 'result'):
-                    result = self.connection.result
-                    # Debug: Log result structure (only once)
-                    if not hasattr(self, '_debugged_result'):
-                        logger.info(f"Result type: {type(result)}")
-                        if isinstance(result, dict):
-                            logger.info(f"Result keys: {list(result.keys())}")
-                            if 'controls' in result:
-                                logger.info(f"Controls type: {type(result['controls'])}, keys: {list(result['controls'].keys()) if isinstance(result['controls'], dict) else 'N/A'}")
-                        self._debugged_result = True
-
-                    if isinstance(result, dict) and 'controls' in result:
-                        controls = result['controls']
-                        if isinstance(controls, dict) and paged_oid in controls:
-                            paged_control = controls[paged_oid]
-                            # Debug: Log paged control structure
-                            if not hasattr(self, '_debugged_paged_control'):
-                                logger.info(f"Paged control type: {type(paged_control)}")
-                                if isinstance(paged_control, dict):
-                                    logger.info(f"Paged control keys: {list(paged_control.keys())}")
-                                    if 'value' in paged_control:
-                                        logger.info(f"Paged control value type: {type(paged_control['value'])}, value: {paged_control['value']}")
-                                self._debugged_paged_control = True
-
-                            # Cookie is in paged_control['value']['cookie']
-                            if isinstance(paged_control, dict):
-                                if 'value' in paged_control:
-                                    value = paged_control['value']
-                                    if isinstance(value, dict) and 'cookie' in value:
-                                        cookie = value['cookie']
-                                        if cookie:
-                                            if isinstance(cookie, bytes):
-                                                logger.info(f"Found cookie via Method 1 (result['controls']['value']['cookie']) - {len(cookie)} bytes")
-                                                return cookie if len(cookie) > 0 else None
-                                            else:
-                                                try:
-                                                    cookie_bytes = bytes(cookie)
-                                                    logger.info(f"Found cookie via Method 1 (result['controls']['value']['cookie'] converted) - {len(cookie_bytes)} bytes")
-                                                    return cookie_bytes if len(cookie_bytes) > 0 else None
-                                                except Exception:
-                                                    pass
-                                    # If value is directly the cookie (bytes)
-                                    elif isinstance(value, bytes):
-                                        logger.info(f"Found cookie via Method 1 (result['controls']['value'] as bytes) - {len(value)} bytes")
-                                        return value if len(value) > 0 else None
-                                # Also try direct cookie access
-                                if 'cookie' in paged_control:
-                                    cookie = paged_control['cookie']
-                                    if cookie:
-                                        if isinstance(cookie, bytes):
-                                            logger.info(f"Found cookie via Method 1 (result['controls'] direct cookie) - {len(cookie)} bytes")
-                                            return cookie if len(cookie) > 0 else None
-                                        else:
-                                            try:
-                                                cookie_bytes = bytes(cookie)
-                                                logger.info(f"Found cookie via Method 1 (result['controls'] direct cookie converted) - {len(cookie_bytes)} bytes")
-                                                return cookie_bytes if len(cookie_bytes) > 0 else None
-                                            except Exception:
-                                                pass
-            except Exception as e:
-                logger.debug(f"Method 1 (result) failed: {str(e)}")
-                import traceback
-                logger.debug(traceback.format_exc())
-
-            # Method 2: Try connection.response['controls'] (fallback, though usually wrong)
-            try:
-                if hasattr(self.connection, 'response'):
-                    response = self.connection.response
-                    if isinstance(response, dict) and 'controls' in response:
-                        controls = response['controls']
-                        if isinstance(controls, dict) and paged_oid in controls:
-                            paged_control = controls[paged_oid]
-                            cookie = self._extract_cookie_from_control(paged_control)
-                            if cookie is not None:
-                                logger.info(f"Found cookie via Method 2 (response['controls']) - {len(cookie)} bytes")
-                                return cookie
-                        # Also try if controls is a list
-                        elif isinstance(controls, list):
-                            for control in controls:
-                                if hasattr(control, 'controlType') and control.controlType == paged_oid:
-                                    cookie = self._extract_cookie_from_control(control)
-                                    if cookie is not None:
-                                        logger.info(f"Found cookie via Method 2 (response['controls'] list) - {len(cookie)} bytes")
-                                        return cookie
-            except Exception as e:
-                logger.debug(f"Method 2 failed: {str(e)}")
-
-            # Method 3: Try connection.result.controls (if result is an object)
-            try:
-                if hasattr(self.connection, 'result'):
-                    result = self.connection.result
-                    if hasattr(result, 'controls'):
-                        controls = result.controls
-                        if isinstance(controls, dict) and paged_oid in controls:
-                            paged_control = controls[paged_oid]
-                            cookie = self._extract_cookie_from_control(paged_control)
-                            if cookie is not None:
-                                logger.info(f"Found cookie via Method 3 (result.controls) - {len(cookie)} bytes")
-                                return cookie
-            except Exception as e:
-                logger.debug(f"Method 3 failed: {str(e)}")
-
-            # Method 4: Try connection.controls directly (some ldap3 versions)
-            try:
-                if hasattr(self.connection, 'controls'):
-                    controls = self.connection.controls
-                    if isinstance(controls, dict) and paged_oid in controls:
-                        paged_control = controls[paged_oid]
-                        cookie = self._extract_cookie_from_control(paged_control)
-                        if cookie is not None:
-                            logger.info(f"Found cookie via Method 4 (connection.controls) - {len(cookie)} bytes")
-                            return cookie
-            except Exception as e:
-                logger.debug(f"Method 4 failed: {str(e)}")
-
-            # No cookie found - this means we're on the last page
-            # Only log as debug since this is normal when all pages are retrieved
-            logger.debug("No cookie found in any method - likely last page (all results retrieved)")
-            return None
-
-        except Exception as e:
-            logger.warning(f"Error getting paged cookie: {str(e)}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            return None
+        """Prefer the current result's cookie, including its explicit end marker."""
+        paged_oid = '1.2.840.113556.1.4.319'
+        for container in (getattr(self.connection, 'result', None),
+                          getattr(self.connection, 'response', None), self.connection):
+            controls = container.get('controls') if isinstance(container, dict) else getattr(container, 'controls', None)
+            if isinstance(controls, dict) and paged_oid in controls:
+                return self._extract_cookie_from_control(controls[paged_oid])
+            if isinstance(controls, list):
+                for control in controls:
+                    identifier = control.get('controlType') if isinstance(control, dict) else getattr(control, 'controlType', None)
+                    if str(identifier) == paged_oid:
+                        return self._extract_cookie_from_control(control)
+        return None
 
     def _extract_cookie_from_control(self, control) -> Optional[bytes]:
-        """
-        Extract cookie from a paged results control object.
-        In ldap3, cookie is typically in control['value']['cookie'] format.
-
-        Args:
-            control: Control object (can be dict, object, etc.)
-
-        Returns:
-            Cookie bytes or None
-        """
-        try:
-            # If control is a dict (most common in ldap3)
-            if isinstance(control, dict):
-                # Method 1: Try 'value' -> 'cookie' (ldap3 standard format)
-                if 'value' in control:
-                    value = control['value']
-                    if isinstance(value, dict):
-                        cookie = value.get('cookie')
-                        if cookie:
-                            if isinstance(cookie, bytes):
-                                return cookie if len(cookie) > 0 else None
-                            else:
-                                try:
-                                    cookie_bytes = bytes(cookie) if cookie else None
-                                    return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                                except Exception:
-                                    pass
-                    # If value is directly the cookie (bytes)
-                    elif isinstance(value, bytes):
-                        return value if len(value) > 0 else None
-
-                # Method 2: Try 'cookie' key directly
-                cookie = control.get('cookie')
-                if cookie:
-                    if isinstance(cookie, bytes):
-                        return cookie if len(cookie) > 0 else None
-                    else:
-                        try:
-                            cookie_bytes = bytes(cookie) if cookie else None
-                            return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                        except Exception:
-                            pass
-
-                # Method 3: Try 'controlValue' key
-                if 'controlValue' in control:
-                    control_value = control['controlValue']
-                    if isinstance(control_value, dict) and 'cookie' in control_value:
-                        cookie = control_value['cookie']
-                        if cookie:
-                            if isinstance(cookie, bytes):
-                                return cookie if len(cookie) > 0 else None
-                            else:
-                                try:
-                                    cookie_bytes = bytes(cookie) if cookie else None
-                                    return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                                except Exception:
-                                    pass
-
-            # If control is an object with attributes
-            elif hasattr(control, 'cookie'):
-                cookie = control.cookie
-                if cookie:
-                    if isinstance(cookie, bytes):
-                        return cookie if len(cookie) > 0 else None
-                    else:
-                        try:
-                            cookie_bytes = bytes(cookie) if cookie else None
-                            return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                        except Exception:
-                            pass
-
-            # Try value attribute
-            elif hasattr(control, 'value'):
-                value = control.value
-                if isinstance(value, dict) and hasattr(value, 'cookie'):
-                    cookie = value.cookie
-                    if cookie:
-                        if isinstance(cookie, bytes):
-                            return cookie if len(cookie) > 0 else None
-                        else:
-                            try:
-                                cookie_bytes = bytes(cookie) if cookie else None
-                                return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                            except Exception:
-                                pass
-
-            elif hasattr(control, 'controlValue'):
-                cookie = control.controlValue
-                if cookie:
-                    if isinstance(cookie, bytes):
-                        return cookie if len(cookie) > 0 else None
-                    else:
-                        try:
-                            cookie_bytes = bytes(cookie) if cookie else None
-                            return cookie_bytes if cookie_bytes and len(cookie_bytes) > 0 else None
-                        except Exception:
-                            pass
-
-            return None
-
-        except Exception as e:
-            logger.debug(f"Error extracting cookie from control: {str(e)}")
-            return None
+        """Reject malformed controls instead of accepting an incomplete search."""
+        if isinstance(control, dict):
+            if 'value' in control:
+                value = control['value']
+            elif 'cookie' in control:
+                value = control
+            else:
+                value = control.get('controlValue')
+        elif hasattr(control, 'cookie'):
+            value = control
+        else:
+            value = getattr(control, 'value', getattr(control, 'controlValue', None))
+        cookie = value.get('cookie') if isinstance(value, dict) else getattr(value, 'cookie', value)
+        if hasattr(cookie, 'asOctets'):
+            cookie = cookie.asOctets()
+        if not isinstance(cookie, (bytes, bytearray, memoryview)):
+            raise LDAPSearchError('Invalid LDAP paging cookie; partial results discarded')
+        return bytes(cookie)
 
     def _entry_to_dict(self, entry) -> dict[str, Any]:
         """

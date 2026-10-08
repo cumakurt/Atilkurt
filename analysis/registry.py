@@ -80,11 +80,15 @@ CONSOLIDATION_RISK_KEYS: tuple[str, ...] = (
     "event_correlation_risks",
     "posture_evidence_risks",
     "snapshot_delta_risks",
+    "protocol_verification_risks",
+    "shared_file_risks",
 )
 
 # Mapping: export_data key -> analysis key (for JSON export).
 # Covers all analysis-derived keys in the JSON export; renames use different export key.
 EXPORT_KEY_TO_ANALYSIS_KEY: dict[str, str] = {
+    "protocol_verification_risks": "protocol_verification_risks",
+    "shared_file_risks": "shared_file_risks",
     "user_risks": "user_risks",
     "computer_risks": "computer_risks",
     "group_risks": "group_risks",
@@ -806,11 +810,17 @@ def run_all_analyses(
     selected_steps = _selected_analysis_steps(profile, skip_keys)
     selected_keys = {key for key, _, _ in selected_steps}
     results: dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
+    results['analysis_execution'] = {
+        'profile': profile, 'completed_steps': [], 'partial_steps': {},
+        'skipped_steps': {key: 'explicit_skip' if key in set(skip_keys or []) else 'fast_profile'
+                          for key, _, _ in ANALYSIS_STEP_REGISTRY if key not in selected_keys},
+    }
 
     for key, description, runner in selected_steps:
         if status_callback:
             status_callback(description)
         start_time = time.perf_counter()
+        failures_before = _query_failure_count(ldap_conn)
         try:
             step_data = dict(data)
             step_data["_analysis_results"] = results
@@ -825,6 +835,19 @@ def run_all_analyses(
             ) from exc
         duration = time.perf_counter() - start_time
         results.update(step_result)
+        results['analysis_execution']['completed_steps'].append(key)
+        failed_queries = _query_failure_count(ldap_conn) - failures_before
+        if failed_queries > 0:
+            results['analysis_execution']['partial_steps'][key] = {'failed_queries': failed_queries}
         if progress_callback:
             progress_callback(description, step_result, duration)
     return results
+
+
+def _query_failure_count(ldap_conn: Any) -> int:
+    """Include swallowed LDAP failures, even after the bounded ledger fills up."""
+    count = getattr(ldap_conn, 'query_failure_count', None)
+    if isinstance(count, int):
+        return count
+    records = getattr(ldap_conn, 'query_audit', None)
+    return sum(row.get('status') == 'failed' for row in records) if isinstance(records, list) else 0

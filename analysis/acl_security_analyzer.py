@@ -16,6 +16,7 @@ from core.ad_identity import (
     ROLE_DOMAIN_ADMINS,
     ROLE_ENTERPRISE_ADMINS,
     ROLE_SCHEMA_ADMINS,
+    ROLE_DOMAIN_CONTROLLERS,
     computer_is_domain_controller,
     first_ldap_rdn,
     group_is_role,
@@ -23,7 +24,9 @@ from core.ad_identity import (
     membership_names,
 )
 from core.constants import Severity
-from core.security_descriptor_parser import SecurityDescriptorParser, parse_security_descriptor
+from core.ad_security import principal_group_tokens, sid_text
+from core.finding_evidence import requires_validation
+from core.security_descriptor_parser import SecurityDescriptorParser, effective_allow_aces, parse_security_descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +80,7 @@ class ACLSecurityAnalyzer:
             'risk_score': 80
         },
         'WriteProperty': {
-            'mask': 0x10,
+            'mask': 0x20,
             'severity': Severity.HIGH,
             'description': 'Write access to specific LDAP attributes; can include security-sensitive properties',
             'risk_score': 75
@@ -173,6 +176,8 @@ class ACLSecurityAnalyzer:
         self.shadow_admins = []
         self.privilege_escalation_paths = []
         self.acl_risks = []
+        self._tokens = {}
+        self._expected_trustees = {'S-1-5-18', 'S-1-5-32-544', 'S-1-5-9', 'S-1-5-10', 'S-1-3-0'}
 
     def analyze(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
                 computers: list[dict[str, Any]], domain_dn: str = None) -> dict[str, Any]:
@@ -196,6 +201,18 @@ class ACLSecurityAnalyzer:
 
         # Build SID -> display name map for trustee resolution (avoids "same report" confusion)
         sid_to_display_name = self._build_sid_to_display_name(users, groups)
+        self._tokens = principal_group_tokens([*users, *computers], groups)
+        self._expected_trustees = {'S-1-5-18', 'S-1-5-32-544', 'S-1-5-9', 'S-1-5-10', 'S-1-3-0'}
+        for group in groups:
+            if any(group_is_role(group, role) for role in (ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS, ROLE_DOMAIN_CONTROLLERS)):
+                sid = sid_text(group.get('objectSid'))
+                if sid:
+                    self._expected_trustees.add(sid)
+        for computer in computers:
+            if computer_is_domain_controller(computer):
+                sid = sid_text(computer.get('objectSid'))
+                if sid:
+                    self._expected_trustees.add(sid)
 
         # Get domain DN if not provided
         if not domain_dn:
@@ -400,13 +417,15 @@ class ACLSecurityAnalyzer:
                 obj_type = 'group'
             elif 'computer' in [oc.lower() for oc in object_class]:
                 obj_type = 'computer'
-            elif 'domainDNS' in [oc.lower() for oc in object_class]:
+            elif 'domaindns' in [oc.lower() for oc in object_class]:
                 obj_type = 'domain'
             obj_name = obj.get('name') or ''
             obj_dn = obj.get('dn') or ''
 
             for ace in aces:
                 trustee_sid = ace.get('trustee')
+                if trustee_sid in self._expected_trustees:
+                    continue
                 permissions = ace.get('permissions', [])
                 is_inherited = ace.get('inherited', False)
 
@@ -472,7 +491,7 @@ class ACLSecurityAnalyzer:
             parsed_sd = parse_security_descriptor(sd_bytes)
 
             # Extract ACEs from DACL
-            dacl_aces = parsed_sd.get('dacl', [])
+            dacl_aces = effective_allow_aces(parsed_sd, self._tokens)
 
             # Convert parsed ACEs to our format
             for ace_data in dacl_aces:
@@ -534,7 +553,11 @@ class ACLSecurityAnalyzer:
             'attack_scenario': self._get_attack_scenario(perm_name, obj_type),
             'mitigation': self._get_mitigation(perm_name),
             'cis_reference': 'CIS Benchmark requires reviewing ACLs on critical objects',
-            'mitre_attack': self._get_mitre_technique(perm_name)
+            'mitre_attack': self._get_mitre_technique(perm_name),
+            'evidence': {
+                'trustee_sid': trustee_sid, 'permission': perm_name, 'target_dn': obj_dn,
+                'requires_runtime_validation': perm_name.startswith('DS-Replication-'),
+            },
         }
 
     def _detect_shadow_admins(self, users: list[dict[str, Any]], groups: list[dict[str, Any]],
@@ -599,6 +622,8 @@ class ACLSecurityAnalyzer:
             record['dangerous_permissions'].append(permission)
 
         for finding in acl_findings:
+            if requires_validation(finding):
+                continue
             trustee_sid = finding.get('trustee')
             if not trustee_sid:
                 continue
@@ -866,6 +891,8 @@ class ACLSecurityAnalyzer:
         acl_graph = defaultdict(list)
 
         for finding in acl_findings:
+            if requires_validation(finding):
+                continue
             trustee = finding.get('trustee')
             target = finding.get('affected_object')
             permission = finding.get('permission')
@@ -922,7 +949,7 @@ class ACLSecurityAnalyzer:
             for group in groups:
                 group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
                 if current.lower() == group_name.lower():
-                    if any(da_name in group_name for da_name in da_group_names):
+                    if any(group_is_role(group, role) for role in (ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS)):
                         return path
 
             # Check ACL edges
@@ -1028,10 +1055,10 @@ class ACLSecurityAnalyzer:
             'WriteServicePrincipalName': 'The trustee can add or change SPNs on the account. This enables Kerberoasting (crack service account hashes) or Silver Ticket attacks.',
             'WriteUserAccountControl': 'The trustee can change userAccountControl (e.g. disable "Require Kerberos preauthentication" for AS-REP Roasting, or set "Password never expires"). Enables credential theft and persistence.',
             'WriteMember': 'The trustee can add or remove members of this group. If the group is privileged (e.g. Domain Admins), the attacker can add themselves and gain domain admin.',
-            'DS-Replication-Get-Changes': 'This right is part of DCSync. Combined with Get-Changes-All or Filtered-Set, it allows replicating AD and extracting password hashes for the entire domain.',
-            'DS-Replication-Get-Changes-All': 'Enables full DCSync: the trustee can request replication of all directory changes from a DC and extract NTLM hashes for every account, leading to domain takeover.',
-            'DS-Replication-Get-Changes-In-Filtered-Set': 'Enables DCSync with a filter. Attackers can use this to replicate and dump password hashes, same as Get-Changes-All in practice.',
-            'AllExtendedRights': 'Includes DCSync, force change password, and other sensitive extended rights. Effectively allows domain-level compromise from this single permission.',
+            'DS-Replication-Get-Changes': 'A replication prerequisite. Credential replication additionally requires Get-Changes-All on the domain root for the same principal.',
+            'DS-Replication-Get-Changes-All': 'Allows replication of secret domain data when combined with Get-Changes on the domain root. This permission alone does not establish DCSync capability.',
+            'DS-Replication-Get-Changes-In-Filtered-Set': 'Controls replication of attributes in the filtered attribute set. It does not substitute for Get-Changes-All when assessing credential replication.',
+            'AllExtendedRights': f'Grants extended rights applicable to this {obj_type}. On the domain root this includes replication rights; on a user it can include password reset. Impact depends on the target object.',
         }
         return impacts.get(perm_name, f'This permission on {obj_type} can be abused to escalate privileges or compromise security. Review and restrict to least privilege.')
 
@@ -1047,10 +1074,10 @@ class ACLSecurityAnalyzer:
             'WriteServicePrincipalName': 'Attacker adds an SPN to the account (e.g. HOST/victim), requests a ticket (Kerberoasting), cracks it offline, then uses the hash for Silver Ticket or lateral movement.',
             'WriteUserAccountControl': 'Attacker disables "Require Kerberos preauthentication" on the account, then performs AS-REP Roasting to get a crackable hash, or sets DONT_EXPIRE_PASSWD for persistence.',
             'WriteMember': 'Attacker adds their own account (or a controlled account) to this group. If the group is Domain Admins, Enterprise Admins, or another privileged group, they gain that level of access.',
-            'DS-Replication-Get-Changes': 'Used with other replication rights to perform DCSync (e.g. mimikatz, secretsdump). Attacker retrieves NTLM hashes for all domain accounts and can take over the domain.',
-            'DS-Replication-Get-Changes-All': 'Attacker runs DCSync (e.g. mimikatz lsadump::dcsync or Impacket secretsdump.py) to dump all domain hashes, then passes the hash or cracks to get Domain Admin.',
-            'DS-Replication-Get-Changes-In-Filtered-Set': 'Same as Get-Changes-All in practice for credential dumping. Attacker uses DCSync to extract hashes and escalate to full domain control.',
-            'AllExtendedRights': 'Attacker can perform DCSync, force password change, or other extended rights. Typically used for DCSync to dump hashes and take over the domain.',
+            'DS-Replication-Get-Changes': 'A compromised principal could replicate credentials if it also has Get-Changes-All on the domain root. Verify the complete effective grant.',
+            'DS-Replication-Get-Changes-All': 'A compromised principal could replicate credentials if it also has Get-Changes on the domain root. Verify the complete effective grant.',
+            'DS-Replication-Get-Changes-In-Filtered-Set': 'Review which filtered attributes the principal can replicate. This observation alone does not demonstrate credential dumping or domain takeover.',
+            'AllExtendedRights': f'A compromised principal could exercise extended rights applicable to this {obj_type}. Confirm the target and effective permissions before asserting a domain takeover path.',
         }
         return scenarios.get(perm_name, f'This permission can be chained or abused to escalate privileges or compromise the {obj_type}. Treat as high risk until verified.')
 

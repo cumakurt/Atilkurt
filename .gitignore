@@ -46,6 +46,8 @@ AtilKurt_*.html
 logs/
 output/
 .atilkurt_checkpoints/
+.atilkurt_history.sqlite3*
+*.private.pem
 poc_scripts/
 metasploit_modules/
 *.json

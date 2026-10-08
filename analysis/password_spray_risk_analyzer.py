@@ -85,7 +85,7 @@ class PasswordSprayRiskAnalyzer:
             duration = domain.get('lockoutDuration')
             observation = domain.get('lockOutObservationWindow')
 
-            if threshold is None or threshold == 0:
+            if threshold == 0:
                 risks.append({
                     'type': RiskTypes.PASSWORD_SPRAY_NO_LOCKOUT,
                     'severity': Severity.CRITICAL,
@@ -123,7 +123,7 @@ class PasswordSprayRiskAnalyzer:
                     'mitre_attack': 'T1110.003',  # Brute Force: Password Spraying
                     'lockout_threshold': 0,
                 })
-            elif threshold > 10:
+            elif threshold is not None and threshold > 10:
                 risks.append({
                     'type': RiskTypes.PASSWORD_SPRAY_RISK,
                     'severity': Severity.HIGH,
@@ -214,7 +214,9 @@ class PasswordSprayRiskAnalyzer:
                 continue
 
             # Check smart card requirement
-            uac = user.get('userAccountControl')
+            uac = self._parse_int(user.get('userAccountControl'))
+            if uac is None:
+                continue
             smartcard_required = False
             if uac:
                 try:
@@ -316,11 +318,11 @@ class PasswordSprayRiskAnalyzer:
                 threshold = self._parse_int(
                     results[0].get('lockoutThreshold')
                 )
-                if threshold is None or threshold == 0:
+                if threshold == 0:
                     score -= 40
-                elif threshold > 10:
+                elif threshold is not None and threshold > 10:
                     score -= 20
-                elif threshold > 5:
+                elif threshold is not None and threshold > 5:
                     score -= 10
         except Exception as e:
             logger.debug("Could not evaluate lockout threshold for spray score: %s", e)

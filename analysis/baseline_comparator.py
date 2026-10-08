@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.constants import MITRETechniques, RiskTypes, Severity
+from core.finding_evidence import requires_validation
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,10 @@ class BaselineComparator:
         current_analysis: dict[str, Any],
         current_risks: list[dict[str, Any]],
         baseline_path: str,
+        baseline_document: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Compare security-relevant objects, risks, and graph edges."""
-        baseline = self.load_baseline(baseline_path)
+        baseline = baseline_document if baseline_document is not None else self.load_baseline(baseline_path)
         if not baseline:
             return {"error": "Baseline not loaded", "risks": [], "summary": {}}
         if isinstance(baseline.get("data"), dict) and any(
@@ -155,7 +157,8 @@ class BaselineComparator:
         risks: list[dict[str, Any]] = []
         new_high = [
             risk for risk in risk_comparison["new_risks"]
-            if str(risk.get("severity") or risk.get("severity_level")).casefold() in {"critical", "high"}
+            if not requires_validation(risk)
+            and str(risk.get("severity") or risk.get("severity_level")).casefold() in {"critical", "high"}
         ]
         if new_high:
             risks.append(self._delta_risk(

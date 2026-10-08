@@ -7,6 +7,7 @@ from typing import Any
 
 from core.ad_identity import account_has_privileged_evidence, is_privileged_group_record
 from core.ad_security import as_list, as_text, parsed_security_descriptor, sid_text
+from core.security_descriptor_parser import directory_right_granted
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,8 @@ class GMSAReaderGraphAnalyzer:
             nodes[gmsa_id] = {"id": gmsa_id, "label": name, "kind": "gmsa", "privileged": privileged_gmsa}
             parsed = parsed_security_descriptor(account.get("msDS-GroupMSAMembership"))
             reader_sids = {
-                str(ace.get("sid")) for ace in (parsed or {}).get("dacl", []) if ace.get("sid")
+                str(ace.get("sid")) for ace in (parsed or {}).get('dacl', [])
+                if ace.get('sid') and directory_right_granted(parsed, ace['sid'], 0x10)
             }
             effective_names: set[str] = set()
             low_trust_readers: set[str] = set()

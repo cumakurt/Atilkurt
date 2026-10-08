@@ -7,6 +7,7 @@ Well-known RIDs remain valid when a group has been renamed.
 from __future__ import annotations
 
 from typing import Any
+from core.ad_security import sid_text
 
 DOMAIN_ADMINS_RID = 512
 DOMAIN_CONTROLLERS_RID = 516
@@ -115,9 +116,12 @@ def is_privileged_group_record(group: dict[str, Any] | None) -> bool:
     """Return True when a collected group is a well-known privileged group."""
     if not group:
         return False
-    rid = sid_rid(group.get("objectSid"))
-    if rid in PRIVILEGED_GROUP_RIDS:
-        return True
+    sid = sid_text(group.get('objectSid'))
+    if sid:
+        return any(group_is_role(group, role) for role in ROLE_RIDS) or any(
+            str(group.get(key) or '').casefold() in {'dnsadmins', 'dns admins'}
+            for key in ('name', 'sAMAccountName')
+        )
     for key in ("name", "sAMAccountName"):
         if is_privileged_group_name(group.get(key)):
             return True
@@ -129,8 +133,13 @@ def is_privileged_group_record(group: dict[str, Any] | None) -> bool:
 def group_is_role(group: dict[str, Any], role_name: str) -> bool:
     """Return True if the group is the named well-known privileged group."""
     expected_rid = ROLE_RIDS.get(role_name)
-    if expected_rid is not None and sid_rid(group.get("objectSid")) == expected_rid:
-        return True
+    sid = sid_text(group.get('objectSid'))
+    if expected_rid is not None and sid:
+        # Names can be copied or renamed. A present SID is authoritative, and
+        # built-in group RIDs are meaningful only in the BUILTIN authority.
+        if expected_rid >= 544:
+            return sid == f'S-1-5-32-{expected_rid}'
+        return sid.startswith('S-1-5-21-') and len(sid.split('-')) == 8 and sid_rid(sid) == expected_rid
     target = role_name.casefold()
     for key in ("name", "sAMAccountName"):
         candidate = group.get(key)

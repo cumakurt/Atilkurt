@@ -13,6 +13,7 @@ from core.ad_security import (
     parsed_security_descriptor,
     sid_text,
 )
+from core.security_descriptor_parser import effective_allow_aces
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class ADCSControlPlaneAnalyzer:
                 target_id = f"adcs:{dn.casefold()}"
                 nodes[target_id] = {"id": target_id, "label": label, "kind": kind, "dn": dn}
                 parsed = parsed_security_descriptor(row.get("nTSecurityDescriptor"))
-                for ace in (parsed or {}).get("dacl", []):
+                for ace in effective_allow_aces(parsed):
                     permissions = ace_permission_names(ace).intersection(DANGEROUS_DIRECTORY_PERMISSIONS)
                     if not permissions:
                         continue

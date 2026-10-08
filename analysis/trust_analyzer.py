@@ -6,6 +6,7 @@ Analyzes forest trusts, external trusts, and trust configurations
 import logging
 from typing import Any
 from core.ad_identity import forest_configuration_dn
+from core.ad_security import as_int
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -116,23 +117,6 @@ class TrustAnalyzer:
 
             if not unique_trusts:
                 logger.info("No trust relationships found in the domain")
-                # Create informational risk if no trusts found
-                risks.append({
-                    'type': RiskTypes.TRUST_RELATIONSHIP_RISK,
-                    'severity': Severity.LOW,
-                    'title': 'No Trust Relationships Found',
-                    'description': 'No trust relationships were found in the domain. This may indicate that trusts are configured at a different location, or the domain has no external/forest trusts.',
-                    'affected_object': 'Domain Trusts',
-                    'object_type': 'trust',
-                    'trust_details': {
-                        'trust_count': 0
-                    },
-                    'impact': 'No trust relationships detected. If trusts exist but are not visible, they may be configured in a way that is not accessible via standard LDAP queries.',
-                    'attack_scenario': 'If trusts exist but are not detected, they may pose security risks that are not being monitored.',
-                    'mitigation': 'Verify trust relationships manually using: Get-ADTrust (PowerShell) or nltest /domain_trusts (command line). Ensure LDAP read permissions for trust objects.',
-                    'cis_reference': 'CIS Benchmark requires trust relationship review',
-                    'mitre_attack': MITRETechniques.LATERAL_MOVEMENT
-                })
                 return risks
 
             logger.info(f"Found {len(unique_trusts)} trust relationship(s)")
@@ -142,82 +126,30 @@ class TrustAnalyzer:
                 if not trust_name:
                     continue
 
-                trust_direction = trust.get('trustDirection', 0)
-                trust_type = trust.get('trustType', 0)
-                trust_attributes = trust.get('trustAttributes', 0)
-
-                # Convert to integers if strings
-                if isinstance(trust_direction, str):
-                    trust_direction = int(trust_direction)
-                if isinstance(trust_type, str):
-                    trust_type = int(trust_type)
-                if isinstance(trust_attributes, str):
-                    trust_attributes = int(trust_attributes)
-
-                # Analyze trust direction
-                # 0 = Disabled, 1 = Inbound, 2 = Outbound, 3 = Bidirectional
+                trust_direction = as_int(trust.get('trustDirection'))
+                trust_type = as_int(trust.get('trustType'))
+                trust_attributes = as_int(trust.get('trustAttributes'))
+                if trust_direction not in (2, 3) or trust_type is None or trust_attributes is None:
+                    continue
+                # Intra-forest trusts do not use the external-domain quarantine
+                # flag as their SID-filtering boundary.
+                if trust_attributes & 0x20:
+                    continue
                 direction_str = self._get_trust_direction_str(trust_direction)
-
-                # Analyze trust type
-                # 1 = Downlevel (external), 2 = Uplevel (forest)
-                type_str = 'Forest Trust' if trust_type == 2 else 'External Trust'
-
-                # Check for security risks
+                forest = bool(trust_attributes & 0x8)
+                type_str = 'Forest Trust' if forest else 'External Trust'
                 trust_risks = []
-
-                # Bidirectional trusts are riskier
-                if trust_direction == 3:
+                if not forest and not trust_attributes & 0x4:
                     trust_risks.append({
-                        'issue': 'Bidirectional trust allows authentication in both directions',
-                        'severity': Severity.HIGH,
-                        'description': (
-                            'Bidirectional trusts allow users from both domains to authenticate '
-                            'to resources in either domain, increasing attack surface.'
-                        )
-                    })
-
-                # Outbound-only trusts (we trust them, they don't trust us)
-                if trust_direction == 2:
-                    trust_risks.append({
-                        'issue': 'Outbound-only trust - we trust external domain',
-                        'severity': Severity.MEDIUM,
-                        'description': (
-                            'Outbound trust allows users from external domain to access resources '
-                            'in our domain, but we cannot access their domain.'
-                        )
-                    })
-
-                # Check for SID filtering
-                # TRUST_ATTRIBUTE_QUARANTINED_DOMAIN = 0x4
-                if not (trust_attributes & 0x4):
-                    trust_risks.append({
-                        'issue': 'SID filtering is disabled (quarantined domain attribute not set)',
+                        'issue': 'External trust does not enable SID quarantine',
                         'severity': Severity.CRITICAL,
-                        'description': (
-                            'SID filtering prevents SID history attacks. Without it, an attacker '
-                            'could use SID history to gain unauthorized access.'
-                        )
+                        'description': 'An external domain is trusted locally without the QUARANTINED_DOMAIN protection.',
                     })
-
-                # Check for selective authentication
-                # TRUST_ATTRIBUTE_CROSS_ORGANIZATION = 0x10 means selective authentication
-                if trust_attributes & 0x10:
+                if not trust_attributes & 0x10:
                     trust_risks.append({
-                        'issue': 'Selective authentication is enabled',
-                        'severity': Severity.LOW,
-                        'description': (
-                            'Selective authentication restricts which accounts can authenticate '
-                            'across the trust, reducing risk.'
-                        )
-                    })
-                else:
-                    trust_risks.append({
-                        'issue': 'Selective authentication is disabled - all accounts can authenticate',
+                        'issue': 'Selective authentication is disabled',
                         'severity': Severity.MEDIUM,
-                        'description': (
-                            'Without selective authentication, all accounts from the trusted domain '
-                            'can authenticate to resources in our domain.'
-                        )
+                        'description': 'The trusted external domain can authenticate locally without selective-authentication restrictions.',
                     })
 
                 # Create risk entries
@@ -229,12 +161,13 @@ class TrustAnalyzer:
                         'description': f"Trust '{trust_name}' ({type_str}, {direction_str}): {trust_risk['description']}",
                         'affected_object': trust_name,
                         'object_type': 'trust',
+                        'evidence': {'trust_direction': trust_direction, 'trust_attributes': trust_attributes},
                         'trust_details': {
                             'name': trust_name,
                             'type': type_str,
                             'direction': direction_str,
                             'direction_value': trust_direction,
-                            'sid_filtering': bool(trust_attributes & 0x4),
+                            'sid_filtering': bool(trust_attributes & 0x4) if not forest else None,
                             'selective_authentication': bool(trust_attributes & 0x10)
                         },
                         'impact': trust_risk['description'],

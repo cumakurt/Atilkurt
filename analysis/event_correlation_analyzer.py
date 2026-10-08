@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -25,7 +26,11 @@ class EventCorrelationAnalyzer:
         "msds-keycredentiallink", "altsecurityidentities", "ntsecuritydescriptor",
         "msds-allowedtoactonbehalfofotheridentity", "msds-managedaccountprecededbylink",
     })
-    REPLICATION_GUID_MARKERS = ("1131f6aa", "1131f6ad", "89e95b76")
+    REPLICATION_GUID_MARKERS = (
+        "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2",
+        "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2",
+        "89e95b76-444d-4c62-991a-0facbeda640c",
+    )
 
     def analyze(
         self, paths: list[str], existing_risks: list[dict[str, Any]] | None = None,
@@ -140,7 +145,7 @@ class EventCorrelationAnalyzer:
         return {
             "event_id": event_id,
             "timestamp": str(timestamp or ""),
-            "provider": str(cls._first(fields, "provider", "system.provider.name") or ""),
+            "provider": str(cls._first(fields, "system.provider.name", "provider.name", "winlog.provider_name", "provider") or ""),
             "computer": str(cls._first(fields, "computer", "winlog.computer_name") or ""),
             "fields": fields,
         }
@@ -170,7 +175,7 @@ class EventCorrelationAnalyzer:
         rc4: list[dict[str, Any]] = []
         bursts: dict[tuple[str, str], set[str]] = defaultdict(set)
         for event in events:
-            if event["event_id"] != 4769:
+            if event["event_id"] != 4769 or not self._successful_security_event(event):
                 continue
             fields = event["fields"]
             encryption = self._first(fields, "ticketencryptiontype", "ticket_encryption_type", "eventdata.ticketencryptiontype")
@@ -181,7 +186,10 @@ class EventCorrelationAnalyzer:
             requester = str(self._first(fields, "targetusername", "subjectusername", "accountname", "clientaddress") or "unknown")
             service = str(self._first(fields, "servicename", "targetserverName", "service_name") or "unknown")
             bucket = self._time_bucket(event.get("timestamp"))
-            bursts[(requester, bucket)].add(service)
+            if bucket and requester != 'unknown' and service != 'unknown':
+                domain = str(self._first(fields, 'targetdomainname', 'subjectdomainname') or '').casefold()
+                identity = f'{domain}\\{requester.casefold()}' if domain else requester.casefold()
+                bursts[(identity, bucket)].add(service.casefold())
             if encryption_value == 0x17:
                 rc4.append(event)
         risks: list[dict[str, Any]] = []
@@ -200,17 +208,18 @@ class EventCorrelationAnalyzer:
                 f'Kerberoasting-style service-ticket burst by "{requester}"',
                 f"The requester obtained tickets for {len(services)} distinct services in time bucket {bucket}.",
                 requester, [4769], len(services),
-                extra={"time_bucket": bucket, "distinct_services": sorted(services)[:50]},
+                extra={"time_bucket": bucket, "distinct_services": sorted(services)[:50],
+                       "requires_runtime_validation": True},
             ))
         return risks
 
     def _asrep(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         matches = []
         for event in events:
-            if event["event_id"] != 4768:
+            if event["event_id"] != 4768 or not self._successful_security_event(event):
                 continue
             preauth = self._first(event["fields"], "preauthtype", "pre_auth_type", "eventdata.preauthtype")
-            if str(preauth).strip().casefold() in {"0", "-", "none"}:
+            if self._integer(preauth) == 0:
                 matches.append(event)
         return [self._event_risk(
             RiskTypes.EVENT_ASREP_ACTIVITY, Severity.HIGH,
@@ -222,7 +231,7 @@ class EventCorrelationAnalyzer:
     def _directory_changes(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_attribute: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for event in events:
-            if event["event_id"] != 5136:
+            if event["event_id"] != 5136 or not self._security_provider(event):
                 continue
             attribute = str(self._first(
                 event["fields"], "attributeldapdisplayname", "attribute", "eventdata.attributeldapdisplayname",
@@ -236,6 +245,7 @@ class EventCorrelationAnalyzer:
                 f"Sensitive directory attribute changed: {attribute}",
                 f"Event 5136 recorded {len(matches)} change(s) to {attribute}.",
                 attribute, [5136], len(matches),
+                extra={'requires_runtime_validation': True},
             )
             for attribute, matches in sorted(by_attribute.items())
         ]
@@ -243,23 +253,30 @@ class EventCorrelationAnalyzer:
     def _dcsync(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         matches = []
         for event in events:
-            if event["event_id"] != 4662:
+            if event["event_id"] != 4662 or not self._security_provider(event):
                 continue
-            text = json.dumps(event["fields"], default=str).casefold()
-            if any(marker in text for marker in self.REPLICATION_GUID_MARKERS):
+            fields = event['fields']
+            mask = self._integer(self._first(fields, 'accessmask', 'eventdata.accessmask'))
+            properties = str(self._first(fields, 'properties', 'eventdata.properties') or '').casefold()
+            guids = set(re.findall(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', properties))
+            if mask is not None and mask & 0x100 and guids.intersection(self.REPLICATION_GUID_MARKERS):
                 matches.append(event)
         return [self._event_risk(
             RiskTypes.EVENT_DCSYNC_ACTIVITY, Severity.CRITICAL,
             f"Directory replication access observed in {len(matches)} event(s)",
             "Event 4662 contains one or more directory replication extended-right GUIDs.",
             "Domain replication", [4662], len(matches),
+            extra={'requires_runtime_validation': True},
         )] if matches else []
 
     def _certificate_events(
         self, events: list[dict[str, Any]], existing_risks: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         risks: list[dict[str, Any]] = []
-        mapping_failures = [event for event in events if event["event_id"] in {39, 40, 41}]
+        mapping_failures = [event for event in events if event["event_id"] in {39, 40, 41}
+                            and event['provider'].casefold() in {
+                                'microsoft-windows-kerberos-key-distribution-center', 'kdc',
+                            }]
         if mapping_failures:
             risks.append(self._event_risk(
                 RiskTypes.EVENT_CERTIFICATE_MAPPING_FAILURE, Severity.HIGH,
@@ -273,7 +290,7 @@ class EventCorrelationAnalyzer:
         }
         suspicious = []
         for event in events:
-            if event["event_id"] not in {4886, 4887}:
+            if event["event_id"] != 4887 or not self._security_provider(event):
                 continue
             template = str(self._first(event["fields"], "certificatetemplatename", "template", "eventdata.certificatetemplatename") or "").casefold()
             if template and template in risky_templates:
@@ -282,8 +299,9 @@ class EventCorrelationAnalyzer:
             risks.append(self._event_risk(
                 RiskTypes.EVENT_SUSPICIOUS_CERTIFICATE_ISSUANCE, Severity.CRITICAL,
                 f"Issuance activity observed for risky certificate templates ({len(suspicious)} events)",
-                "Certificate Services events 4886/4887 match a template already flagged by the LDAP assessment.",
-                "AD CS issuance", [4886, 4887], len(suspicious),
+                "Certificate Services event 4887 matches a template already flagged by the LDAP assessment.",
+                "AD CS issuance", [4887], len(suspicious),
+                extra={'requires_runtime_validation': True},
             ))
         return risks
 
@@ -304,7 +322,7 @@ class EventCorrelationAnalyzer:
         }
 
     @staticmethod
-    def _time_bucket(value: Any) -> str:
+    def _time_bucket(value: Any) -> str | None:
         text = str(value or "")
         try:
             moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -313,7 +331,27 @@ class EventCorrelationAnalyzer:
             minute = (moment.minute // 10) * 10
             return moment.replace(minute=minute, second=0, microsecond=0).isoformat()
         except ValueError:
-            return "unknown-window"
+            return None
+
+    @staticmethod
+    def _integer(value: Any) -> int | None:
+        try:
+            text = str(value).strip()
+            return int(text, 16 if text.lower().startswith('0x') else 10)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _security_provider(event: dict[str, Any]) -> bool:
+        provider = event.get('provider', '').casefold()
+        # Provider-less SIEM exports remain supported; a contradictory provider
+        # must never be interpreted using Windows Security event semantics.
+        return provider in {'', 'microsoft-windows-security-auditing'}
+
+    @classmethod
+    def _successful_security_event(cls, event: dict[str, Any]) -> bool:
+        status = cls._first(event['fields'], 'status', 'failurecode', 'resultcode', 'eventdata.status')
+        return cls._security_provider(event) and cls._integer(status) == 0
 
     @staticmethod
     def _event_counts(events: Iterable[dict[str, Any]]) -> dict[str, int]:

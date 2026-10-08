@@ -22,10 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
-from reporting.compliance_reporter import ComplianceReporter
-from reporting.html_report import HTMLReportGenerator
-
 DOMAIN = "contoso.lab"
 DC_IP = "10.50.1.10"
 SHOT_DIR = ROOT / "img" / "screenshots"
@@ -256,6 +252,10 @@ def build_demo_inventory() -> dict[str, Any]:
 
 def render_reports(inventory: dict[str, Any]) -> dict[str, Path]:
     """Write English and Turkish demo HTML reports under .demo/."""
+    from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
+    from reporting.compliance_reporter import ComplianceReporter
+    from reporting.html_report import HTMLReportGenerator
+
     DEMO_DIR.mkdir(parents=True, exist_ok=True)
     takeover = DomainAdminTakeoverAnalyzer().analyze(
         inventory["risks"],

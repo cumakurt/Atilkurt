@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from core.finding_evidence import is_disproved, requires_validation
 
 from analysis.domain_admin_takeover_playbooks import fill_playbook_fields, playbook_for
 from core.constants import MITRETechniques, Severity
@@ -950,14 +951,20 @@ class DomainAdminTakeoverAnalyzer:
             "dc_ip": str(dc_ip or "").strip() or "DC_IP",
         }
         open_paths: list[dict[str, Any]] = []
+        pending_paths: list[dict[str, Any]] = []
         observed_ids: set[str] = set()
 
         for spec in DA_PATH_CATALOG:
             evidence = [risk for risk in risks if self._matches(risk, spec.get("match") or {})]
+            evidence = [risk for risk in evidence if not is_disproved(risk)]
             if not evidence:
                 continue
             observed_ids.add(spec["id"])
-            open_paths.append(self._build_path(spec, evidence, status="open", **context))
+            supported = [risk for risk in evidence if not requires_validation(risk)]
+            if supported:
+                open_paths.append(self._build_path(spec, supported, status="open", **context))
+            else:
+                pending_paths.append(self._build_path(spec, evidence, status="needs_validation", **context))
 
         open_paths.sort(key=lambda item: (-SEVERITY_RANK.get(item.get("severity"), 0), item.get("name", "")))
 
@@ -970,6 +977,7 @@ class DomainAdminTakeoverAnalyzer:
         da_class = [path for path in open_paths if path.get("da_equivalent")]
         summary = {
             "open_path_count": len(open_paths),
+            "pending_path_count": len(pending_paths),
             "da_equivalent_open_count": len(da_class),
             "critical_open_count": sum(1 for path in open_paths if path.get("severity") == Severity.CRITICAL),
             "high_open_count": sum(1 for path in open_paths if path.get("severity") == Severity.HIGH),
@@ -986,6 +994,7 @@ class DomainAdminTakeoverAnalyzer:
         return {
             "summary": summary,
             "open_paths": open_paths,
+            "pending_paths": pending_paths,
             "unobserved_paths": unobserved,
         }
 

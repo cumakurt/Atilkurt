@@ -276,6 +276,11 @@ has_option() {
 }
 
 build_application_arguments() {
+    local utility_command=""
+    case "${1:-}" in
+        quality|keygen|sign|verify|audit) APPLICATION_ARGUMENTS=("$@"); return ;;
+        doctor|watch) utility_command="$1"; shift ;;
+    esac
     APPLICATION_ARGUMENTS=("$@")
 
     if ! has_option "-d" "--domain" "$@" && [[ -n "${ATILKURT_DOMAIN:-}" ]]; then
@@ -287,9 +292,10 @@ build_application_arguments() {
     if ! has_option "" "--dc-ip" "$@" && [[ -n "${ATILKURT_DC_IP:-}" ]]; then
         APPLICATION_ARGUMENTS=("--dc-ip" "${ATILKURT_DC_IP}" "${APPLICATION_ARGUMENTS[@]}")
     fi
-    if ! has_option "" "--output" "$@" && [[ -n "${ATILKURT_OUTPUT:-}" ]]; then
+    if [[ "${utility_command}" != "doctor" ]] && ! has_option "" "--output" "$@" && [[ -n "${ATILKURT_OUTPUT:-}" ]]; then
         APPLICATION_ARGUMENTS=("--output" "${ATILKURT_OUTPUT}" "${APPLICATION_ARGUMENTS[@]}")
     fi
+    if [[ -n "${utility_command}" ]]; then APPLICATION_ARGUMENTS=("${utility_command}" "${APPLICATION_ARGUMENTS[@]}"); fi
 }
 
 is_help_request() {
@@ -302,6 +308,8 @@ is_help_request() {
 
 validate_required_application_settings() {
     is_help_request "${APPLICATION_ARGUMENTS[@]}" && return 0
+    case "${APPLICATION_ARGUMENTS[0]:-}" in doctor|quality|keygen|sign|verify|audit|watch) return 0 ;; esac
+    has_option "" "--offline-snapshot" "${APPLICATION_ARGUMENTS[@]}" && return 0
     has_option "-d" "--domain" "${APPLICATION_ARGUMENTS[@]}" || fail "Set ATILKURT_DOMAIN or pass --domain."
     has_option "-u" "--username" "${APPLICATION_ARGUMENTS[@]}" || fail "Set ATILKURT_USER or pass --username."
 
@@ -328,4 +336,6 @@ main() {
     exec "${VENV_DIR}/bin/python" "${APPLICATION_FILE}" "${APPLICATION_ARGUMENTS[@]}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

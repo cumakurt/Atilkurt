@@ -6,6 +6,7 @@ Supports multiple export formats for integration with other tools
 import json
 import csv
 import logging
+import hashlib
 from typing import Any
 from datetime import datetime
 
@@ -40,16 +41,14 @@ class ExportFormats:
             risks: List of risk dictionaries
             output_file: Output file path
         """
-        if not risks:
-            logger.warning("No risks to export")
-            return
-
         # Get all unique keys from risks
         fieldnames = set()
         for risk in risks:
             fieldnames.update(risk.keys())
 
         fieldnames = sorted(list(fieldnames))
+        if not fieldnames:
+            fieldnames = ['finding_id', 'type', 'severity', 'finding_status', 'affected_object', 'title']
 
         with atomic_text_writer(output_file, newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -163,11 +162,18 @@ class ExportFormats:
                     'risk_type': risk.get('type', ''),
                     'severity': risk.get('severity', ''),
                     'title': risk.get('title', ''),
-                    'description': risk.get('description', '')[:500],
+                    'description': str(risk.get('description') or '')[:500],
                     'affected_object': risk.get('affected_object', ''),
                     'object_type': risk.get('object_type', ''),
                     'mitre_attack': risk.get('mitre_attack', ''),
                     'cve': risk.get('cve', ''),
+                    'finding_id': risk.get('finding_id'),
+                    'evidence_fingerprint': risk.get('evidence_fingerprint'),
+                    'rule_version': risk.get('rule_version'),
+                    'finding_status': risk.get('finding_status'),
+                    'exception_status': risk.get('exception_status'),
+                    'score_excluded': risk.get('score_excluded', False),
+                    'final_score': risk.get('final_score'),
                 }
                 f.write(json.dumps(siem_event, default=str, ensure_ascii=False) + '\n')
         logger.info(f"SIEM JSON export saved to {output_file}")
@@ -196,18 +202,26 @@ class ExportFormats:
         def _cef_escape(s: str) -> str:
             if not s:
                 return ''
-            return str(s).replace('\\', '\\\\').replace('=', '\\=').replace('\n', ' ')
+            return str(s).replace('\\', '\\\\').replace('=', '\\=').replace('\n', ' ').replace('\r', ' ')
+
+        def _header(value):
+            return str(value or '').replace('\\', '\\\\').replace('|', '\\|').replace('\n', ' ').replace('\r', ' ')
 
         with atomic_text_writer(output_file, encoding='utf-8') as f:
             for risk in risks:
+                identifier = risk.get('finding_id') or hashlib.sha256(str(risk.get('type', '')).encode()).hexdigest()[:24]
+                severity = {'critical': 10, 'high': 8, 'medium': 5, 'low': 1}.get(risk.get('severity'), 0)
                 ext = (
                     f"rt={int(datetime.now().timestamp()) * 1000} "
                     f"cn1={4 if risk.get('severity') == 'critical' else 3 if risk.get('severity') == 'high' else 2} "
                     f"cs1Label=riskType cs1={_cef_escape(risk.get('type', ''))} "
                     f"cs2Label=affectedObject cs2={_cef_escape(str(risk.get('affected_object', '')))} "
-                    f"msg={_cef_escape(risk.get('title', '')[:200])}"
+                    f"cs3Label=findingId cs3={_cef_escape(identifier)} "
+                    f"cs4Label=findingStatus cs4={_cef_escape(risk.get('finding_status', 'detected'))} "
+                    f"cs5Label=exceptionStatus cs5={_cef_escape(risk.get('exception_status', ''))} "
+                    f"msg={_cef_escape(str(risk.get('title') or '')[:200])}"
                 )
-                cef = f"CEF:0|{device_vendor}|{device_product}|1.0|AD_SECURITY_RISK|{risk.get('type', 'risk')}|{risk.get('severity', 'medium').upper()}|{ext}"
+                cef = f"CEF:0|{_header(device_vendor)}|{_header(device_product)}|1.0|{_header(identifier)}|{_header(risk.get('type', 'risk'))}|{severity}|{ext}"
                 f.write(cef + '\n')
         logger.info(f"CEF export saved to {output_file}")
 

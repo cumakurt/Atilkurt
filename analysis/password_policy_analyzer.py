@@ -3,10 +3,13 @@ Password Policy Analyzer Module
 Analyzes domain password policy and account lockout policy
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import timedelta
 from typing import Any
 from core.ad_identity import root_dse_attributes
+from core.ad_security import as_int
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -97,13 +100,13 @@ class PasswordPolicyAnalyzer:
             if domain_info:
 
                     # Analyze password policy
-                    min_length = domain_info.get('minPwdLength')
+                    min_length = as_int(domain_info.get('minPwdLength'))
                     max_age = domain_info.get('maxPwdAge')
-                    history_length = domain_info.get('pwdHistoryLength')
-                    pwd_properties = domain_info.get('pwdProperties', 0)
+                    history_length = as_int(domain_info.get('pwdHistoryLength'))
+                    pwd_properties = as_int(domain_info.get('pwdProperties'))
 
                     # Analyze lockout policy
-                    lockout_threshold = domain_info.get('lockoutThreshold')
+                    lockout_threshold = as_int(domain_info.get('lockoutThreshold'))
 
                     policy_issues = []
 
@@ -132,7 +135,7 @@ class PasswordPolicyAnalyzer:
                     if max_age is not None:
                         try:
                             max_age_days_val = self._convert_timespan_to_days(max_age)
-                            if max_age_days_val > 90:
+                            if max_age_days_val is not None and max_age_days_val > 90:
                                 policy_issues.append({
                                     'issue': f'Maximum password age is {max_age_days_val} days (recommended: 90 or less)',
                                     'severity': Severity.MEDIUM,
@@ -261,11 +264,11 @@ class PasswordPolicyAnalyzer:
 
                                 # Re-analyze with found domain_info
                                 # Extract policy values
-                                min_length = domain_info.get('minPwdLength')
+                                min_length = as_int(domain_info.get('minPwdLength'))
                                 max_age = domain_info.get('maxPwdAge')
-                                history_length = domain_info.get('pwdHistoryLength')
-                                pwd_properties = domain_info.get('pwdProperties', 0)
-                                lockout_threshold = domain_info.get('lockoutThreshold')
+                                history_length = as_int(domain_info.get('pwdHistoryLength'))
+                                pwd_properties = as_int(domain_info.get('pwdProperties'))
+                                lockout_threshold = as_int(domain_info.get('lockoutThreshold'))
 
                                 # Analyze and create risks (reuse the same logic)
                                 policy_issues = []
@@ -293,7 +296,7 @@ class PasswordPolicyAnalyzer:
                                 if max_age is not None:
                                     try:
                                         max_age_days_val = self._convert_timespan_to_days(max_age)
-                                        if max_age_days_val > 90:
+                                        if max_age_days_val is not None and max_age_days_val > 90:
                                             policy_issues.append({
                                                 'issue': f'Maximum password age is {max_age_days_val} days (recommended: 90 or less)',
                                                 'severity': Severity.MEDIUM,
@@ -399,6 +402,7 @@ class PasswordPolicyAnalyzer:
                         'type': RiskTypes.PASSWORD_POLICY_WEAK,
                         'severity': Severity.MEDIUM,
                         'title': 'Password Policy Information Unavailable',
+                        'evidence': {'requires_runtime_validation': True},
                         'description': 'Could not retrieve domain password policy information. This may indicate insufficient permissions or the policy may be configured at a different location.',
                         'affected_object': 'Domain Password Policy',
                         'object_type': 'policy',
@@ -420,7 +424,7 @@ class PasswordPolicyAnalyzer:
             logger.exception("Unexpected error in password policy analysis")
             raise
 
-    def _convert_timespan_to_days(self, timespan) -> int:
+    def _convert_timespan_to_days(self, timespan) -> int | None:
         """
         Convert Windows timespan (100-nanosecond intervals) to days.
 
@@ -431,8 +435,10 @@ class PasswordPolicyAnalyzer:
             Number of days
         """
         try:
+            if isinstance(timespan, (list, tuple)):
+                timespan = timespan[0] if len(timespan) == 1 else None
             if timespan is None:
-                return 0
+                return None
             if isinstance(timespan, timedelta):
                 return int(abs(timespan.total_seconds()) / 86400)
             if isinstance(timespan, str):
@@ -443,4 +449,4 @@ class PasswordPolicyAnalyzer:
             days = abs(timespan) / 864000000000
             return int(days)
         except (ValueError, TypeError, ZeroDivisionError):
-            return 0
+            return None

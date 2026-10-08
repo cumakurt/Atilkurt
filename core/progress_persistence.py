@@ -6,15 +6,33 @@ Enables resume capability and incremental scanning
 import json
 import os
 import logging
-import tempfile
 from datetime import datetime
 from typing import Any, Optional
 from pathlib import Path
 import hashlib
 
+from core.evidence_signing import read_json
+from core.secure_file import atomic_text_writer
+
 logger = logging.getLogger(__name__)
 
 _UNSAFE_CHECKPOINT_CHARS = frozenset('<>:"|?*')
+
+
+def validate_checkpoint_id(checkpoint_id: str) -> str:
+    """Validate the identifier independently of directory creation or network access."""
+    if (
+        not isinstance(checkpoint_id, str)
+        or not checkpoint_id
+        or checkpoint_id in {".", ".."}
+        or "\x00" in checkpoint_id
+        or "/" in checkpoint_id
+        or "\\" in checkpoint_id
+        or any(char in _UNSAFE_CHECKPOINT_CHARS for char in checkpoint_id)
+        or any(char.isspace() for char in checkpoint_id)
+    ):
+        raise ValueError("Invalid checkpoint_id: path separators and reserved characters are not allowed")
+    return checkpoint_id
 
 
 class ProgressPersistence:
@@ -30,26 +48,20 @@ class ProgressPersistence:
             checkpoint_dir: Directory to store checkpoint files
         """
         self.checkpoint_dir = Path(checkpoint_dir)
+        if self.checkpoint_dir.is_symlink():
+            raise ValueError('Checkpoint directory must not be a symbolic link')
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.checkpoint_dir, 0o700)
         self.current_checkpoint: Optional[str] = None
 
     def _checkpoint_path(self, checkpoint_id: str) -> Path:
         """Validate a checkpoint identifier and resolve its in-directory path."""
-        if (
-            not isinstance(checkpoint_id, str)
-            or not checkpoint_id
-            or checkpoint_id in {".", ".."}
-            or "\x00" in checkpoint_id
-            or "/" in checkpoint_id
-            or "\\" in checkpoint_id
-            or any(char in _UNSAFE_CHECKPOINT_CHARS for char in checkpoint_id)
-            or any(char.isspace() for char in checkpoint_id)
-        ):
-            raise ValueError("Invalid checkpoint_id: path separators are not allowed")
-
+        validate_checkpoint_id(checkpoint_id)
         base_path = self.checkpoint_dir.resolve()
-        checkpoint_path = (self.checkpoint_dir / f"{checkpoint_id}.json").resolve(strict=False)
+        target = self.checkpoint_dir / f"{checkpoint_id}.json"
+        if target.is_symlink():
+            raise ValueError('Checkpoint file must not be a symbolic link')
+        checkpoint_path = target.resolve(strict=False)
         try:
             checkpoint_path.relative_to(base_path)
         except ValueError as error:
@@ -95,32 +107,15 @@ class ProgressPersistence:
             'data': data
         }
 
-        temporary_path: Optional[str] = None
         try:
-            file_descriptor, temporary_path = tempfile.mkstemp(
-                prefix=".checkpoint-",
-                suffix=".tmp",
-                dir=self.checkpoint_dir,
-            )
-            os.fchmod(file_descriptor, 0o600)
-            with os.fdopen(file_descriptor, "w", encoding="utf-8") as file_handle:
+            with atomic_text_writer(checkpoint_file) as file_handle:
                 json.dump(checkpoint_data, file_handle, indent=2, default=str)
-                file_handle.flush()
-                os.fsync(file_handle.fileno())
-            os.replace(temporary_path, checkpoint_file)
-            temporary_path = None
             logger.info(f"Checkpoint saved: {checkpoint_file}")
             self.current_checkpoint = str(checkpoint_file)
             return str(checkpoint_file)
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {str(e)}")
             raise
-        finally:
-            if temporary_path is not None:
-                try:
-                    os.unlink(temporary_path)
-                except FileNotFoundError:
-                    pass
 
     def load_checkpoint(self, checkpoint_id: str) -> Optional[dict[str, Any]]:
         """
@@ -139,8 +134,9 @@ class ProgressPersistence:
             return None
 
         try:
-            with open(checkpoint_file, encoding='utf-8') as f:
-                checkpoint_data = json.load(f)
+            checkpoint_data = read_json(str(checkpoint_file))
+            if checkpoint_data.get('checkpoint_id') != checkpoint_id or not isinstance(checkpoint_data.get('data'), dict):
+                raise ValueError("Checkpoint metadata or payload is invalid")
             logger.info(f"Checkpoint loaded: {checkpoint_file}")
             return checkpoint_data.get('data')
         except Exception as e:
@@ -164,19 +160,18 @@ class ProgressPersistence:
                 if checkpoint_file.is_symlink():
                     logger.warning("Ignoring symlinked checkpoint: %s", checkpoint_file)
                     continue
-                with open(checkpoint_file, encoding='utf-8') as f:
-                    checkpoint_data = json.load(f)
-                    checkpoint_id = checkpoint_data.get('checkpoint_id', '')
-
-                    if domain and not checkpoint_id.startswith(f"{domain}_"):
-                        continue
-
-                    checkpoints.append({
-                        'checkpoint_id': checkpoint_id,
-                        'file': str(checkpoint_file),
-                        'timestamp': checkpoint_data.get('timestamp'),
-                        'size': checkpoint_file.stat().st_size
-                    })
+                checkpoint_data = read_json(str(checkpoint_file))
+                checkpoint_id = checkpoint_data.get('checkpoint_id', '')
+                if checkpoint_id != checkpoint_file.stem or not isinstance(checkpoint_data.get('data'), dict):
+                    continue
+                if domain and not checkpoint_id.casefold().startswith(f"{domain}_".casefold()):
+                    continue
+                checkpoints.append({
+                    'checkpoint_id': checkpoint_id,
+                    'file': str(checkpoint_file),
+                    'timestamp': checkpoint_data.get('timestamp'),
+                    'size': checkpoint_file.stat().st_size
+                })
             except Exception as e:
                 logger.debug(f"Error reading checkpoint {checkpoint_file}: {str(e)}")
 
@@ -359,7 +354,9 @@ class IncrementalScanner:
             if item_hash in previous_dict:
                 # Item exists, check if changed
                 prev_item = previous_dict[item_hash]
-                if item != prev_item:
+                # Match the JSON representation used by checkpoint persistence.
+                # LDAP bytes and datetime values otherwise look changed on every run.
+                if json.dumps(item, sort_keys=True, default=str) != json.dumps(prev_item, sort_keys=True, default=str):
                     changed_items.append({
                         'previous': prev_item,
                         'current': item,

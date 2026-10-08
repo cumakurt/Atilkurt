@@ -19,6 +19,7 @@ class DomainAdminSectionMixin:
         takeover = takeover or {}
         summary = takeover.get("summary") or {}
         open_paths = takeover.get("open_paths") or []
+        pending_paths = takeover.get("pending_paths") or []
         unobserved = takeover.get("unobserved_paths") or []
         headline = html_stdlib.escape(str(summary.get("headline") or "Domain Admin takeover map."))
         domain_label = html_stdlib.escape(str(domain or "DOMAIN"))
@@ -49,6 +50,15 @@ class DomainAdminSectionMixin:
             else "".join(self._da_path_card(path, emphasized=True) for path in open_paths)
         )
         unobserved_html = "".join(self._da_path_card(path, emphasized=False) for path in unobserved)
+        pending_html = ""
+        if pending_paths:
+            cards = "".join(self._da_path_card(path, emphasized=False) for path in pending_paths)
+            pending_html = (
+                '<h5 class="mt-4">Paths requiring validation</h5>'
+                '<p>These indicators are excluded from open-path counts and risk scores. '
+                'Verify the missing prerequisites before treating them as exploitable.</p>'
+                f'<div id="da-pending-paths">{cards}</div>'
+            )
 
         return f"""
         <style>
@@ -133,6 +143,7 @@ class DomainAdminSectionMixin:
         <div class="mb-3 d-flex flex-wrap gap-2">{''.join(filter_buttons)}</div>
         <h5 class="mb-3">Open paths evidenced in this domain</h5>
         <div id="da-open-paths">{open_html}</div>
+        {pending_html}
         <div class="card mt-4">
             <div class="card-header" data-bs-toggle="collapse" data-bs-target="#da-unobserved" style="cursor:pointer">
                 <i class="fas fa-clipboard-list"></i>
@@ -185,7 +196,7 @@ class DomainAdminSectionMixin:
         why = html_stdlib.escape(str(path.get("why_da") or ""))
         detection = html_stdlib.escape(str(path.get("detection") or ""))
         da_eq = "DA equivalent" if path.get("da_equivalent") else "Enables DA targeting"
-        status = "open" if path.get("status") == "open" else "not observed"
+        status = {"open": "open", "needs_validation": "Requires validation"}.get(path.get("status"), "not observed")
         objects = path.get("evidence_objects") or []
         types = path.get("evidence_types") or []
         object_html = ", ".join(f"<code>{html_stdlib.escape(str(item))}</code>" for item in objects) or "<span class='text-muted'>No named object</span>"

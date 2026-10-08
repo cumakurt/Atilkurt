@@ -33,6 +33,9 @@ from reporting.report_sections.acl_section import ACLSectionMixin
 from reporting.report_sections.compliance_section import ComplianceSectionMixin
 from reporting.report_sections.risk_tab_builder import RiskTabBuilderMixin
 from reporting.report_sections.domain_admin_section import DomainAdminSectionMixin
+from reporting.report_sections.assessment_sections import AssessmentSectionsMixin
+from reporting.report_sections.product_sections import ProductSectionsMixin
+from reporting.report_sections.engagement_sections import EngagementSectionsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,9 @@ class HTMLReportGenerator(
     ComplianceSectionMixin,
     DomainAdminSectionMixin,
     RiskTabBuilderMixin,
+    AssessmentSectionsMixin,
+    ProductSectionsMixin,
+    EngagementSectionsMixin,
 ):
     """Generates interactive HTML security reports.
 
@@ -90,7 +96,8 @@ class HTMLReportGenerator(
                  risk_management_data=None, domain=None, dc_ip=None,
                  kerberoasting_targets=None, asrep_targets=None,
                  analysis_summary_counts=None, domain_admin_takeover=None,
-                 inline_assets: bool = True):
+                 inline_assets: bool = True, review_center=None, scan_coverage=None, remediation_simulation=None,
+                 product_workspace=None):
         """
         Generate HTML report.
 
@@ -120,7 +127,7 @@ class HTMLReportGenerator(
             domain_score, executive_summary, legacy_os_data, acl_security_data,
             compliance_data, risk_management_data, domain, dc_ip,
             kerberoasting_targets, asrep_targets, analysis_summary_counts,
-            domain_admin_takeover, inline_assets
+            domain_admin_takeover, inline_assets, review_center, scan_coverage, remediation_simulation, product_workspace
         )
 
         atomic_write_text(output_file, html_content)
@@ -138,8 +145,30 @@ class HTMLReportGenerator(
                        compliance_data=None, risk_management_data=None,
                        domain=None, dc_ip=None, kerberoasting_targets=None,
                        asrep_targets=None, analysis_summary_counts=None,
-                       domain_admin_takeover=None, inline_assets: bool = True):
+                       domain_admin_takeover=None, inline_assets: bool = True,
+                       review_center=None, scan_coverage=None, remediation_simulation=None, product_workspace=None):
         """Generate complete HTML content."""
+        if review_center is None:
+            from copy import deepcopy
+            from core.finding_review import FindingReviewManager
+            review_center = FindingReviewManager().apply(deepcopy(risks),
+                {'users': users, 'computers': computers, 'groups': groups, 'gpos': gpos}, domain or '')
+        if scan_coverage is None:
+            from analysis.scan_coverage import build_scan_coverage
+            scan_coverage = build_scan_coverage({}, risks, review_center)
+        if remediation_simulation is None:
+            from analysis.remediation_simulator import simulate_remediation
+            remediation_simulation = simulate_remediation({})
+        if product_workspace is None:
+            from types import SimpleNamespace
+            from core.product_workflow import prepare_product_workspace
+            product_workspace = prepare_product_workspace(SimpleNamespace(domain=domain or ''),
+                {'users': users, 'groups': groups, 'computers': computers, 'gpos': gpos}, {},
+                {'scored_risks': risks, 'domain_score': domain_score, 'scan_coverage': scan_coverage,
+                 'review_center': review_center})
+        if self.language == 'tr':
+            review_center = dict(review_center)
+            review_center['findings'] = localize_finding_list(review_center.get('findings', []), self.language)
         if self.language == 'tr':
             risks = localize_finding_list(risks, self.language)
             misconfig_findings = localize_finding_list(
@@ -232,6 +261,18 @@ class HTMLReportGenerator(
 
         # Generate CISO dashboard HTML
         ciso_dashboard_html = self._generate_ciso_dashboard_html(ciso_data, stats)
+        from reporting.report_sections.assessment_sections import LABELS
+        labels = LABELS[self.language]
+        execution = (scan_coverage.get('summary') or {}).get('execution_percent')
+        coverage_label = f'{execution}%' if execution is not None else labels['execution_unknown']
+        ciso_dashboard_html = (
+            f'<div class="alert alert-secondary"><strong>{labels["coverage"]}: {coverage_label}</strong>'
+            f'<p class="mb-0">{labels["score_scope"]}</p></div>' + ciso_dashboard_html
+        )
+        accepted_count = (review_center.get('summary') or {}).get('active_exceptions', 0)
+        if accepted_count:
+            accepted_label = 'Kabul edilen risk istisnaları' if self.language == 'tr' else 'Accepted risk exceptions'
+            ciso_dashboard_html = f'<p><strong>{accepted_label}: {accepted_count}</strong></p>' + ciso_dashboard_html
 
         # Generate risk sections (with dashboard)
         password_stats = ciso_data.get('password_stats', {})
@@ -242,6 +283,9 @@ class HTMLReportGenerator(
             domain, dc_ip, kerberoasting_targets, asrep_targets,
             domain_admin_takeover=domain_admin_takeover,
         )
+        risk_sections += self._generate_assessment_sections(review_center, scan_coverage, remediation_simulation)
+        risk_sections += self._generate_product_sections(product_workspace, review_center)
+        risk_sections += self._generate_engagement_sections(product_workspace)
 
         # Inline vendor CSS/JS so the HTML file is completely self-contained.
         inline_css = None

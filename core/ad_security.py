@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from core.security_descriptor_parser import parse_security_descriptor
+from core.security_descriptor_parser import effective_allow_aces, parse_security_descriptor
 
 
 BROAD_PRINCIPAL_SIDS = frozenset({
@@ -80,7 +80,7 @@ def parsed_security_descriptor(value: Any) -> dict[str, Any] | None:
     if not raw:
         return None
     parsed = parse_security_descriptor(raw)
-    if not parsed or not isinstance(parsed, dict):
+    if not parsed or not isinstance(parsed, dict) or parsed.get('parse_valid') is False:
         return None
     return parsed
 
@@ -88,6 +88,10 @@ def parsed_security_descriptor(value: Any) -> dict[str, Any] | None:
 def guid_text(raw: Any) -> str | None:
     """Convert a little-endian AD GUID byte sequence to canonical text."""
     if not isinstance(raw, (bytes, bytearray)) or len(raw) != 16:
+        return None
+    try:
+        return str(UUID(bytes_le=bytes(raw)))
+    except (ValueError, TypeError):
         return None
 
 
@@ -115,16 +119,61 @@ def sid_text(value: Any) -> str | None:
         for index in range(count)
     )
     return "-".join(parts)
-    try:
-        return str(UUID(bytes_le=bytes(raw)))
-    except (ValueError, TypeError):
-        return None
 
 
 def ace_permission_names(ace: dict[str, Any]) -> set[str]:
     """Return permission labels emitted by ``SecurityDescriptorParser``."""
     permissions = ace.get("permissions") or {}
     return {str(name) for name in permissions} if isinstance(permissions, dict) else set()
+
+
+def principal_group_tokens(accounts: list[dict[str, Any]], groups: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Resolve collected direct, nested, and primary-group SIDs for access checks."""
+    objects = [*accounts, *groups]
+    by_dn = {
+        as_text(obj.get('distinguishedName') or obj.get('dn')).casefold(): sid_text(obj.get('objectSid'))
+        for obj in objects if as_text(obj.get('distinguishedName') or obj.get('dn'))
+    }
+    parents: dict[str, set[str]] = {}
+    for obj in objects:
+        sid = sid_text(obj.get('objectSid'))
+        if not sid:
+            continue
+        memberships = parents.setdefault(sid, set())
+        for dn in as_list(obj.get('memberOf')):
+            group_sid = by_dn.get(as_text(dn).casefold())
+            if group_sid:
+                memberships.add(group_sid)
+        primary = as_int(obj.get('primaryGroupID'))
+        if primary is not None and sid.startswith('S-1-5-21-'):
+            memberships.add(f'{sid.rsplit("-", 1)[0]}-{primary}')
+    for group in groups:
+        group_sid = sid_text(group.get('objectSid'))
+        if not group_sid:
+            continue
+        for dn in as_list(group.get('member')):
+            member_sid = by_dn.get(as_text(dn).casefold())
+            if member_sid:
+                parents.setdefault(member_sid, set()).add(group_sid)
+    tokens = {}
+    for sid in parents:
+        seen: set[str] = set()
+        pending = list(parents[sid])
+        while pending:
+            parent = pending.pop()
+            if parent in seen or parent == sid:
+                continue
+            seen.add(parent)
+            pending.extend(parents.get(parent, set()) - seen)
+        tokens[sid] = seen
+    for account in accounts:
+        sid = sid_text(account.get('objectSid'))
+        if sid and (account.get('token_group_evidence') or {}).get('status') == 'collected':
+            for value in as_list(account.get('tokenGroups')) + as_list(account.get('sIDHistory')):
+                group_sid = sid_text(value)
+                if group_sid and group_sid != sid:
+                    tokens.setdefault(sid, set()).add(group_sid)
+    return tokens
 
 
 def dacl_fingerprint(parsed: dict[str, Any] | None) -> tuple[tuple[Any, ...], ...]:
@@ -149,7 +198,7 @@ def dangerous_broad_aces(parsed: dict[str, Any] | None) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if not parsed:
         return findings
-    for ace in parsed.get("dacl") or []:
+    for ace in effective_allow_aces(parsed):
         permissions = ace_permission_names(ace)
         if (
             ace.get("sid") in BROAD_PRINCIPAL_SIDS

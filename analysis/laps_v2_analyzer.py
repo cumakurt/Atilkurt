@@ -25,6 +25,8 @@ class WindowsLAPSV2Analyzer:
         covered = self._presence("msLAPS-PasswordExpirationTime")
         encrypted = self._presence("msLAPS-EncryptedPassword")
         history = self._presence("msLAPS-EncryptedPasswordHistory")
+        encryption_collected = encrypted is not None
+        history_collected = history is not None
         if covered is None and encrypted is None:
             return []
 
@@ -37,7 +39,7 @@ class WindowsLAPSV2Analyzer:
         risks: list[dict[str, Any]] = []
 
         plaintext_or_unencrypted = covered_dns - encrypted_dns
-        if plaintext_or_unencrypted:
+        if encryption_collected and plaintext_or_unencrypted:
             risks.append({
                 "type": RiskTypes.WINDOWS_LAPS_ENCRYPTION_GAP,
                 "severity": Severity.HIGH,
@@ -56,7 +58,7 @@ class WindowsLAPSV2Analyzer:
             })
 
         history_missing = encrypted_dns - history_dns
-        if encrypted_dns and history_missing == encrypted_dns:
+        if history_collected and encrypted_dns and history_missing == encrypted_dns:
             risks.append({
                 "type": RiskTypes.WINDOWS_LAPS_HISTORY_DISABLED,
                 "severity": Severity.LOW,
@@ -79,10 +81,10 @@ class WindowsLAPSV2Analyzer:
             and as_text(item.get("distinguishedName") or item.get("dn"))
         }
         if dc_dns and schema_supports_attribute(self.ldap, "msLAPS-EncryptedDSRMPassword") is not False:
-            dsrm_rows = self._presence("msLAPS-EncryptedDSRMPassword") or []
-            dsrm_dns = self._dns(dsrm_rows)
+            dsrm_rows = self._presence("msLAPS-EncryptedDSRMPassword")
+            dsrm_dns = self._dns(dsrm_rows or [])
             missing_dc_dns = dc_dns - dsrm_dns
-            if missing_dc_dns:
+            if dsrm_rows is not None and missing_dc_dns:
                 risks.append({
                     "type": RiskTypes.WINDOWS_LAPS_DSRM_NOT_BACKED_UP,
                     "severity": Severity.MEDIUM,
@@ -114,7 +116,7 @@ class WindowsLAPSV2Analyzer:
             if "invalid attribute" in message:
                 return None
             logger.debug("Windows LAPS presence search failed for %s: %s", attribute, exc)
-            return []
+            return None
 
     def _analyze_broad_acls(self, target_dns: set[str]) -> list[dict[str, Any]]:
         if not target_dns:

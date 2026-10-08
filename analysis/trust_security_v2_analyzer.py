@@ -53,19 +53,21 @@ class TrustSecurityV2Analyzer:
             name = as_text(
                 trust.get("trustPartner") or trust.get("name") or trust.get("flatName") or trust.get("cn")
             ) or "trusted domain"
-            direction = as_int(trust.get("trustDirection")) or 0
-            trust_type = as_int(trust.get("trustType")) or 0
-            attributes = as_int(trust.get("trustAttributes")) or 0
+            direction = as_int(trust.get("trustDirection"))
+            trust_type = as_int(trust.get("trustType"))
+            attributes = as_int(trust.get("trustAttributes"))
+            if direction not in (1, 2, 3) or trust_type is None or attributes is None:
+                continue
             encryption = as_int(trust.get("msDS-SupportedEncryptionTypes"))
             kind = self._kind(attributes, trust_type)
             trust_id = f"domain:{name.casefold()}"
             nodes.append({"id": trust_id, "label": name, "kind": "trusted_domain", "trust_kind": kind})
-            if direction in (1, 3):
-                edges.append({"source": trust_id, "target": local_id, "type": "InboundTrust"})
             if direction in (2, 3):
+                edges.append({"source": trust_id, "target": local_id, "type": "InboundTrust"})
+            if direction in (1, 3):
                 edges.append({"source": local_id, "target": trust_id, "type": "OutboundTrust"})
 
-            if direction in (1, 3) and not attributes & self.CROSS_ORGANIZATION:
+            if direction in (2, 3) and not attributes & (self.WITHIN_FOREST | self.CROSS_ORGANIZATION):
                 risks.append(self._risk(
                     RiskTypes.TRUST_SELECTIVE_AUTH_DISABLED,
                     Severity.MEDIUM,
@@ -74,7 +76,7 @@ class TrustSecurityV2Analyzer:
                     name, direction, kind, attributes,
                 ))
             is_external_boundary = not attributes & (self.WITHIN_FOREST | self.FOREST_TRANSITIVE)
-            if is_external_boundary and direction in (1, 3) and not attributes & self.QUARANTINED_DOMAIN:
+            if is_external_boundary and direction in (2, 3) and not attributes & self.QUARANTINED_DOMAIN:
                 risks.append(self._risk(
                     RiskTypes.TRUST_SID_FILTERING_WEAK,
                     Severity.CRITICAL,
@@ -91,7 +93,7 @@ class TrustSecurityV2Analyzer:
                     name, direction, kind, attributes,
                 ))
             if attributes & self.USES_RC4_ENCRYPTION or (
-                encryption is not None and not encryption & self.AES_MASK
+                encryption is not None and encryption > 0 and not encryption & self.AES_MASK
             ):
                 risks.append(self._risk(
                     RiskTypes.TRUST_RC4_DEPENDENCY,

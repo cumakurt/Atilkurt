@@ -5,6 +5,21 @@
 
 AtilKurt is a read-only Active Directory security assessment tool. It collects directory data through LDAP, runs a broad set of security analyzers, scores the findings, and generates a self-contained HTML report for offline review. Reports are generated in English by default and can be fully localized to Turkish with `--lan tr`.
 
+## Automatic Installation
+
+From the application checkout, run:
+
+```bash
+./install.sh
+Atilkurt --help
+```
+
+The installer detects Linux (including WSL), macOS, or a Windows Git Bash/MSYS shell. It reuses a compatible `.venv`, prepares pip if missing, checks the CA certificate store, and installs only missing or incompatible runtime dependencies. Linux uses the available apt, dnf/yum, pacman, zypper, or apk manager. macOS uses Homebrew and installs it from the official installer if Python support is missing. Windows uses an existing Python environment or winget when available, checking the Python launcher and standard installation locations when PATH has not refreshed.
+
+Commands `Atilkurt`, `atilkurt`, and `AtilKurt` use the prepared environment without requiring activation. Commands are installed in `~/.local/bin` for a normal user or `/usr/local/bin` for root. If necessary, the installer adds a PATH entry to the user's shell configuration; open a new terminal to use it. Successful package-manager output stays quiet; a failed step shows its relevant error. Installation ends by printing `Atilkurt --help`.
+
+Compatible dependencies and identical command wrappers are left in place on subsequent runs. Existing `.env` files are preserved and the installer does not write credentials. An unrelated existing command or an unusable environment is reported instead of overwritten. Override paths with `ATILKURT_VENV_DIR` and `ATILKURT_BIN_DIR`, or select Python with `ATILKURT_PYTHON`. System package installation may require sudo; normal scans do not.
+
 ## Simplest Manual Usage
 
 After completing either installation method below, a scan needs only the domain, username, and password. If `--dc-ip` is omitted, AtilKurt connects using the domain name:
@@ -255,6 +270,161 @@ Each consolidated finding receives:
 - A separate exploitability model with attack complexity, vector, required privileges, user interaction, known tooling, and a 0-to-10 exploitability score
 
 The domain security score summarizes the scored findings. The risk-management section builds an impact-versus-likelihood heat map, estimates remediation effort, applies the configurable `--hourly-rate`, and calculates prioritization and ROI-style values. These business values are planning estimates, not financial guarantees.
+
+### Evidence requirements and false-positive reduction
+
+Findings that still need host, CA, policy, or ownership verification carry `finding_status: needs_validation` and `score_excluded: true`. They remain visible in HTML and JSON with their original `potential_severity`, a Low presentation severity, and a zero `final_score`. They do not increase prevalence/combination bonuses, the domain-risk penalty, remediation-cost priorities, risk-based compliance failures, or open Domain Admin path counts. The takeover map lists them under **Paths requiring validation**. An assessment with only unverified findings is not proof of a secure environment; the domain score describes the findings supported by the collected evidence.
+
+This applies to OS-only CVE estimates, coercion/service-presence heuristics, template flags without enrollment/publication evidence, legitimate component-presence checks, KeyCredential ownership reviews, and LAPS absence observations. LDAP cannot establish patch status, a running service, effective endpoint policy, or the absence of a confidential attribute. Confidence scores are rule-based evidence ratings, not statistically calibrated probabilities of compromise.
+
+ACL analysis distinguishes scoped extended/property rights from unrestricted grants, preserves deny ACEs and DACL order, ignores inherit-only ACEs on the current object, and rejects truncated descriptors. DCSync requires both Get-Changes and Get-Changes-All rights on the domain root, including collected nested-group membership; one replication right is insufficient. Expected administrative grants are excluded from escalation findings. Missing or malformed password/lockout/posture values remain unknown rather than becoming zero/disabled settings.
+
+Windows access checks can additionally depend on uncollected token groups, conditional ACEs, property sets, and endpoint state. Use the retained validation findings and fresh endpoint evidence to resolve those limits. A full new scan is required to apply corrected collection/analyzer behavior to an old checkpoint; resuming a completed checkpoint without new evidence reuses its saved results.
+
+The interpretation follows Microsoft's [access-check rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object), [trust-direction specification](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/5026a939-44ba-47b2-99cf-386a9e674b04), and [Kerberos event 4769 documentation](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4769). Regression fixtures exercise benign, incomplete, denied, and genuinely dangerous configurations; they do not measure a production false-positive rate.
+
+## Finding Validation, Coverage, Exceptions, and Simulation
+
+The offline HTML report includes four workspaces in English and Turkish:
+
+- **Finding Validation** lists prerequisites, applied decisions, and endpoint observations. Review a finding, document the source and collection time, and export `atilkurt-review.json`. Decisions in the browser are drafts until imported into a new report. Download the local PowerShell collector here or generate it with `--validation-script Collect-AtilKurtEvidence.ps1`.
+- **Scan Coverage** separates completed, skipped, and unrecorded analyzers from controls with imported policy evidence. An empty analyzer result is not evidence that a skipped check passed. The dashboard shows execution coverage next to its score explanation.
+- **Risk Exceptions** records an exact finding, owner, reason, and UTC expiry. Exceptions are bound to the observed configuration and rule version. Expired or changed records stop excluding risk from scores and remediation priorities. Accepted risks remain visible in takeover paths and risk-based compliance evidence.
+- **Remediation Simulation** removes selected control relationships in memory and recomputes Tier-0 reachability, including alternative routes and parallel permission grants. It reports exposed sources and reachable source/target pairs before and after the proposed removals. Export a scenario for repeatable CLI evaluation with `--remediation-scenario`.
+
+The local collector reads registry policy, service state, OS/update metadata and computer RSoP. It writes evidence and a companion XML report; it does not change directory objects, services, or policies. Its hotfix inventory is partial and cannot independently confirm patch coverage. CA publication/enrollment, key ownership, and other missing prerequisites still need the indicated independent review. Resultant policy export follows Microsoft's [gpresult documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/gpresult).
+
+Example first scan:
+
+```bash
+ATILKURT_PASS='your-password' Atilkurt -d example.com -u auditor --ssl \
+  --json-export scan.json --validation-script Collect-AtilKurtEvidence.ps1 --lan tr
+```
+
+Run the downloaded collector locally on the relevant Windows host, then import the observations. In the report, complete the prerequisite checks and export your review file:
+
+```powershell
+.\Collect-AtilKurtEvidence.ps1 -OutputPath .\dc01-evidence.json
+```
+
+Rebuild from the saved JSON export without credentials or an LDAP connection:
+
+```bash
+Atilkurt -d example.com --offline-snapshot scan.json \
+  --validation-evidence dc01-evidence.json --review-file atilkurt-review.json \
+  --remediation-scenario atilkurt-scenario.json \
+  --output reviewed.html --json-export reviewed.json --lan tr
+```
+
+Review documents use `schema_version: 1`, `domain`, `reviews`, `exceptions`, and `observations`. A decision must include the finding ID, evidence fingerprint, rule version, reviewer, reason, review/expiry timestamps, and prerequisite checks. Each check has a name, `pass`/`fail`/`unknown` result, target, source, and collection timestamp. Confirmation requires all prerequisites to pass; a false-positive decision requires at least one failed prerequisite. Reviewer decisions are explicit assessment attestations, not independently signed machine proofs. Review evidence defaults to a maximum age of 30 days (`--evidence-max-age-days`, up to 365). Unknown, stale, conflicting, cross-domain, or changed evidence cannot silently promote a candidate finding.
+
+Decisions persist in JSON exports and checkpoints; offline rebuilding and checkpoint resumption re-evaluate expiry. Offline reports reuse directory evidence and regenerate risk-based compliance; they do not constitute a fresh LDAP scan or fresh endpoint validation. Old exports without domain metadata are unsuitable for offline rebuilding. Simulation is limited to the collected graph and six hops, and does not model operational dependencies or predict a production risk score. It never executes a remediation. Search filters the relationship list while preserving selections; at most 300 matching rows are displayed at once. Graphs that exceed simulation size or traversal limits still produce an assessment, with simulation exposure explicitly marked unknown.
+
+## Accuracy, Verification, and Operations
+
+Two additional offline report workspaces, **Accuracy & Evidence** and **Remediation Operations**, show rule measurements, collection health, token evidence, signatures, shared causes, retest results, scan history, notifications, and work assignments. Both workspaces support English and Turkish. Browser assignments remain drafts until exported and imported through the CLI.
+
+### Diagnostics and Rule Measurements
+
+```bash
+Atilkurt doctor
+Atilkurt doctor -d example.com -u auditor --dc-ip dc01.example.com --output doctor.json
+Atilkurt quality --output quality.json
+```
+
+`doctor` checks Python, runtime packages, and the certificate trust store locally. A domain enables bounded DNS/TCP/TLS checks; a username additionally enables authenticated read-only RootDSE, schema, and domain-root attribute checks. Use a protected `ATILKURT_PASS` environment value for authentication. LDAPS is the diagnostic default; `--no-ssl` selects LDAP. A missing schema or attribute observation is reported as unknown rather than denied or absent.
+
+Every normal LDAP search records its scope, base, hashed query ID, completion, returned-object count, elapsed time, and missing-value counts. The ledger excludes attribute values, filters, and credentials, and is bounded to 10,000 queries. A completed ledger means recorded searches completed, not that the account can see every directory object. Read errors and ledger overflow prevent absence-based remediation closure. HTML shows the first 100 queries; JSON retains the bounded ledger.
+
+The bundled quality dataset runs 16 labelled scenarios against four rule families: replication rights, password policy, legacy-DC vulnerability candidates, and broad ACL grants. It reports precision, recall, false positives, missed positives, and unknown results; an unknown prediction for an expected positive counts as a missed positive. These measurements describe the supplied scenarios and cannot establish a production false-positive rate. Families without labelled cases are not measured.
+
+Supply additional labelled cases with `Atilkurt quality --dataset labelled-cases.json`, or attach them to a report with `--quality-dataset labelled-cases.json --quality-export quality.json`. Example:
+
+```json
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "short-domain-password",
+      "rule": "registry",
+      "expected": "positive",
+      "risk_types": ["password_policy_weak"],
+      "input": {
+        "steps": ["password_policy"],
+        "ldap_rows": [{"minPwdLength": 6}],
+        "data": {"users": [], "groups": [], "computers": [], "gpos": []}
+      }
+    }
+  ]
+}
+```
+
+Cases require unique IDs and an expected `positive`, `negative`, or `unknown` result. The `registry` adapter accepts registered analysis step keys, optional `risk_types`, fixture directory collections, default `ldap_rows`, and exact query overrides of `{ "base": "DN", "filter": "LDAP filter", "rows": [] }`; `error: true` models an unavailable query. No fixture connects to LDAP. Built-in adapters `dcsync`, `password_policy`, `zerologon`, and `broad_acl` use the shapes in `analysis/rule_quality.py`. Evaluation is bounded to 1,000 cases and 10,000 queries per case. The output records the rule version and dataset fingerprint.
+
+### Effective Access and Shared Causes
+
+```bash
+Atilkurt -d example.com -u auditor --ssl --verify-effective-access \
+  --token-limit 50 --token-delay 0.1 --json-export scan.json
+```
+
+The optional token phase reads `tokenGroups`, `objectSid`, and `sIDHistory` with BASE scope for accounts associated with critical or ACL findings. It checks that the response belongs to the requested SID, enforces a 1–500-account limit and delay, and recalculates completed ACL, DCSync, and attack-graph analyses. Failed or unreadable tokens remain unknown and cannot reuse a previously collected token as fresh proof. Conditional ACEs, claims, service authorization, and endpoint behavior still need independent validation.
+
+Shared-cause groups link explicit permission grants to the collected findings and paths that use them. Related paths can appear in several groups when they depend on several grants. Grouping preserves individual findings, scores, and alternative paths. Use the existing remediation simulation to evaluate proposed grant removals; grouping never changes Active Directory.
+
+### History, Retesting, and Work Assignments
+
+Keep an initial snapshot and local history, then compare selected findings against a fresh assessment:
+
+```bash
+Atilkurt -d example.com -u auditor --ssl \
+  --history-db assessment.sqlite3 --json-export before.json --tickets-export tasks.json
+Atilkurt -d example.com -u auditor --ssl \
+  --history-db assessment.sqlite3 --retest before.json \
+  --retest-export retest.json --notifications-export changes.json --json-export after.json
+```
+
+Repeat `--retest-finding FINDING_ID` to select exact findings; omit it to retest all snapshot findings. Results are `resolved`, `still_present`, or `insufficient_evidence`. Absence can close an LDAP-backed finding only after fresh collection within 24 hours, all registered analysis steps completing, successful recorded queries, matching domain/rule version, and relevant attribute visibility. Pending candidates and conditions originally requiring runtime or ownership validation need independent retesting even if LDAP no longer reports them. Fast profiles, skipped checks, offline rebuilds, stale data, and failed reads cannot establish closure. A baseline drift comparison is separate from verified remediation closure.
+
+The SQLite history isolates domains and distinguishes fresh scans from rebuilt reports; only fresh scans are plotted. Missing findings without verified closure become `unassessed`. New supported critical findings, reopened supported findings, and expired exceptions create deduplicated local notification records. Repeating an unchanged assessment does not repeat them. History, notification, ticket, or audit options enable history storage; the latter options default to `.atilkurt_history.sqlite3` when no database is specified.
+
+Scan changes, task imports, audit entries and alert deduplication are committed together after all requested reports and exports succeed. A publication or import failure rolls back the database changes, so a retry can still deliver the original notifications. Each output file is replaced atomically, but the complete set of files is not a single filesystem transaction: a failed run may leave some new artifacts and must not be treated as a completed assessment.
+
+Work items use stable `AK-<finding_id>` external IDs, owners, UTC due dates, notes, and `open`, `in_progress`, `awaiting_verification`, or `resolved` status. Prepare assignments in the report and export `atilkurt-tasks.json`, then import it with `--history-db assessment.sqlite3 --ticket-file atilkurt-tasks.json --tickets-export tasks.json`. Importing the same assignments is idempotent. Task closure requires verified remediation; reappearing supported or pending findings reopen their tasks. Work files provide a local integration contract for an issue system; AtilKurt does not create remote tickets or send messages.
+
+Recurring scans use protected environment credentials and fresh collection:
+
+```bash
+Atilkurt watch --interval 3600 --runs 24 --scan-timeout 1800 \
+  --history-db assessment.sqlite3 -d example.com -u auditor --ssl --output report.html
+```
+
+`watch` requires `ATILKURT_PASS` from a protected environment. It disallows command-line passwords, checkpoint resumption, and offline snapshots. `--runs 0` continues until Ctrl+C; the interval minimum is 60 seconds. Scan output is suppressed during successful cycles; failures and important changes are printed. Notifications are written beside the database as a local JSON outbox. No network notification delivery is configured.
+
+### Signed Evidence, Audit, and Integration Exports
+
+```bash
+Atilkurt keygen --private-key assessment.private.pem --public-key assessment.public.pem
+Atilkurt sign --input atilkurt-review.json --output review.signed.json \
+  --signing-key assessment.private.pem
+Atilkurt verify --input review.signed.json --trusted-key assessment.public.pem
+Atilkurt -d example.com --offline-snapshot before.json \
+  --review-file review.signed.json --trusted-key assessment.public.pem --output reviewed.html
+Atilkurt audit --history-db assessment.sqlite3 --output audit.signed.json \
+  --signing-key assessment.private.pem
+```
+
+Signing uses JWS flattened envelopes with fixed PS256/RSA-PSS/SHA-256. Key generation creates a new 3072-bit key pair without overwriting existing files. Signature verification always requires explicitly supplied trusted keys; embedded keys are not trusted. `--trusted-key` is repeatable. Add `--require-signed-evidence` to reject unsigned review, collector, offline snapshot, retest, baseline, and ticket JSON inputs. Sign a collector JSON file with `sign` after collection. Other posture/event exports and graph/scenario/checkpoint files are outside this signature policy. Signing proves integrity and signer identity against the supplied key, not the accuracy or freshness of the observations.
+
+`--signing-key` signs JSON snapshots and review, quality, retest, notification, ticket, and audit workflow exports. `--audit-export` exports the audit during a report run. The database stores a SHA-256 audit chain with scan changes, review/exception attribution, and task updates. Chain verification detects inconsistent entries; an attacker who can rewrite the entire database can recompute an unsigned chain. Retain signed audit exports outside the database as independent checkpoints. Private keys and directory exports require protected storage; signing does not encrypt the data.
+
+```bash
+Atilkurt -d example.com -u auditor --ssl --history-db assessment.sqlite3 \
+  --csv-export findings.csv --siem-export findings.jsonl --cef-export findings.cef \
+  --export-changes-only --audit-export audit.json
+```
+
+CSV, SIEM JSONL, and CEF exports preserve stable finding IDs and evidence/review states. `--export-changes-only` requires history and emits changed findings, including explicit `resolved` or `unassessed` records for missing findings. Consumers must use these states rather than infer active risk from severity alone. Outputs are replaced on each run, including empty results; a downstream shipper can consume them without receiving duplicate unchanged findings. The application writes local artifacts and does not connect to a SIEM or issue-system API.
 
 ## Compliance Coverage
 
@@ -519,7 +689,7 @@ Only `en` and `tr` are valid values. Unsupported language values are rejected du
   --incremental
 ```
 
-`--checkpoint ID` stores the complete collection, analysis, scoring, and compliance state under `.atilkurt_checkpoints/ID.json`. `--resume ID` reuses a complete saved state and proceeds to report/export generation without recollecting the domain. If a checkpoint is incomplete or from an older partial format, AtilKurt safely performs a fresh scan.
+`--checkpoint ID` stores the complete collection, analysis, scoring, and compliance state under `.atilkurt_checkpoints/ID.json`. `--resume ID` validates the saved domain and collection/analysis structure before requesting credentials or connecting to LDAP. A complete state is reused without recollecting the domain; binary identity and security-descriptor values are restored from their serialized representation. A valid partial checkpoint for the same domain requires fresh collection. Missing, unreadable, malformed, or different-domain checkpoints fail explicitly; partial files without domain metadata cannot be resumed.
 
 `--incremental` still performs a current collection, then compares users by `sAMAccountName` and computers, groups, and GPOs by name against the newest checkpoint for the same domain. New, changed, and deleted records are attached to the analysis data. When no explicit checkpoint ID is supplied, an ID containing the domain and timestamp is created automatically.
 
@@ -566,7 +736,9 @@ One or more exported Windows event files can be correlated with the current LDAP
 - Sensitive directory changes from event 5136
 - Replication-right activity from event 4662
 - Strong certificate-mapping failures from KDC events 39, 40, and 41
-- Certificate issuance events 4886/4887 when the template is already flagged by LDAP analysis
+- Successful certificate issuance event 4887 when the template is already flagged by LDAP analysis (4886 is only a request)
+
+Kerberos issuance requires an explicit successful status. Burst detection requires a valid timestamp and identified requester/service. KDC mapping events must identify the KDC provider, and replication events must contain a replication GUID in the Properties field with the control-access bit set. Replication, sensitive changes, ticket bursts, and template issuance remain validation candidates because observing an operation alone does not establish malicious intent.
 
 The importer is offline and read-only: it parses supplied files, does not connect to event collectors, and does not retain raw secret values in finding narratives.
 
@@ -660,6 +832,17 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `--event-log FILE`: Correlate an offline Windows event file; repeatable; accepts JSON, JSONL, XML, and optional native EVTX
 - `--posture-file FILE`: Verify DC/GPO posture from an offline JSON, XML, INF, or text export; repeatable
 
+### Accuracy and Operations
+
+- `--verify-effective-access`, `--token-limit`, `--token-delay`: Collect bounded principal token evidence
+- `--quality-dataset`, `--quality-export`: Measure labelled offline cases and save metrics
+- `--retest`, repeatable `--retest-finding`, `--retest-export`: Verify selected prior findings
+- `--history-db`, `--notifications-export`: Store scan history and deduplicated local notifications
+- `--ticket-file`, `--tickets-export`: Import assignments and export stable work items
+- `--trusted-key`, `--require-signed-evidence`, `--signing-key`, `--audit-export`: Verify/sign evidence and preserve audit records
+- `--csv-export`, `--siem-export`, `--cef-export`, `--export-changes-only`: Write local integration files
+- `doctor`, `quality`, `keygen`, `sign`, `verify`, `audit`, `watch`: Operational commands; run `Atilkurt COMMAND --help` for command-specific options
+
 ### Risk Management
 
 - `--hourly-rate`: Hourly remediation cost used for ROI calculations
@@ -746,20 +929,23 @@ JSON output is intended for downstream processing and contains substantially mor
 
 ### Additional Export APIs
 
-The `reporting.export_formats.ExportFormats` Python API also provides CSV risk export, simplified Nessus-compatible XML, newline-delimited SIEM JSON, and CEF output for integrations. These formats are library APIs and do not currently have dedicated CLI flags.
+The `reporting.export_formats.ExportFormats` Python API provides CSV risk export, simplified Nessus-compatible XML, newline-delimited SIEM JSON, and CEF output for integrations. CSV, SIEM JSONL, and CEF are also available through `--csv-export`, `--siem-export`, and `--cef-export`; Nessus-compatible XML remains a library API.
 
 ### Output Naming and File Safety
 
 When `--output` is omitted or retains its default `report.html`, AtilKurt generates `AtilKurt_<domain>_<timestamp>.html`. Explicit HTML, JSON, Kerberoasting, and attack-graph paths are validated before use. Sensitive files are committed with atomic replacement and `0600` permissions so a partial write does not replace a previously valid artifact.
 
+Output destinations must be distinct from each other, input evidence, signing keys, log files and the history database. Existing symbolic-link and hard-link aliases are checked before files are written. To revise an imported review or task file, export to a separate path and replace the source only after reviewing the result.
+
 ## Checkpoints, Incremental State, and Caching
 
 - LDAP search results are cached in memory for a bounded lifetime and a maximum number of entries to reduce duplicate queries during one process.
 - Cache keys include the base DN, filter, attributes, size limit, page size, and paging state so semantically different searches do not collide.
-- Paged search deduplicates entries and validates LDAP result codes before caching.
+- Paged search deduplicates entries, validates LDAP result codes and applies network delays to every page. Repeated continuation cookies or pages that stop advancing with an active cookie fail without returning or caching partial results.
+- Registered analyses with failed LDAP queries are reported as `partial`, even when the analyzer catches the exception. These steps do not contribute to completed execution coverage or prove remediation closure. Failure counts remain available after the bounded diagnostic ledger fills up.
 - Checkpoint IDs cannot contain path separators, whitespace, or reserved filename characters, and cannot resolve outside `.atilkurt_checkpoints`.
 - The checkpoint directory uses `0700`; individual checkpoint files use `0600` and are atomically replaced.
-- Incremental comparison uses deterministic SHA-256 identity hashes and reports new, changed, and deleted objects separately.
+- Incremental comparison uses deterministic SHA-256 identity hashes and reports new, changed, and deleted objects separately. Serialized bytes and timestamps are compared in their checkpoint representation to avoid treating every unchanged object as modified.
 - Checkpoints and JSON baselines are not encrypted. Their filesystem permissions reduce accidental local disclosure but do not replace full-disk encryption or an organizational secrets/data handling policy.
 - Supplying `--event-log`, `--posture-file`, or `--baseline` with `--resume` replaces the matching Package C evidence section and recalculates scores/compliance from the checkpoint state without recollecting LDAP data.
 
@@ -902,6 +1088,7 @@ The repository includes tests for:
 - Risk scoring, compliance mapping, and analysis deduplication
 - Modern Packages A/B/C: identity hardening, control-plane graphing, event/posture correlation, snapshot deltas, confidence scoring, and OpenGraph export
 - Performance controls and representative analyzer edge cases
+- Labelled rule metrics, collection visibility, token limits, signed and tampered evidence, conservative retesting, reopened tasks, deduplicated alerts, audit integrity, and change-only integration exports
 
 ## Project Structure
 
@@ -939,7 +1126,11 @@ Main areas:
 - `reporting/` generates the offline HTML application, English/Turkish presentation layer, compliance views, dashboard, purple-team guidance, and integration exports.
 - `tests/` covers the orchestration boundaries as well as individual analyzers and security regressions.
 
-Runtime dependencies are intentionally small: `ldap3` provides LDAP protocol support and `pycryptodome` supports cryptographic parsing/decryption needed by specific analyses. Native EVTX import is optional and requires `python-evtx`; JSON/JSONL/XML event correlation works without it. Report UI assets are vendored for offline use; no CDN is required when opening the default report.
+Runtime dependencies include `ldap3` for directory reads, `pycryptodome` for cryptographic parsing, `impacket` for explicitly selected read-only SMB checks/file collection and `reportlab` for real PDF deliverables. The installer checks all declared constraints and reuses compatible installations. Native EVTX import is optional and requires `python-evtx`; JSON/JSONL/XML event correlation works without it. Report UI assets and the client PDF font are vendored for offline use; no CDN is required when opening the default report.
+
+### Pentest engagement features
+
+The ten new workflows are available through CLI help and the HTML **Pentest Workspace**: scope/time/query budgets, focused finding verification, protocol checks, SYSVOL/NETLOGON reads, start/goal path planning, effective GPO/RSoP, BloodHound ingestion, federated domain graphs, masked DOCX/PDF delivery and expanded labelled accuracy scenarios. See [Pentest workflow usage](docs/PENTEST_WORKFLOWS.md) for commands, input schemas, evidence boundaries and limits, and [implementation plan](docs/PENTEST_FEATURE_PLAN.md) for acceptance criteria.
 
 ## License
 

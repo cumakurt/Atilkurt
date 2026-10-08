@@ -16,7 +16,7 @@ from core.constants import MITRETechniques, RiskTypes, Severity
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class KeyCredentialRecord:
     """Safely reportable metadata parsed from a KEYCREDENTIALLINK_BLOB."""
 

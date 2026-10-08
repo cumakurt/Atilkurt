@@ -34,12 +34,16 @@ jobs:
 
       - name: Check launcher syntax
         run: |
+          bash -n install.sh
           bash -n run.sh
           sh -n docker-entrypoint.sh
-          shellcheck run.sh docker-entrypoint.sh
+          shellcheck install.sh run.sh docker-entrypoint.sh
 
       - name: Run tests
         run: python -m pytest -q --tb=short
+
+      - name: Verify labelled accuracy scenarios
+        run: atilkurt quality --output accuracy-fixtures.json
 
       - name: Validate dependency graph
         run: python -m pip check

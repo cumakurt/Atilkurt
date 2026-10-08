@@ -7,6 +7,8 @@ import logging
 from collections import defaultdict
 
 from core.constants import UACFlags
+from core.ad_identity import account_has_privileged_evidence
+from core.finding_evidence import annotate_validation, is_score_excluded, requires_validation
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +227,8 @@ class RiskScorer:
         """
         if not risks:
             return []
+        for risk in risks:
+            annotate_validation(risk)
 
         # Build context maps
         user_map = {u.get('sAMAccountName'): u for u in (users or [])}
@@ -259,6 +263,8 @@ class RiskScorer:
         """Count occurrences of each risk type for prevalence calculation."""
         self.risk_counts.clear()
         for risk in risks:
+            if is_score_excluded(risk):
+                continue
             risk_type = risk.get('type', 'unknown')
             self.risk_counts[risk_type] += 1
 
@@ -285,6 +291,8 @@ class RiskScorer:
 
         # Cap at 100
         final_score = min(intermediate_score, 100.0)
+        if is_score_excluded(risk):
+            final_score = 0.0
 
         # Add scoring details to risk
         risk['base_score'] = base_score
@@ -321,7 +329,7 @@ class RiskScorer:
             user = user_map.get(affected_object)
             if user:
                 # Check if privileged user
-                if user.get('adminCount') == 1 or user.get('adminCount') == '1':
+                if account_has_privileged_evidence(user):
                     return self.OBJECT_TYPE_MULTIPLIERS['privileged_user']
                 # Check if member of privileged groups
                 member_of = user.get('memberOf', []) or []
@@ -329,8 +337,7 @@ class RiskScorer:
                     member_of = [member_of] if member_of else []
                 for group_dn in member_of:
                     group_name = self._extract_group_name(group_dn)
-                    if any(priv in (group_name or '').upper() for priv in
-                           ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
+                    if (group_name or '').upper() in {'DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS'}:
                         return self.OBJECT_TYPE_MULTIPLIERS['privileged_user']
             return self.OBJECT_TYPE_MULTIPLIERS['normal_user']
 
@@ -369,6 +376,8 @@ class RiskScorer:
         # Group risks by affected object
         object_risks = defaultdict(list)
         for risk in scored_risks:
+            if is_score_excluded(risk):
+                continue
             affected_object = risk.get('affected_object')
             if affected_object:
                 object_risks[affected_object].append(risk)
@@ -386,6 +395,8 @@ class RiskScorer:
         # Apply path-based bonus (for escalation paths)
         path_risks = defaultdict(list)
         for risk in scored_risks:
+            if is_score_excluded(risk):
+                continue
             escalation_path = risk.get('escalation_path', {})
             if escalation_path:
                 # Create path identifier
@@ -432,6 +443,7 @@ class RiskScorer:
         Formula: Weighted score based on risk severity distribution and total risk impact
         Uses logarithmic scaling to prevent score from dropping to 0 too quickly
         """
+        scored_risks = [risk for risk in scored_risks if not is_score_excluded(risk)]
         if not scored_risks:
             return 100.0
 
@@ -498,8 +510,12 @@ class RiskScorer:
             'top_critical_risks': [],
             'most_risky_object': None,
             'quick_wins': [],
-            'long_term_improvements': []
+            'long_term_improvements': [],
+            'validation_required_count': sum(requires_validation(risk) for risk in scored_risks),
+            'accepted_risk_count': sum(risk.get('exception_status') == 'active' for risk in scored_risks),
+            'false_positive_count': sum(risk.get('finding_status') == 'false_positive' for risk in scored_risks),
         }
+        scored_risks = [risk for risk in scored_risks if not is_score_excluded(risk)]
 
         if not scored_risks:
             return summary

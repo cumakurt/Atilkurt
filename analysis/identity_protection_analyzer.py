@@ -24,7 +24,9 @@ class IdentityProtectionAnalyzer:
                 continue
 
             account_name = str(user.get("sAMAccountName") or user.get("name") or "Unknown user")
-            uac = self._as_int(user.get("userAccountControl")) or 0
+            uac = self._as_int(user.get("userAccountControl"))
+            if uac is None:
+                continue
             member_of = user.get("memberOf")
             group_names = self._group_names(member_of)
 
@@ -72,13 +74,11 @@ class IdentityProtectionAnalyzer:
             member_of = [member_of]
         return any(name in cls.PRIVILEGED_GROUPS for name in cls._group_names(member_of))
 
-    @staticmethod
-    def _is_enabled(user: dict[str, Any]) -> bool:
+    @classmethod
+    def _is_enabled(cls, user: dict[str, Any]) -> bool:
         """Return whether the account is enabled according to userAccountControl."""
-        try:
-            return not bool(int(user.get("userAccountControl", 0) or 0) & UACFlags.ACCOUNTDISABLE)
-        except (TypeError, ValueError):
-            return False
+        value = cls._as_int(user.get('userAccountControl'))
+        return value is not None and not bool(value & UACFlags.ACCOUNTDISABLE)
 
     @staticmethod
     def _as_int(value: Any) -> Optional[int]:

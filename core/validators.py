@@ -152,6 +152,30 @@ def validate_timeout(timeout: Optional[int]) -> int:
     return timeout
 
 
+def validate_distinct_paths(outputs: dict, inputs: dict) -> None:
+    """Protect inputs and databases from output aliases, including existing hard links."""
+    from pathlib import Path
+
+    checked = []
+    for name, value in outputs.items():
+        if not value:
+            continue
+        try:
+            path = Path(value).resolve()
+            for other_name, other_value in [*inputs.items(), *checked]:
+                if not other_value:
+                    continue
+                other = Path(other_value).resolve()
+                same = path == other
+                if not same and path.exists() and other.exists():
+                    same = path.samefile(other)
+                if same:
+                    raise ValidationError(f'{name} and {other_name} must use separate file paths')
+        except (OSError, RuntimeError) as exc:
+            raise ValidationError(f'Cannot resolve or compare the {name} file path') from exc
+        checked.append((name, value))
+
+
 def validate_output_file(output_file: str) -> str:
     """
     Validate output file path and prevent path traversal attacks.

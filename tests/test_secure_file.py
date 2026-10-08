@@ -49,5 +49,13 @@ class TestSecureFileWrites(unittest.TestCase):
             self.assertEqual(outside_path.read_text(encoding="utf-8"), "unchanged")
 
 
+def test_atomic_write_supports_platforms_without_fchmod(tmp_path, monkeypatch):
+    monkeypatch.delattr("core.secure_file.os.fchmod", raising=False)
+    path = tmp_path / "report.json"
+    atomic_write_text(path, '{"status":"complete"}')
+    assert path.read_text() == '{"status":"complete"}'
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 if __name__ == "__main__":
     unittest.main()

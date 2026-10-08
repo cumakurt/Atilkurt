@@ -26,6 +26,7 @@ TEMPLATE_ATTRIBUTES = [
     "msPKI-Certificate-Name-Flag",
     "msPKI-Enrollment-Flag",
     "pKIExtendedKeyUsage",
+    "msPKI-RA-Signature",
 ]
 
 
@@ -69,17 +70,21 @@ class CertificateAnalyzer:
     def _analyze_template_vulnerabilities(self, template: dict, template_name: str) -> list[dict[str, Any]]:
         """Analyze a certificate template for ESC1- and ESC2-like attribute exposure."""
         risks: list[dict[str, Any]] = []
-        enrollment_flags = self._as_int(template.get("msPKI-Enrollment-Flag")) or 0
+        enrollment_flags = self._as_int(template.get("msPKI-Enrollment-Flag"))
+        signatures = self._as_int(template.get('msPKI-RA-Signature'))
         name_flags = self._as_int(template.get("msPKI-Certificate-Name-Flag")) or 0
         ekus_present = "pKIExtendedKeyUsage" in template
         ekus = self._as_list(template.get("pKIExtendedKeyUsage"))
-        eku_text = " ".join(str(eku) for eku in ekus)
-        has_client_auth = CLIENT_AUTH_OID in eku_text or SMART_CARD_LOGON_OID in eku_text
-        has_any_purpose = ANY_PURPOSE_OID in eku_text
-        manager_approval = bool(enrollment_flags & PEND_ALL_REQUESTS)
+        eku_set = {str(eku).strip() for eku in ekus}
+        has_client_auth = bool({CLIENT_AUTH_OID, SMART_CARD_LOGON_OID}.intersection(eku_set))
+        has_any_purpose = ANY_PURPOSE_OID in eku_set
+        manager_approval = enrollment_flags is not None and bool(enrollment_flags & PEND_ALL_REQUESTS)
+        if manager_approval or (signatures is not None and signatures > 0):
+            return risks
 
         if (
             name_flags & ENROLLEE_SUPPLIES_SUBJECT
+            and enrollment_flags is not None
             and not manager_approval
             and (has_client_auth or has_any_purpose)
         ):
@@ -139,6 +144,15 @@ class CertificateAnalyzer:
                 "mitre_attack": MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
             })
 
+        for risk in risks:
+            risk['evidence'] = {
+                'requires_runtime_validation': True,
+                'name_flags': name_flags,
+                'enrollment_flags': enrollment_flags,
+                'authorized_signatures': signatures,
+                'ekus': sorted(eku_set),
+                'missing_prerequisites': ['template enrollment ACL', 'CA publication', 'CA enrollment policy'],
+            }
         return risks
 
     @staticmethod

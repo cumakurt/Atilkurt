@@ -7,6 +7,8 @@ import logging
 from typing import Any
 
 from core.ad_security import ace_permission_names, as_int, as_text, dangerous_broad_aces, parsed_security_descriptor, sid_text
+from core.security_descriptor_parser import directory_right_granted
+from uuid import UUID
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -128,13 +130,16 @@ class HybridIdentityV2Analyzer:
             return []
         parsed = parsed_security_descriptor(rows[0].get("nTSecurityDescriptor"))
         risks: list[dict[str, Any]] = []
-        for ace in (parsed or {}).get("dacl", []):
-            sid = str(ace.get("sid") or "")
+        for sid in sorted(connect_accounts):
             if sid not in connect_accounts:
                 continue
-            permissions = ace_permission_names(ace)
-            replication = sorted(name for name in permissions if name.startswith("DS-Replication") or name == "AllExtendedRights")
-            if not replication:
+            required = {
+                'DS-Replication-Get-Changes': '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2',
+                'DS-Replication-Get-Changes-All': '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2',
+            }
+            replication = [name for name, guid in required.items()
+                           if parsed and directory_right_granted(parsed, sid, 0x100, UUID(guid).bytes_le)]
+            if len(replication) != len(required):
                 continue
             account = connect_accounts[sid]
             name = as_text(account.get("sAMAccountName")) or sid

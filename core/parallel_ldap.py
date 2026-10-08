@@ -5,9 +5,12 @@ Enables parallel LDAP queries with multi-threading support
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any, Optional, Callable
 import time
+import math
+
+from core.exceptions import LDAPSearchError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,10 @@ class ParallelLDAPExecutor:
             max_workers: Maximum number of parallel threads
             rate_limit: Minimum seconds between queries per thread
         """
+        if not isinstance(max_workers, int) or not 1 <= max_workers <= 64:
+            raise ValidationError('Parallel workers must be between 1 and 64')
+        if not isinstance(rate_limit, (int, float)) or not math.isfinite(rate_limit) or rate_limit < 0:
+            raise ValidationError('Parallel rate limit must be a finite non-negative number')
         self.base_ldap_config = {
             'domain': ldap_connection.domain,
             'username': ldap_connection.username,
@@ -35,12 +42,19 @@ class ParallelLDAPExecutor:
             'timeout': ldap_connection.base_timeout,
             'page_size': ldap_connection.page_size,
             'enable_paging': ldap_connection.enable_paging,
-            'max_retries': ldap_connection.max_retries
+            'max_retries': ldap_connection.max_retries,
+            'retry_delay': ldap_connection.retry_delay,
+            'adaptive_timeout': ldap_connection.adaptive_timeout,
+            'enable_cache': ldap_connection.enable_cache,
+            'validate_certificate': ldap_connection.validate_certificate,
         }
         self.max_workers = max_workers
         self.rate_limit = rate_limit
         self.executor: Optional[ThreadPoolExecutor] = None
         self._thread_local = threading.local()
+        self._connections = []
+        self._connections_lock = threading.Lock()
+        self._execution_lock = threading.Lock()
 
     def _get_ldap_connection(self):
         """Get or create LDAP connection for current thread."""
@@ -50,7 +64,10 @@ class ParallelLDAPExecutor:
             try:
                 conn.connect()
                 self._thread_local.ldap_conn = conn
+                with self._connections_lock:
+                    self._connections.append(conn)
             except Exception as e:
+                conn.disconnect()
                 logger.error(f"Failed to create LDAP connection in thread: {str(e)}")
                 raise
         return self._thread_local.ldap_conn
@@ -91,46 +108,59 @@ class ParallelLDAPExecutor:
         Returns:
             Dict mapping query IDs to results
         """
-        results = {}
-        completed = 0
-        total = len(queries)
+        identifiers = []
+        for index, query in enumerate(queries):
+            if not isinstance(query, dict):
+                raise ValidationError('Parallel queries must be objects')
+            identifier = query.get('id', f'query_{index}')
+            if not isinstance(identifier, str) or not identifier:
+                raise ValidationError('Parallel query IDs must be non-empty strings')
+            identifiers.append(identifier)
+        if len(set(identifiers)) != len(identifiers):
+            raise ValidationError('Parallel query IDs must be unique')
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all queries
-            future_to_query = {}
-            for query in queries:
-                query_id = query.get('id', f"query_{len(future_to_query)}")
-                future = executor.submit(
-                    self.execute_query,
-                    query.get('filter', '(objectClass=*)'),
-                    query.get('base'),
-                    query.get('attributes'),
-                    query.get('size_limit', 0)
-                )
-                future_to_query[future] = query_id
-
-            # Collect results as they complete
-            for future in as_completed(future_to_query):
-                query_id = future_to_query[future]
-                try:
-                    result = future.result()
-                    results[query_id] = result
-                    completed += 1
-                    if progress_callback:
-                        progress_callback(completed, total)
-                except Exception as e:
-                    logger.error(f"Query {query_id} failed: {str(e)}")
-                    results[query_id] = []
-
+        results, failures = {}, []
+        completed, total = 0, len(queries)
+        with self._execution_lock:
+            try:
+                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    pending, next_index = {}, 0
+                    while next_index < total or pending:
+                        # Bound queued work as well as active threads.
+                        while next_index < total and len(pending) < 2 * self.max_workers:
+                            query = queries[next_index]
+                            future = executor.submit(
+                                self.execute_query, query.get('filter', '(objectClass=*)'),
+                                query.get('base'), query.get('attributes'), query.get('size_limit', 0),
+                            )
+                            pending[future] = identifiers[next_index]
+                            next_index += 1
+                        done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            identifier = pending.pop(future)
+                            try:
+                                results[identifier] = future.result()
+                            except Exception as exc:
+                                failures.append(exc)
+                            completed += 1
+                            if progress_callback:
+                                progress_callback(completed, total)
+            finally:
+                self.cleanup()
+        if failures:
+            raise LDAPSearchError(f'{len(failures)} of {total} parallel LDAP queries failed; partial results discarded') from failures[0]
         return results
 
     def cleanup(self):
-        """Cleanup thread-local connections."""
-        if hasattr(self._thread_local, 'ldap_conn'):
+        """Close all worker connections after the pool has stopped."""
+        with self._connections_lock:
+            connections, self._connections = self._connections, []
+        for connection in connections:
             try:
-                self._thread_local.ldap_conn.disconnect()
+                connection.disconnect()
             except Exception:
-                pass
+                logger.warning('Could not disconnect a parallel LDAP worker')
+        if hasattr(self._thread_local, 'ldap_conn'):
             delattr(self._thread_local, 'ldap_conn')
 
 
@@ -160,13 +190,15 @@ class ParallelCollector:
         Returns:
             Dict mapping query IDs to results
         """
-        from core.progress_tracker import create_progress_callback
+        from core.progress_tracker import ProgressTracker, create_progress_callback
 
         progress_callback = None
+        tracker = None
         if self.show_progress:
-            progress_callback = create_progress_callback(
-                operation_name="Parallel collection",
-                total_items=len(queries)
-            )
+            tracker = ProgressTracker('Parallel collection', total_items=len(queries))
+            progress_callback = create_progress_callback(tracker)
 
-        return self.executor.execute_parallel(queries, progress_callback)
+        results = self.executor.execute_parallel(queries, progress_callback)
+        if tracker:
+            tracker.finish()
+        return results

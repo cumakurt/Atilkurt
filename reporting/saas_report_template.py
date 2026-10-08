@@ -994,6 +994,13 @@ def _build_nav_items(stats):
     """Build sidebar navigation items - maps to Bootstrap tab triggers."""
     nav_config = [
         ('dashboard-tab', 'dashboard', 'Dashboard', 'layout-dashboard', None, None),
+        ('finding-validation-tab', 'finding-validation', 'Finding Validation', 'badge-check', None, None),
+        ('scan-coverage-tab', 'scan-coverage', 'Scan Coverage', 'scan-line', None, None),
+        ('risk-exceptions-tab', 'risk-exceptions', 'Risk Exceptions', 'clipboard-check', None, None),
+        ('remediation-simulation-tab', 'remediation-simulation', 'Remediation Simulation', 'git-branch', None, None),
+        ('accuracy-evidence-tab', 'accuracy-evidence', 'Accuracy & Evidence', 'check-check', None, None),
+        ('remediation-operations-tab', 'remediation-operations', 'Remediation Operations', 'clipboard-list', None, None),
+        ('pentest-workspace-tab', 'pentest-workspace', 'Pentest Workspace', 'briefcase-business', None, None),
         ('domain-admin-takeover-tab', 'domain-admin-takeover', 'Domain Admin Map', 'crown', str(stats.get('da_takeover_count', 0)), 'danger' if stats.get('da_takeover_count') else None),
         ('risks-tab', 'risks', 'All Risks', 'alert-triangle', str(stats.get('total_risks', 0)), None),
         ('critical-risks-tab', 'critical-risks', 'Critical Risks', 'alert-octagon', str(stats.get('critical_count', 0)), 'danger'),

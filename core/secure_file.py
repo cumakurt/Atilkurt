@@ -31,13 +31,16 @@ def atomic_text_writer(
         dir=parent,
     )
     try:
-        os.fchmod(file_descriptor, mode)
         with os.fdopen(
             file_descriptor,
             "w",
             encoding=encoding,
             newline=newline,
         ) as file_handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(file_handle.fileno(), mode)
+            else:
+                os.chmod(temporary_path, mode)
             yield file_handle
             file_handle.flush()
             os.fsync(file_handle.fileno())

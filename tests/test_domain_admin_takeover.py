@@ -88,7 +88,7 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
         self.assertIn("acl_generic_all", open_ids)
         self.assertNotIn("adcs", open_ids)
 
-    def test_certificate_esc1_opens_adcs_path(self):
+    def test_certificate_esc1_flags_require_validation(self):
         result = DomainAdminTakeoverAnalyzer().analyze(
             [
                 {
@@ -99,7 +99,8 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
                 }
             ]
         )
-        self.assertEqual([path["id"] for path in result["open_paths"]], ["adcs"])
+        self.assertEqual(result['open_paths'], [])
+        self.assertEqual([path['id'] for path in result['pending_paths']], ['adcs'])
 
 
 class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):

@@ -15,8 +15,14 @@ from reporting.localization import localize_finding_list
 
 
 def _event(event_id: int, **fields):
+    if event_id in {4768, 4769}:
+        fields.setdefault('Status', '0x0')
+    if event_id == 4662:
+        fields.setdefault('AccessMask', '0x100')
     return {
         "EventID": event_id,
+        'Provider': ('Microsoft-Windows-Kerberos-Key-Distribution-Center' if event_id == 39
+                     else 'Microsoft-Windows-Security-Auditing'),
         "timestamp": "2026-08-25T09:10:00+00:00",
         "EventData": fields,
     }

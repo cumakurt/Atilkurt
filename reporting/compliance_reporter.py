@@ -6,6 +6,7 @@ Uses advanced LDAP-based compliance analyzer for detailed checks
 
 import logging
 from typing import Any, Optional
+from core.finding_evidence import is_disproved, requires_validation
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,8 @@ class ComplianceReporter:
         """Count current risk identifiers while accepting legacy aliases."""
         counts: dict[str, int] = defaultdict(int)
         for risk in risks:
+            if requires_validation(risk) or is_disproved(risk):
+                continue
             risk_type = risk.get('type', '')
             canonical_type = cls.RISK_TYPE_ALIASES.get(risk_type, risk_type)
             counts[canonical_type] += 1

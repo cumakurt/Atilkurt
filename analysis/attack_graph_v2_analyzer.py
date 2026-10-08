@@ -10,6 +10,7 @@ from typing import Any
 from core.ad_identity import account_has_privileged_evidence, is_privileged_group_record
 from core.ad_security import as_list, as_text, sid_text
 from core.constants import MITRETechniques, RiskTypes, Severity
+from core.finding_evidence import is_disproved, requires_validation
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class AttackGraphV2Analyzer:
         analysis_results: dict[str, Any],
     ) -> dict[str, Any]:
         nodes: dict[str, dict[str, Any]] = {}
-        edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+        edges: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         sid_to_id: dict[str, str] = {}
         dn_to_id: dict[str, str] = {}
 
@@ -65,6 +66,8 @@ class AttackGraphV2Analyzer:
                         self._edge(edges, source, target, "MemberOf", {"evidence": "memberOf"})
 
         for finding in analysis_results.get("comprehensive_acl_risks") or []:
+            if requires_validation(finding) or is_disproved(finding):
+                continue
             trustee_sid = as_text(finding.get("trustee"))
             source = sid_to_id.get(trustee_sid)
             target = self._find_by_label(nodes, as_text(finding.get("affected_object")))
@@ -76,6 +79,10 @@ class AttackGraphV2Analyzer:
         self._merge_component_graphs(nodes, edges, analysis_results)
         adjacency: dict[str, set[str]] = defaultdict(set)
         for edge in edges.values():
+            # A trust is an authentication relationship, not an object-control
+            # grant. Keep it visible without asserting a traversable takeover.
+            if edge['type'] in {'InboundTrust', 'OutboundTrust', 'RelatedTo'}:
+                continue
             adjacency[edge["source"]].add(edge["target"])
         targets = {node_id for node_id, node in nodes.items() if node.get("privileged")}
 
@@ -145,7 +152,7 @@ class AttackGraphV2Analyzer:
         return {"risks": risks, "graph": graph}
 
     def _merge_component_graphs(
-        self, nodes: dict[str, dict[str, Any]], edges: dict[tuple[str, str, str], dict[str, Any]],
+        self, nodes: dict[str, dict[str, Any]], edges: dict[tuple[str, str, str, str], dict[str, Any]],
         results: dict[str, Any],
     ) -> None:
         for key in (
@@ -206,9 +213,9 @@ class AttackGraphV2Analyzer:
         return reached
 
     @staticmethod
-    def _edge(edges: dict[tuple[str, str, str], dict[str, Any]], source: str, target: str,
+    def _edge(edges: dict[tuple[str, str, str, str], dict[str, Any]], source: str, target: str,
               kind: str, properties: dict[str, Any]) -> None:
-        key = (source, target, kind)
+        key = (source, target, kind, str(properties.get('permission') or ''))
         edge = edges.setdefault(key, {"source": source, "target": target, "type": kind})
         edge.update({k: v for k, v in properties.items() if v not in (None, "", [], {})})
 

@@ -3,9 +3,12 @@ Security Descriptor Parser Module
 Parses Windows Security Descriptor binary format from LDAP
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Optional
+from typing import Any
 from struct import unpack
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +78,15 @@ class SecurityDescriptorParser:
 
     # Extended Rights GUIDs (common ones)
     EXTRIGHTS_GUID_MAPPING = {
-        b'\x11\x31\xf6\xaa\x9c\x07\x11\xd1\xf7\x9f\x00\xc0\x4f\xc2\xdc\xd2': 'DS-Replication-Get-Changes',
-        b'\x11\x31\xf6\xad\x9c\x07\x11\xd1\xf7\x9f\x00\xc0\x4f\xc2\xdc\xd2': 'DS-Replication-Get-Changes-All',
-        b'\x89\xe9\x5b\x76\x44\x4d\x4c\x62\x99\x1a\x0f\xac\xbe\xda\x64\x0c': 'DS-Replication-Get-Changes-In-Filtered-Set',
-        b'\xbf\x96\x79\xc0\x0d\xe6\x11\xd0\xa2\x85\x00\xaa\x00\x30\x49\xe2': 'WriteMember',
-        b'\x00\x29\x95\x70\x24\x6d\x11\xd0\xa7\x68\x00\xaa\x00\x6e\x05\x29': 'UserForceChangePassword',
+        UUID('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2').bytes_le: 'DS-Replication-Get-Changes',
+        UUID('1131f6ad-9c07-11d1-f79f-00c04fc2dcd2').bytes_le: 'DS-Replication-Get-Changes-All',
+        UUID('89e95b76-444d-4c62-991a-0facbeda640c').bytes_le: 'DS-Replication-Get-Changes-In-Filtered-Set',
+        UUID('00299570-246d-11d0-a768-00aa006e0529').bytes_le: 'UserForceChangePassword',
+    }
+    PROPERTY_GUID_MAPPING = {
+        UUID('bf9679c0-0de6-11d0-a285-00aa003049e2').bytes_le: 'WriteMember',
+        UUID('bf967a0e-0de6-11d0-a285-00aa003049e2').bytes_le: 'WriteServicePrincipalName',
+        UUID('bf967a68-0de6-11d0-a285-00aa003049e2').bytes_le: 'WriteUserAccountControl',
     }
 
     def __init__(self, sd_bytes: bytes):
@@ -112,7 +119,8 @@ class SecurityDescriptorParser:
                 'group_sid': None,
                 'dacl': [],
                 'sacl': [],
-                'is_protected': False
+                'is_protected': False,
+                'parse_valid': False,
             }
 
         try:
@@ -160,6 +168,7 @@ class SecurityDescriptorParser:
                 'group_sid': self.group_sid,
                 'dacl': dacl_aces,
                 'sacl': sacl_aces,
+                'parse_valid': True,
                 'is_protected': bool(self.control & self.SE_DACL_PROTECTED),
                 'is_auto_inherited': bool(self.control & self.SE_DACL_AUTO_INHERITED)
             }
@@ -173,10 +182,11 @@ class SecurityDescriptorParser:
                 'group_sid': None,
                 'dacl': [],
                 'sacl': [],
-                'is_protected': False
+                'is_protected': False,
+                'parse_valid': False,
             }
 
-    def _parse_sid_at_offset(self, offset: int) -> Optional[str]:
+    def _parse_sid_at_offset(self, offset: int) -> str | None:
         """
         Parse SID at given offset.
 
@@ -187,8 +197,8 @@ class SecurityDescriptorParser:
             str: SID in string format (e.g., S-1-5-21-...) or None
         """
         try:
-            if offset >= len(self.sd_bytes):
-                return None
+            if offset + 8 > len(self.sd_bytes):
+                raise ValueError('Truncated SID header')
 
             # SID structure:
             # Byte 0: Revision (1 byte)
@@ -196,6 +206,8 @@ class SecurityDescriptorParser:
 
             # Byte 1: SubAuthorityCount (1 byte)
             sub_auth_count = self.sd_bytes[offset + 1]
+            if revision != 1 or offset + 8 + sub_auth_count * 4 > len(self.sd_bytes):
+                raise ValueError('Invalid or truncated SID')
 
             # Bytes 2-7: IdentifierAuthority (6 bytes, big-endian)
             identifier_auth_bytes = self.sd_bytes[offset + 2:offset + 8]
@@ -227,8 +239,7 @@ class SecurityDescriptorParser:
             return sid
 
         except Exception as e:
-            logger.debug(f"Error parsing SID at offset {offset}: {e}")
-            return None
+            raise ValueError(f'Invalid SID at offset {offset}') from e
 
     def _parse_acl_at_offset(self, offset: int) -> list[dict[str, Any]]:
         """
@@ -243,8 +254,8 @@ class SecurityDescriptorParser:
         aces = []
 
         try:
-            if offset >= len(self.sd_bytes):
-                return aces
+            if offset < 20 or offset + 8 > len(self.sd_bytes):
+                raise ValueError('Invalid ACL offset')
 
             # ACL structure:
             # Bytes 0-1: AclRevision (1 byte) + Sbz1 (1 byte)
@@ -262,8 +273,8 @@ class SecurityDescriptorParser:
             # Parse each ACE
             current_offset = offset + 8
             for _ in range(ace_count):
-                if current_offset >= acl_end:
-                    break
+                if current_offset + 4 > acl_end:
+                    raise ValueError('Truncated ACE header')
 
                 ace = self._parse_ace_at_offset(current_offset)
                 if ace:
@@ -274,14 +285,14 @@ class SecurityDescriptorParser:
                     # Move to next ACE (AceSize includes the header)
                     current_offset += ace_size
                 else:
-                    break
+                    raise ValueError('Invalid ACE')
 
         except Exception as e:
-            logger.debug(f"Error parsing ACL at offset {offset}: {e}")
+            raise ValueError(f'Invalid ACL at offset {offset}') from e
 
         return aces
 
-    def _parse_ace_at_offset(self, offset: int) -> Optional[dict[str, Any]]:
+    def _parse_ace_at_offset(self, offset: int) -> dict[str, Any] | None:
         """
         Parse ACE (Access Control Entry) at given offset.
 
@@ -311,17 +322,25 @@ class SecurityDescriptorParser:
             # Check if inherited
             is_inherited = bool(ace_flags & self.INHERITED_ACE)
 
-            # Only process ACCESS_ALLOWED_ACE and ACCESS_ALLOWED_OBJECT_ACE
-            if ace_type not in [self.ACCESS_ALLOWED_ACE_TYPE, self.ACCESS_ALLOWED_OBJECT_ACE_TYPE]:
-                return None
-
             # Parse ACE data
             ace_data = self.sd_bytes[offset + 4:offset + ace_size]
-
-            if ace_type == self.ACCESS_ALLOWED_ACE_TYPE:
-                return self._parse_access_allowed_ace(ace_data, ace_flags, is_inherited, ace_size)
-            elif ace_type == self.ACCESS_ALLOWED_OBJECT_ACE_TYPE:
-                return self._parse_access_allowed_object_ace(ace_data, ace_flags, is_inherited, ace_size)
+            types = {
+                self.ACCESS_ALLOWED_ACE_TYPE: 'ACCESS_ALLOWED',
+                self.ACCESS_DENIED_ACE_TYPE: 'ACCESS_DENIED',
+                self.SYSTEM_AUDIT_ACE_TYPE: 'SYSTEM_AUDIT',
+                self.ACCESS_ALLOWED_OBJECT_ACE_TYPE: 'ACCESS_ALLOWED_OBJECT',
+                self.ACCESS_DENIED_OBJECT_ACE_TYPE: 'ACCESS_DENIED_OBJECT',
+                self.SYSTEM_AUDIT_OBJECT_ACE_TYPE: 'SYSTEM_AUDIT_OBJECT',
+            }
+            if ace_type not in types:
+                return {'type': 'UNSUPPORTED', 'ace_flags': ace_flags, 'size': ace_size, 'permissions': {}}
+            if ace_type in (0, 1, 2):
+                ace = self._parse_access_allowed_ace(ace_data, ace_flags, is_inherited, ace_size)
+            else:
+                ace = self._parse_access_allowed_object_ace(ace_data, ace_flags, is_inherited, ace_size)
+            if ace:
+                ace['type'] = types[ace_type]
+            return ace
 
         except Exception as e:
             logger.debug(f"Error parsing ACE at offset {offset}: {e}")
@@ -432,7 +451,7 @@ class SecurityDescriptorParser:
             logger.debug(f"Error parsing ACCESS_ALLOWED_OBJECT_ACE: {e}")
             return None
 
-    def _parse_sid_from_bytes(self, sid_bytes: bytes) -> Optional[str]:
+    def _parse_sid_from_bytes(self, sid_bytes: bytes) -> str | None:
         """
         Parse SID from byte array.
 
@@ -453,6 +472,8 @@ class SecurityDescriptorParser:
 
             # SubAuthorityCount
             sub_auth_count = sid_bytes[1]
+            if revision != 1 or len(sid_bytes) < 8 + sub_auth_count * 4:
+                return None
 
             # IdentifierAuthority (6 bytes)
             if len(sid_bytes) < 8:
@@ -484,7 +505,7 @@ class SecurityDescriptorParser:
             logger.debug(f"Error parsing SID from bytes: {e}")
             return None
 
-    def _extract_permissions(self, access_mask: int, object_type: Optional[bytes]) -> dict[str, Any]:
+    def _extract_permissions(self, access_mask: int, object_type: bytes | None) -> dict[str, Any]:
         """
         Extract permission names from access mask.
 
@@ -496,16 +517,17 @@ class SecurityDescriptorParser:
             dict: Dictionary of permission names and their details
         """
         permissions = {}
+        access_mask = _directory_mask(access_mask)
 
         # Check generic permissions
-        if access_mask & self.GENERIC_ALL:
+        if not object_type and access_mask & 0xF01FF == 0xF01FF:
             permissions['GenericAll'] = {
                 'mask': self.GENERIC_ALL,
                 'severity': 'critical',
                 'description': 'Full control over the object'
             }
 
-        if access_mask & self.GENERIC_WRITE:
+        if not object_type and access_mask & 0x20028 == 0x20028:
             permissions['GenericWrite'] = {
                 'mask': self.GENERIC_WRITE,
                 'severity': 'high',
@@ -528,7 +550,13 @@ class SecurityDescriptorParser:
 
         # Check directory service specific permissions
         if access_mask & self.ADS_RIGHT_DS_WRITE_PROP:
-            permissions['WriteProperty'] = {
+            # A scoped property write must never imply control of every attribute.
+            property_name = self.PROPERTY_GUID_MAPPING.get(object_type)
+            if not object_type:
+                property_name = 'WriteProperty'
+            elif not property_name:
+                property_name = f'WriteProperty:{UUID(bytes_le=object_type)}'
+            permissions[property_name] = {
                 'mask': self.ADS_RIGHT_DS_WRITE_PROP,
                 'severity': 'high',
                 'description': 'Write access to specific properties'
@@ -545,10 +573,10 @@ class SecurityDescriptorParser:
                         'description': f'Extended right: {ext_right_name}'
                     }
                 else:
-                    permissions['AllExtendedRights'] = {
+                    permissions[f'ExtendedRight:{UUID(bytes_le=object_type)}'] = {
                         'mask': self.ADS_RIGHT_DS_CONTROL_ACCESS,
                         'severity': 'critical',
-                        'description': 'All extended rights (includes DCSync)'
+                        'description': 'A single scoped extended right'
                     }
             else:
                 # No object type means all extended rights
@@ -559,6 +587,76 @@ class SecurityDescriptorParser:
                 }
 
         return permissions
+
+
+def _directory_mask(mask: int) -> int:
+    """Expand AD generic rights before evaluating individual access bits."""
+    if mask & SecurityDescriptorParser.GENERIC_ALL:
+        mask |= 0xF01FF
+    if mask & SecurityDescriptorParser.GENERIC_WRITE:
+        mask |= 0x20028
+    if mask & SecurityDescriptorParser.GENERIC_READ:
+        mask |= 0x20094
+    return mask & 0x0FFFFFFF
+
+
+def directory_right_granted(parsed: dict[str, Any], sid: str, mask: int,
+                            object_type: bytes | None = None,
+                            token_sids: set[str] | None = None) -> bool:
+    """Evaluate a directory right in DACL order for the known principal token.
+
+    Inherit-only and audit ACEs do not grant access to the current object.
+    Callers can supply group SIDs when membership evidence is available.
+    """
+    if parsed.get('parse_valid') is False or not sid:
+        return False
+    trustees = {sid, 'S-1-1-0', *(token_sids or set())}
+    if sid.startswith('S-1-5-21-'):
+        trustees.add('S-1-5-11')
+    remaining = _directory_mask(mask)
+    for ace in parsed.get('dacl') or []:
+        if ace.get('sid') not in trustees or int(ace.get('ace_flags') or 0) & 0x08:
+            continue
+        scope = ace.get('object_type')
+        access_mask = _directory_mask(int(ace.get('access_mask') or 0))
+        # ObjectType scopes DS rights; standard rights such as WriteDACL
+        # remain rights on the object itself.
+        if scope and object_type is not None and scope != object_type:
+            access_mask &= ~0x1FF
+        kind = ace.get('type', '')
+        if kind in ('ACCESS_DENIED', 'ACCESS_DENIED_OBJECT'):
+            if access_mask & remaining:
+                return False
+        elif kind in ('ACCESS_ALLOWED', 'ACCESS_ALLOWED_OBJECT'):
+            if scope and object_type is None:
+                access_mask &= ~0x1FF
+            remaining &= ~access_mask
+            if not remaining:
+                return True
+    return False
+
+
+def effective_allow_aces(parsed: dict[str, Any] | None,
+                         tokens: dict[str, set[str]] | None = None) -> list[dict[str, Any]]:
+    """Return supported grants that survive applicable DACL denials."""
+    if not parsed or parsed.get('parse_valid') is False:
+        return []
+    grants = []
+    for ace in parsed.get('dacl') or []:
+        if ace.get('type') not in ('ACCESS_ALLOWED', 'ACCESS_ALLOWED_OBJECT'):
+            continue
+        if int(ace.get('ace_flags') or 0) & 0x08:
+            continue
+        permissions = {
+            name: details for name, details in (ace.get('permissions') or {}).items()
+            if directory_right_granted(
+                parsed, ace.get('sid'), details.get('mask', 0), ace.get('object_type'),
+                (tokens or {}).get(ace.get('sid')),
+            )
+        }
+        if permissions:
+            grants.append({**ace, 'permissions': permissions})
+    return grants
 
 
 def parse_security_descriptor(sd_bytes: bytes) -> dict[str, Any]:

@@ -57,7 +57,7 @@ def test_gmsa_reader_graph_decodes_broad_password_reader():
     ldap = FakeLDAP({
         "msDS-GroupManagedServiceAccount": [{
             "sAMAccountName": "svcTier0$", "adminCount": "1",
-            "msDS-GroupMSAMembership": _sd(_sid(1, 0)),
+            "msDS-GroupMSAMembership": _sd(_sid(1, 0), mask=0x10),
         }]
     })
     result = GMSAReaderGraphAnalyzer(ldap).analyze([], [], [])

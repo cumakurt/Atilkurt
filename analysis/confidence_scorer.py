@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from core.finding_evidence import annotate_validation, requires_validation
 
 
 class ConfidenceScorer:
-    """Attach transparent confidence metadata without changing risk severity."""
+    """Attach confidence metadata and identify findings that need validation."""
 
     EVENT_PREFIXES = ("event_", "observed_")
     ACL_MARKERS = ("acl", "adminsdholder", "adcs_control", "adcs_ntauth", "broad_acl")
@@ -40,15 +41,17 @@ class ConfidenceScorer:
         evidence_dict = evidence if isinstance(evidence, dict) else {}
         chain: list[dict[str, Any]] = []
 
-        if risk_type.startswith(self.EVENT_PREFIXES) or evidence_dict.get("event_ids"):
+        if evidence_dict.get("event_ids") and evidence_dict.get("event_count", 0) > 0:
             score = 0.99
             basis = "Observed security telemetry"
             chain.append(self._step("event_log", "A matching Windows security event was observed", "direct"))
-        elif any(marker in risk_type for marker in self.ACL_MARKERS) or evidence_dict.get("trustee_sid"):
+        elif evidence_dict.get("trustee_sid") and any(
+            evidence_dict.get(key) for key in ("permission", "permissions", "rights")
+        ):
             score = 0.95
             basis = "Parsed directory security descriptor"
             chain.append(self._step("ldap_security_descriptor", "An access-control entry directly supports the finding", "direct"))
-        elif evidence_dict:
+        elif self._evidence_count(evidence_dict):
             score = 0.90
             basis = "Exact LDAP attribute or graph evidence"
             chain.append(self._step("ldap_attribute", "Directory attributes or graph relationships support the finding", "direct"))
@@ -57,14 +60,14 @@ class ConfidenceScorer:
             basis = "Configuration heuristic"
             chain.append(self._step("analyzer_rule", "The analyzer inferred the condition from collected configuration", "inferred"))
 
-        if evidence_dict.get("requires_runtime_validation"):
+        if requires_validation(risk):
             score = min(score, 0.60)
             basis = "Static evidence; runtime validation required"
             chain.append(self._step("runtime_gap", "Event or endpoint evidence is required for confirmation", "coverage_gap"))
         if any(marker in risk_type for marker in self.HEURISTIC_MARKERS) and not evidence_dict:
             score = min(score, 0.58)
             basis = "Heuristic or coverage-gap finding"
-        if risk.get("cve") and not evidence_dict.get("probe_result"):
+        if risk.get("cve") and requires_validation(risk):
             score = min(score, 0.55)
             basis = "Version/configuration heuristic; no active probe"
 
@@ -85,6 +88,7 @@ class ConfidenceScorer:
         risk["confidence_score"] = confidence["score"]
         risk["confidence_level"] = level
         risk["evidence_chain"] = chain
+        annotate_validation(risk)
         return risk
 
     @classmethod
@@ -100,7 +104,9 @@ class ConfidenceScorer:
     @staticmethod
     def _evidence_count(evidence: Any) -> int:
         if isinstance(evidence, dict):
-            return sum(1 for value in evidence.values() if value not in (None, "", [], {}))
+            return sum(1 for key, value in evidence.items()
+                       if key not in {"requires_runtime_validation", "source", "source_files"}
+                       and value not in (None, "", [], {}))
         if isinstance(evidence, list):
             return len(evidence)
         return 1 if evidence not in (None, "") else 0
