@@ -6,6 +6,16 @@ from collections import defaultdict
 import html as html_stdlib
 
 
+def _escape_compliance_data(value):
+    """Escape directory evidence at the HTML boundary without changing source data."""
+    if isinstance(value, dict):
+        return {_escape_compliance_data(key): _escape_compliance_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_escape_compliance_data(item) for item in value]
+    if isinstance(value, str):
+        return html_stdlib.escape(value, quote=True)
+    return value
+
 
 class ComplianceSectionMixin:
     """Mixin for compliance reporting (CIS, NIST, ISO, GDPR) and risk management."""
@@ -25,12 +35,15 @@ class ComplianceSectionMixin:
         iso_html = self._generate_iso_compliance_html(iso_data)
         gdpr_html = self._generate_gdpr_compliance_html(gdpr_data)
 
-        overall_score = (
-            cis_data.get('compliance_score', 0) +
-            nist_data.get('compliance_score', 0) +
-            iso_data.get('compliance_score', 0) +
-            gdpr_data.get('compliance_score', 0)
-        ) / 4 if compliance_data else 0
+        framework_scores = [compliance_data[key].get('compliance_score', 0) for key in
+                            ('cis_benchmark', 'nist_csf', 'iso_27001', 'gdpr', 'cis_controls_v8')
+                            if compliance_data.get(key)]
+        overall_score = compliance_data.get('overall_compliance_score')
+        if overall_score is None:
+            overall_score = sum(framework_scores) / len(framework_scores) if framework_scores else 0
+
+        score_label = 'Not assessed' if compliance_data.get('assessment_basis') == 'findings_only' else f'{overall_score:.1f}%'
+        limitation = html_stdlib.escape(str(compliance_data.get('limitation') or 'Average compliance across all frameworks'))
 
         return f"""
         <div id="compliance" class="tab-pane" role="tabpanel" aria-labelledby="compliance-tab">
@@ -47,9 +60,9 @@ class ComplianceSectionMixin:
                 </div>
                 <div class="card-body text-center">
                     <div class="display-1 fw-bold" style="color: {'var(--success-color)' if overall_score >= 80 else 'var(--warning-color)' if overall_score >= 60 else 'var(--danger-color)'}">
-                        {overall_score:.1f}%
+                        {score_label}
                     </div>
-                    <p class="text-muted">Average compliance across all frameworks</p>
+                    <p class="text-muted">{limitation}</p>
                 </div>
             </div>
 
@@ -72,12 +85,14 @@ class ComplianceSectionMixin:
 
     def _generate_cis_compliance_html(self, cis_data):
         """Generate CIS Benchmark compliance HTML."""
+        cis_data = _escape_compliance_data(cis_data)
         from reporting.localization import risk_type_label
 
         if not cis_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No CIS Benchmark data available.</p></div></div>'
 
         score = cis_data.get('compliance_score', 0)
+        score_label = 'Not assessed' if cis_data.get('assessment_basis') == 'findings_only' else f'{score:.1f}%'
 
         # Check if advanced LDAP-based analysis was used
         if 'controls' in cis_data:
@@ -135,7 +150,7 @@ class ComplianceSectionMixin:
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
-                        <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score:.1f}%</h3>
+                        <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score_label}</h3>
                         <p class="text-muted">Compliance Score</p>
                     </div>
                     <div class="mb-3">
@@ -167,7 +182,7 @@ class ComplianceSectionMixin:
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
-                        <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score:.1f}%</h3>
+                        <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score_label}</h3>
                         <p class="text-muted">Compliance Score</p>
                     </div>
                     <div class="mb-3">
@@ -182,10 +197,12 @@ class ComplianceSectionMixin:
 
     def _generate_nist_compliance_html(self, nist_data):
         """Generate NIST CSF compliance HTML."""
+        nist_data = _escape_compliance_data(nist_data)
         if not nist_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No NIST CSF data available.</p></div></div>'
 
         score = nist_data.get('compliance_score', 0)
+        score_label = 'Not assessed' if nist_data.get('assessment_basis') == 'findings_only' else f'{score:.1f}%'
         functions = nist_data.get('functions', {})
 
         functions_html = '<div class="accordion report-accordion mt-3" id="nistFunctionsAccordion">'
@@ -194,6 +211,7 @@ class ComplianceSectionMixin:
             if controls:
                 func_score = func.get('score', 0)
                 func_status = func.get('status', 'partial')
+                func_score_label = 'Not assessed' if nist_data.get('assessment_basis') == 'findings_only' else f'{func_score:.1f}%'
 
                 controls_list_html = '<ul class="list-unstyled mt-2">'
                 for control in controls:
@@ -219,7 +237,7 @@ class ComplianceSectionMixin:
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#nistFunc{func_id}">
-                            <strong>{func_id}:</strong> {func.get('name')} - <span class="badge bg-{"success" if func_status == "passed" else "warning" if func_status == "partial" else "danger"} ms-2">{func_score:.1f}%</span>
+                            <strong>{func_id}:</strong> {func.get('name')} - <span class="badge bg-{"success" if func_status == "passed" else "warning" if func_status == "partial" else "danger"} ms-2">{func_score_label}</span>
                         </button>
                     </h2>
                     <div id="nistFunc{func_id}" class="accordion-collapse collapse" data-bs-parent="#nistFunctionsAccordion">
@@ -238,7 +256,7 @@ class ComplianceSectionMixin:
             </div>
             <div class="card-body">
                 <div class="mb-3">
-                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score:.1f}%</h3>
+                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score_label}</h3>
                     <p class="text-muted">Compliance Score</p>
                 </div>
                 <div class="mt-3">
@@ -251,16 +269,19 @@ class ComplianceSectionMixin:
 
     def _generate_iso_compliance_html(self, iso_data):
         """Generate ISO 27001 compliance HTML."""
+        iso_data = _escape_compliance_data(iso_data)
         if not iso_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No ISO 27001 data available.</p></div></div>'
 
         score = iso_data.get('compliance_score', 0)
+        score_label = 'Not assessed' if iso_data.get('assessment_basis') == 'findings_only' else f'{score:.1f}%'
         domains = iso_data.get('domains', {})
         domain_scores = iso_data.get('domain_scores', {})
 
         domains_html = '<div class="accordion report-accordion mt-3" id="isoDomainsAccordion">'
         for domain, controls in domains.items():
             domain_score = domain_scores.get(domain, 0)
+            domain_score_label = 'Not assessed' if iso_data.get('assessment_basis') == 'findings_only' else f'{domain_score:.1f}%'
             passed = sum(1 for c in controls if c.get('status') == 'passed')
             failed = sum(1 for c in controls if c.get('status') == 'failed')
 
@@ -288,7 +309,7 @@ class ComplianceSectionMixin:
             <div class="accordion-item">
                 <h2 class="accordion-header">
                     <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#isoDomain{domain.replace('.', '_')}">
-                        <strong>{domain}:</strong> <span class="badge bg-{"success" if domain_score >= 80 else "warning" if domain_score >= 50 else "danger"} ms-2">{domain_score:.1f}%</span> ({passed} passed, {failed} failed)
+                        <strong>{domain}:</strong> <span class="badge bg-{"success" if domain_score >= 80 else "warning" if domain_score >= 50 else "danger"} ms-2">{domain_score_label}</span> ({passed} passed, {failed} failed)
                     </button>
                 </h2>
                 <div id="isoDomain{domain.replace('.', '_')}" class="accordion-collapse collapse" data-bs-parent="#isoDomainsAccordion">
@@ -307,7 +328,7 @@ class ComplianceSectionMixin:
             </div>
             <div class="card-body">
                 <div class="mb-3">
-                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score:.1f}%</h3>
+                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score_label}</h3>
                     <p class="text-muted">Compliance Score</p>
                 </div>
                 <div class="mt-3">
@@ -320,16 +341,19 @@ class ComplianceSectionMixin:
 
     def _generate_gdpr_compliance_html(self, gdpr_data):
         """Generate GDPR compliance HTML."""
+        gdpr_data = _escape_compliance_data(gdpr_data)
         if not gdpr_data:
             return '<div class="card"><div class="card-body"><p class="text-muted">No GDPR data available.</p></div></div>'
 
         score = gdpr_data.get('compliance_score', 0)
+        score_label = 'Not assessed' if gdpr_data.get('assessment_basis') == 'findings_only' else f'{score:.1f}%'
         articles = gdpr_data.get('articles', {})
         article_scores = gdpr_data.get('article_scores', {})
 
         articles_html = '<div class="accordion report-accordion mt-3" id="gdprArticlesAccordion">'
         for article, controls in articles.items():
             article_score = article_scores.get(article, 0)
+            article_score_label = 'Not assessed' if gdpr_data.get('assessment_basis') == 'findings_only' else f'{article_score:.1f}%'
             passed = sum(1 for c in controls if c.get('status') == 'passed')
             failed = sum(1 for c in controls if c.get('status') == 'failed')
 
@@ -358,7 +382,7 @@ class ComplianceSectionMixin:
             <div class="accordion-item">
                 <h2 class="accordion-header">
                     <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#gdprArticle{article.replace(' ', '_')}">
-                        <strong>{article}:</strong> <span class="badge bg-{"success" if article_score >= 80 else "warning" if article_score >= 50 else "danger"} ms-2">{article_score:.1f}%</span> ({passed} passed, {failed} failed)
+                        <strong>{article}:</strong> <span class="badge bg-{"success" if article_score >= 80 else "warning" if article_score >= 50 else "danger"} ms-2">{article_score_label}</span> ({passed} passed, {failed} failed)
                     </button>
                 </h2>
                 <div id="gdprArticle{article.replace(' ', '_')}" class="accordion-collapse collapse" data-bs-parent="#gdprArticlesAccordion">
@@ -377,7 +401,7 @@ class ComplianceSectionMixin:
             </div>
             <div class="card-body">
                 <div class="mb-3">
-                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score:.1f}%</h3>
+                    <h3 class="text-{'success' if score >= 80 else 'warning' if score >= 60 else 'danger'}">{score_label}</h3>
                     <p class="text-muted">Compliance Score</p>
                 </div>
                 <div class="mt-3">

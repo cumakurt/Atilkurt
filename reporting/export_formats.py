@@ -92,8 +92,10 @@ class ExportFormats:
                 item.set('port', '0')
                 item.set('svc_name', 'ldap')
                 item.set('protocol', 'tcp')
-                item.set('severity', risk.get('severity', 'medium'))
-                item.set('pluginID', str(hash(risk.get('type', '')) % 100000))
+                item.set('severity', str({'high': 3, 'critical': 4}[risk['severity']]))
+                # Python's hash is randomized per process; exports need stable IDs.
+                digest = hashlib.sha256(str(risk.get('type', '')).encode('utf-8')).hexdigest()
+                item.set('pluginID', str(int(digest[:8], 16)))
                 item.set('pluginName', risk.get('title', 'Unknown Risk'))
                 item.set('pluginFamily', 'Active Directory')
 

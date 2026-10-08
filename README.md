@@ -439,6 +439,10 @@ The report maps applicable findings and LDAP-derived checks to:
 
 Compliance output is an assessment aid. It does not by itself establish certification or legal compliance; controls that cannot be verified from LDAP are marked for review or not assessed rather than treated as silently passing.
 
+Offline, findings-only compliance results use `assessment_basis: findings_only` and mark checks without supporting findings as `unknown`. The HTML shows **Not assessed** instead of a compliance percentage; legacy numeric score fields remain `0.0` for compatibility and must be interpreted together with `assessment_basis` and `assessment_status`. Directory-based CIS Controls v8 percentages cover only the three implemented safeguard mappings, with duplicate failures counted once. Missing inventory, failed reads, and restricted collection cannot establish passed controls.
+
+Risk exports preserve `source_severity` so repeated scoring and offline report regeneration do not inflate severity. Snapshot drift reports use `unobserved_risks` for findings absent from the new snapshot; only the `--retest` workflow can verify remediation. Checkpoints and regular JSON exports are both supported as baseline inputs. See [the code quality audit](docs/CODE_QUALITY_AUDIT.md) for fixes and validation details.
+
 ## Requirements
 
 - Python 3.9 or later

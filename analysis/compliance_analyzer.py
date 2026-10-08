@@ -5,8 +5,12 @@ Performs LDAP-based compliance checks for CIS Benchmark, NIST CSF, ISO 27001, an
 
 import logging
 from typing import Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+
+from core.ad_identity import group_is_role, ROLE_DOMAIN_ADMINS
+from core.ad_security import as_int, as_list
+from analysis.password_policy_analyzer import PasswordPolicyAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,29 @@ class ComplianceAnalyzer:
         """
         self.ldap = ldap_connection
         self.base_dn = ldap_connection.base_dn
+
+    def _collection_is_partial(self):
+        failures = getattr(self.ldap, 'query_failure_count', 0)
+        partial = isinstance(failures, int) and failures > 0
+        scope = getattr(self.ldap, 'assessment_scope', None)
+        if scope is not None:
+            partial = partial or scope.snapshot().get('coverage') == 'partial'
+        return partial
+
+    def _mark_unobserved_controls(self, controls, users, computers):
+        """Missing inventory or failed collection cannot establish a passed control."""
+        partial = self._collection_is_partial()
+        for control in controls:
+            query = str(control.get('ldap_query') or '').casefold()
+            rows = users if '(objectclass=user)' in query else computers if '(objectclass=computer)' in query else None
+            missing = rows is not None and not rows
+            if rows and control.get('status') == 'passed':
+                for attribute in ('userAccountControl', 'operatingSystem', 'lastLogonTimestamp'):
+                    if attribute.casefold() in query and any(row.get(attribute) is None for row in rows):
+                        missing = True
+            if missing or (partial and control.get('status') == 'passed'):
+                control['status'] = 'unknown'
+                control.setdefault('details', {})['coverage_note'] = 'Required directory evidence is missing or collection is partial'
 
     def analyze_cis_benchmark(self, users: list[dict[str, Any]],
                               groups: list[dict[str, Any]],
@@ -101,15 +128,15 @@ class ComplianceAnalyzer:
         })
 
         # CIS 2.3.1.5 - Ensure Domain Admins group has minimal members
-        domain_admins = next((g for g in groups if 'DOMAIN ADMINS' in (g.get('name', '') or '').upper()), None)
-        domain_admin_count = len(domain_admins.get('member', [])) if domain_admins and domain_admins.get('member') else 0
+        domain_admins = next((g for g in groups if group_is_role(g, ROLE_DOMAIN_ADMINS)), None)
+        domain_admin_count = len(as_list(domain_admins.get('member'))) if domain_admins else 0
         controls.append({
             'control_id': 'CIS 2.3.1.5',
             'control_name': 'Domain Admins membership',
-            'status': 'passed' if domain_admin_count <= 2 else 'failed',
+            'status': 'unknown' if domain_admins is None else 'passed' if domain_admin_count <= 2 else 'failed',
             'details': {
                 'count': domain_admin_count,
-                'members': domain_admins.get('member', [])[:10] if domain_admins else []
+                'members': as_list(domain_admins.get('member'))[:10] if domain_admins else []
             },
             'ldap_query': '(&(objectClass=group)(name=Domain Admins))',
             'recommendation': 'Limit Domain Admins group to 2 or fewer members'
@@ -122,28 +149,12 @@ class ComplianceAnalyzer:
             pwd_properties = password_policy_data.get('pwdProperties', 0)
             complexity_enabled = bool(pwd_properties & 1)
 
-            # Convert maxPwdAge from Windows timestamp (100-nanosecond intervals) to days
-            # Use same conversion logic as password_policy_analyzer
-            max_age_days = 0
-            if max_age_raw:
-                try:
-                    if isinstance(max_age_raw, (int, str)):
-                        max_age_raw = int(max_age_raw)
-                        # Convert from 100-nanosecond intervals to days
-                        # Note: password_policy_analyzer uses division by 864000000000
-                        # Negative value means password expires, 0 means never expires
-                        if max_age_raw < 0:
-                            # Use same conversion as password_policy_analyzer._convert_timespan_to_days
-                            max_age_days = int(abs(max_age_raw) / 864000000000)
-                        elif max_age_raw == 0:
-                            max_age_days = 999999  # Never expires (bad)
-                except (ValueError, TypeError):
-                    max_age_days = 0
+            max_age_days = PasswordPolicyAnalyzer(self.ldap)._convert_timespan_to_days(max_age_raw)
 
             controls.append({
                 'control_id': 'CIS 2.3.2.1',
                 'control_name': 'Password policy strength',
-                'status': 'passed' if min_length >= 14 and max_age_days <= 90 and complexity_enabled else 'failed',
+                'status': 'passed' if min_length >= 14 and (max_age_days is not None and 0 < max_age_days <= 90) and complexity_enabled else 'failed',
                 'details': {
                     'min_length': min_length,
                     'max_age_days': max_age_days,
@@ -335,31 +346,30 @@ class ComplianceAnalyzer:
                 attributes=['trustAttributes', 'name', 'trustDirection']
             )
             sid_filtering_disabled = []
+            unknown_trusts = 0
             if trusts:
                 for trust in trusts:
-                    trust_attrs = trust.get('trustAttributes', 0)
-                    # Trust attribute: SID filtering is enabled when bit 0x4 is NOT set
-                    # trustAttributes value meanings:
-                    # - 0x1 = Non-transitive
-                    # - 0x4 = SID filtering disabled (bad)
-                    # - 0x8 = Quarantined domain
-                    # - 0x40 = Forest trust
-                    if isinstance(trust_attrs, (int, str)):
-                        try:
-                            trust_attrs = int(trust_attrs) if isinstance(trust_attrs, str) else trust_attrs
-                            # Check if SID filtering is disabled (bit 0x4 is set)
-                            if trust_attrs & 0x4:  # SID filtering disabled
-                                sid_filtering_disabled.append(trust.get('name', 'Unknown'))
-                        except (ValueError, TypeError):
-                            logger.debug(f"Could not parse trustAttributes: {trust_attrs}")
+                    trust_attrs = as_int(trust.get('trustAttributes'))
+                    direction = as_int(trust.get('trustDirection'))
+                    if trust_attrs is None or direction not in (0, 1, 2, 3):
+                        unknown_trusts += 1
+                    elif direction not in (2, 3) or trust_attrs & 0x20:
+                        continue
+                    elif trust_attrs & 0x4:
+                        continue  # QUARANTINED_DOMAIN enables SID filtering.
+                    elif trust_attrs & 0x8:
+                        unknown_trusts += 1  # Forest filtering needs additional boundary evidence.
+                    else:
+                        sid_filtering_disabled.append(trust.get('name', 'Unknown'))
 
             controls.append({
                 'control_id': 'CIS 2.3.7.1',
                 'control_name': 'Trust SID filtering',
-                'status': 'passed' if len(sid_filtering_disabled) == 0 else 'failed',
+                'status': 'failed' if sid_filtering_disabled else 'unknown' if unknown_trusts else 'passed',
                 'details': {
                     'total_trusts': len(trusts) if trusts else 0,
                     'sid_filtering_disabled_count': len(sid_filtering_disabled),
+                    'unknown_trusts': unknown_trusts,
                     'affected_trusts': sid_filtering_disabled[:10]
                 },
                 'ldap_query': '(objectClass=trustedDomain)',
@@ -367,8 +377,14 @@ class ComplianceAnalyzer:
             })
         except Exception as e:
             logger.debug(f"Error checking trusts: {e}")
+            controls.append({
+                'control_id': 'CIS 2.3.7.1', 'control_name': 'Trust SID filtering',
+                'status': 'unknown', 'details': {'coverage_note': 'Trust query failed'},
+                'ldap_query': '(objectClass=trustedDomain)',
+            })
 
         # Calculate compliance score
+        self._mark_unobserved_controls(controls, users, computers)
         passed = sum(1 for c in controls if c.get('status') == 'passed')
         failed = sum(1 for c in controls if c.get('status') == 'failed')
         total = len(controls)
@@ -466,7 +482,7 @@ class ComplianceAnalyzer:
 
         # DE.AE: Anomalies and events
         # Check for inactive accounts (potential security risk)
-        inactive_threshold = datetime.now() - timedelta(days=90)
+        inactive_threshold = datetime.now(timezone.utc) - timedelta(days=90)
         inactive_count = 0
         for u in users:
             last_logon = u.get('lastLogonTimestamp')
@@ -484,6 +500,8 @@ class ComplianceAnalyzer:
                         continue
 
                 if logon_dt and isinstance(logon_dt, datetime):
+                    if logon_dt.tzinfo is None:
+                        logon_dt = logon_dt.replace(tzinfo=timezone.utc)
                     # Compare datetime objects
                     try:
                         if logon_dt < inactive_threshold and not (u.get('userAccountControl', 0) & 0x2):
@@ -504,6 +522,7 @@ class ComplianceAnalyzer:
 
         # Calculate scores per function
         for func_data in functions.values():
+            self._mark_unobserved_controls(func_data['controls'], users, computers)
             if func_data['controls']:
                 passed = sum(1 for c in func_data['controls'] if c.get('status') == 'passed')
                 total = len(func_data['controls'])
@@ -572,24 +591,12 @@ class ComplianceAnalyzer:
             pwd_properties = password_policy_data.get('pwdProperties', 0)
             complexity_enabled = bool(pwd_properties & 1)
 
-            # Convert maxPwdAge to days
-            # Use same conversion logic as password_policy_analyzer
-            max_age_days = 0
-            if max_age_raw:
-                try:
-                    if isinstance(max_age_raw, (int, str)):
-                        max_age_raw = int(max_age_raw)
-                        if max_age_raw < 0:
-                            max_age_days = int(abs(max_age_raw) / 864000000000)
-                        elif max_age_raw == 0:
-                            max_age_days = 999999  # Never expires
-                except (ValueError, TypeError):
-                    max_age_days = 0
+            max_age_days = PasswordPolicyAnalyzer(self.ldap)._convert_timespan_to_days(max_age_raw)
 
             domains['A.9.4'].append({
                 'control_id': 'A.9.4.3',
                 'control_name': 'Password management system',
-                'status': 'passed' if min_length >= 8 and max_age_days <= 90 and complexity_enabled else 'failed',
+                'status': 'passed' if min_length >= 8 and (max_age_days is not None and 0 < max_age_days <= 90) and complexity_enabled else 'failed',
                 'details': {
                     'min_length': min_length,
                     'max_age_days': max_age_days,
@@ -615,6 +622,7 @@ class ComplianceAnalyzer:
         # Calculate scores per domain
         domain_scores = {}
         for domain, controls in domains.items():
+            self._mark_unobserved_controls(controls, users, computers)
             if controls:
                 passed = sum(1 for c in controls if c.get('status') == 'passed')
                 total = len(controls)
@@ -694,12 +702,12 @@ class ComplianceAnalyzer:
         })
 
         # Article 32: Check for excessive privileges
-        domain_admins = next((g for g in groups if 'DOMAIN ADMINS' in (g.get('name', '') or '').upper()), None)
-        domain_admin_count = len(domain_admins.get('member', [])) if domain_admins and domain_admins.get('member') else 0
+        domain_admins = next((g for g in groups if group_is_role(g, ROLE_DOMAIN_ADMINS)), None)
+        domain_admin_count = len(as_list(domain_admins.get('member'))) if domain_admins else 0
         articles['Article 32'].append({
             'control_id': 'Article 32',
             'control_name': 'Security of processing - Privilege management',
-            'status': 'passed' if domain_admin_count <= 5 else 'warning',
+            'status': 'unknown' if domain_admins is None else 'passed' if domain_admin_count <= 5 else 'warning',
             'details': {
                 'domain_admin_count': domain_admin_count
             },
@@ -710,6 +718,7 @@ class ComplianceAnalyzer:
         # Calculate scores per article
         article_scores = {}
         for article, controls in articles.items():
+            self._mark_unobserved_controls(controls, users, computers)
             if controls:
                 passed = sum(1 for c in controls if c.get('status') == 'passed')
                 total = len(controls)
@@ -773,28 +782,27 @@ class ComplianceAnalyzer:
         password_policy_data: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
         """Derive CIS Controls v8 compliance from LDAP data."""
-        failed = []
-        # Map CIS controls to checks (simplified)
-        if any(u.get('userAccountControl', 0) & 0x10000 for u in users):
-            failed.append('4.3')
-        if any(u.get('userAccountControl', 0) & 0x20 for u in users):
-            failed.append('5.2')
-        if any(u.get('userAccountControl', 0) & 0x400000 for u in users):
-            failed.append('5.2')
-        if any(c.get('userAccountControl', 0) & 0x80000 for c in computers):
-            failed.append('5.2')
-        admin_groups = [g for g in groups if 'DOMAIN ADMINS' in str(g.get('name', '')).upper()]
-        if admin_groups:
-            members = admin_groups[0].get('member', []) or admin_groups[0].get('members', [])
-            if not isinstance(members, list):
-                members = [members] if members else []
-            if len(members) > 5:
-                failed.append('5.1')
-        total_safeguards = 20
-        passed = total_safeguards - len(failed)
+        user_flags_known = bool(users) and all(isinstance(u.get('userAccountControl'), int) for u in users)
+        computer_flags_known = bool(computers) and all(isinstance(c.get('userAccountControl'), int) for c in computers)
+        admin = next((g for g in groups if group_is_role(g, ROLE_DOMAIN_ADMINS)), None)
+        checks = {
+            '4.3': 'failed' if any(u.get('userAccountControl', 0) & 0x10000 for u in users)
+                   else 'passed' if user_flags_known else 'unknown',
+            '5.2': 'failed' if any(u.get('userAccountControl', 0) & (0x20 | 0x400000) for u in users)
+                   or any(c.get('userAccountControl', 0) & 0x80000 for c in computers)
+                   else 'passed' if user_flags_known and computer_flags_known else 'unknown',
+            '5.1': 'unknown' if admin is None else 'failed' if len(as_list(admin.get('member'))) > 5 else 'passed',
+        }
+        if self._collection_is_partial():
+            checks = {key: 'unknown' if status == 'passed' else status for key, status in checks.items()}
+        failed = [key for key, status in checks.items() if status == 'failed']
+        passed = sum(status == 'passed' for status in checks.values())
         return {
             'framework': 'CIS Controls v8',
-            'compliance_score': max(0, passed / total_safeguards * 100),
+            'compliance_score': passed / len(checks) * 100,
+            'total_safeguards': len(checks),
+            'safeguards': [{'safeguard': key, 'status': status} for key, status in checks.items()],
             'failed_safeguards': failed,
-            'passed_safeguards': total_safeguards - len(failed),
+            'passed_safeguards': passed,
+            'unknown_safeguards': [key for key, status in checks.items() if status == 'unknown'],
         }

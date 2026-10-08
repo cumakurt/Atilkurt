@@ -81,11 +81,8 @@ class HTMLReportGenerator(
             if not os.path.isdir(vendor_src):
                 logger.warning("Reporting vendor folder not found; report may need network for assets.")
                 return
-            os.makedirs(vendor_dst, exist_ok=True)
-            for name in os.listdir(vendor_src):
-                src_path = os.path.join(vendor_src, name)
-                if os.path.isfile(src_path):
-                    shutil.copy2(src_path, os.path.join(vendor_dst, name))
+            if os.path.realpath(vendor_src) != os.path.realpath(vendor_dst):
+                shutil.copytree(vendor_src, vendor_dst, dirs_exist_ok=True)
             logger.debug("Vendor assets copied for offline report.")
         except Exception as e:
             logger.warning("Could not copy vendor assets for offline report: %s", e)

@@ -7,8 +7,8 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections import OrderedDict
-from datetime import datetime, timedelta
 from functools import lru_cache, wraps
 from typing import Any, Callable, Optional
 from collections.abc import Sequence
@@ -29,7 +29,8 @@ class TimedCache:
         """
         if maxsize < 1:
             raise ValueError("maxsize must be at least 1")
-        self._cache: OrderedDict[str, tuple[Any, datetime]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
+        self._next_expiration = float('inf')
         self.default_ttl = default_ttl
         self.maxsize = maxsize
         self._lock = threading.Lock()
@@ -50,7 +51,7 @@ class TimedCache:
 
             value, expiration = self._cache[key]
 
-            if datetime.now() > expiration:
+            if time.monotonic() >= expiration:
                 del self._cache[key]
                 return None
 
@@ -66,9 +67,14 @@ class TimedCache:
             value: Value to cache
             ttl: Time-to-live in seconds (uses default if None)
         """
-        ttl = ttl or self.default_ttl
-        expiration = datetime.now() + timedelta(seconds=ttl)
+        ttl = self.default_ttl if ttl is None else ttl
+        expiration = time.monotonic() + ttl
         with self._lock:
+            if ttl <= 0:
+                self._cache.pop(key, None)
+                return
+            self._purge_expired_locked()
+            self._next_expiration = min(self._next_expiration, expiration)
             if key in self._cache:
                 self._cache[key] = (value, expiration)
                 self._cache.move_to_end(key)
@@ -77,18 +83,25 @@ class TimedCache:
             self._cache[key] = (value, expiration)
 
     def _evict_if_needed_locked(self) -> None:
-        """Drop expired entries, then the least-recently-used item if still full."""
-        now = datetime.now()
-        expired = [expired_key for expired_key, (_, expiration) in self._cache.items() if now > expiration]
-        for expired_key in expired:
-            del self._cache[expired_key]
+        """Evict the least-recently-used item after expired entries are removed."""
         while len(self._cache) >= self.maxsize:
             self._cache.popitem(last=False)
+
+    def _purge_expired_locked(self) -> None:
+        """Scan only when an entry can have expired, not on every insertion."""
+        now = time.monotonic()
+        if now < self._next_expiration:
+            return
+        expired = [key for key, (_, deadline) in self._cache.items() if now >= deadline]
+        for key in expired:
+            del self._cache[key]
+        self._next_expiration = min((deadline for _, deadline in self._cache.values()), default=float('inf'))
 
     def clear(self) -> None:
         """Clear all cached values."""
         with self._lock:
             self._cache.clear()
+            self._next_expiration = float('inf')
 
     def remove(self, key: str) -> None:
         """
@@ -107,16 +120,8 @@ class TimedCache:
         Returns:
             Number of cached items
         """
-        # Clean expired entries
-        now = datetime.now()
         with self._lock:
-            expired_keys = [
-                key for key, (_, expiration) in self._cache.items()
-                if now > expiration
-            ]
-            for key in expired_keys:
-                del self._cache[key]
-
+            self._purge_expired_locked()
             return len(self._cache)
 
 

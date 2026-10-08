@@ -145,222 +145,79 @@ class ComplianceReporter:
         else:
             self.analyzer = None
 
-    def analyze_cis_benchmark(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Analyze compliance with CIS Benchmark.
+    def _mapped_checks(self, risks, mapping):
+        """Findings prove failures; their absence cannot prove a control passed."""
+        counts = self._risk_type_counts(risks)
+        return [
+            {'control': control, 'control_id': control, 'control_name': risk_type,
+             'risk_type': risk_type, 'count': counts[risk_type],
+             'status': 'failed' if counts[risk_type] else 'unknown'}
+            for risk_type, control in mapping.items()
+        ]
 
-        Args:
-            risks: List of risk dictionaries
-
-        Returns:
-            Dict with CIS compliance analysis
-        """
-        compliance_results = {
-            'framework': 'CIS Benchmark',
-            'total_controls': len(self.CIS_BENCHMARK_MAPPINGS),
-            'failed_controls': [],
-            'passed_controls': [],
+    @staticmethod
+    def _finding_summary(framework, checks):
+        return {
+            'framework': framework,
+            'assessment_basis': 'findings_only',
+            'assessment_status': 'partial' if any(row['status'] == 'failed' for row in checks) else 'not_assessed',
             'compliance_score': 0.0,
-            'details': {}
+            'total_controls': len({row['control'] for row in checks}),
+            'total_checks': len(checks),
+            'unknown_checks': sum(row['status'] == 'unknown' for row in checks),
+            'limitation': 'Findings establish mapped failures only. Absence of a finding does not verify compliance.',
         }
 
-        risk_counts = self._risk_type_counts(risks)
-
-        for risk_type, cis_control in self.CIS_BENCHMARK_MAPPINGS.items():
-            if risk_counts[risk_type]:
-                compliance_results['failed_controls'].append({
-                    'control': cis_control,
-                    'risk_type': risk_type,
-                    'count': risk_counts[risk_type]
-                })
-            else:
-                compliance_results['passed_controls'].append(cis_control)
-
-        # Calculate compliance score
-        total_controls = len(self.CIS_BENCHMARK_MAPPINGS)
-        failed_count = len(compliance_results['failed_controls'])
-        compliance_results['compliance_score'] = max(0.0, (total_controls - failed_count) / total_controls * 100)
-
-        return compliance_results
+    def analyze_cis_benchmark(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
+        """Map observed failures without treating unassessed controls as passed."""
+        checks = self._mapped_checks(risks, self.CIS_BENCHMARK_MAPPINGS)
+        result = self._finding_summary('CIS Benchmark', checks)
+        result.update(controls=checks, passed_controls=[],
+                      failed_controls=[row for row in checks if row['status'] == 'failed'],
+                      unknown_controls=sorted({row['control'] for row in checks if row['status'] == 'unknown'}))
+        return result
 
     def analyze_nist_csf(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Analyze compliance with NIST Cybersecurity Framework.
-
-        Args:
-            risks: List of risk dictionaries
-
-        Returns:
-            Dict with NIST CSF compliance analysis
-        """
-        compliance_results = {
-            'framework': 'NIST CSF',
-            'functions': {
-                'PR': {'name': 'Protect', 'controls': [], 'status': 'partial'},
-                'DE': {'name': 'Detect', 'controls': [], 'status': 'partial'},
-                'RS': {'name': 'Respond', 'controls': [], 'status': 'partial'},
-                'RC': {'name': 'Recover', 'controls': [], 'status': 'partial'},
-                'ID': {'name': 'Identify', 'controls': [], 'status': 'partial'}
-            },
-            'compliance_score': 0.0,
-            'details': {}
-        }
-
-        risk_counts = self._risk_type_counts(risks)
-        function_scores = defaultdict(lambda: {'total': 0, 'failed': 0})
-
-        for risk_type, nist_control in self.NIST_CSF_MAPPINGS.items():
-            function_id = nist_control.split('.', 1)[0]
-            function_scores[function_id]['total'] += 1
-            status = 'failed' if risk_counts[risk_type] else 'passed'
-            if risk_counts[risk_type]:
-                function_scores[function_id]['failed'] += 1
-            if function_id in compliance_results['functions']:
-                compliance_results['functions'][function_id]['controls'].append({
-                    'control': nist_control,
-                    'risk_type': risk_type,
-                    'status': status,
-                })
-
-        # Calculate scores per function
-        total_score = 0.0
-        for function_id, scores in function_scores.items():
-            if scores['total'] > 0:
-                function_score = (scores['total'] - scores['failed']) / scores['total'] * 100
-                total_score += function_score
-                if function_id in compliance_results['functions']:
-                    compliance_results['functions'][function_id]['score'] = function_score
-                    compliance_results['functions'][function_id]['status'] = 'passed' if function_score >= 80 else 'partial'
-
-        for function_id, function in compliance_results['functions'].items():
-            if function_id not in function_scores:
-                function['status'] = 'not_assessed'
-                function['score'] = None
-
-        compliance_results['compliance_score'] = total_score / len(function_scores) if function_scores else 0.0
-
-        return compliance_results
+        """Group mapped failures by NIST function with explicit unknown checks."""
+        checks = self._mapped_checks(risks, self.NIST_CSF_MAPPINGS)
+        result = self._finding_summary('NIST CSF', checks)
+        functions = {}
+        for key, name in (('PR', 'Protect'), ('DE', 'Detect'), ('RS', 'Respond'), ('RC', 'Recover'), ('ID', 'Identify')):
+            rows = [row for row in checks if row['control'].split('.', 1)[0] == key]
+            failed = any(row['status'] == 'failed' for row in rows)
+            functions[key] = {'name': name, 'controls': rows, 'status': 'partial' if failed else 'not_assessed',
+                              'score': 0.0 if rows else None}
+        result['functions'] = functions
+        return result
 
     def analyze_iso_27001(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Analyze compliance with ISO 27001.
-
-        Args:
-            risks: List of risk dictionaries
-
-        Returns:
-            Dict with ISO 27001 compliance analysis
-        """
-        compliance_results = {
-            'framework': 'ISO 27001',
-            'domains': defaultdict(list),
-            'compliance_score': 0.0,
-            'details': {}
-        }
-
-        risk_counts = self._risk_type_counts(risks)
-        domain_scores = defaultdict(lambda: {'total': 0, 'failed': 0})
-
-        for risk_type, iso_control in self.ISO_27001_MAPPINGS.items():
-            domain = '.'.join(iso_control.split('.')[:2])
-            if risk_counts[risk_type]:
-                domain_scores[domain]['total'] += 1
-                domain_scores[domain]['failed'] += 1
-                compliance_results['domains'][domain].append({
-                    'control': iso_control,
-                    'risk_type': risk_type,
-                    'status': 'failed'
-                })
-            else:
-                domain_scores[domain]['total'] += 1
-
-        # Calculate scores per domain
-        total_score = 0.0
-        for domain, scores in domain_scores.items():
-            if scores['total'] > 0:
-                domain_score = (scores['total'] - scores['failed']) / scores['total'] * 100
-                total_score += domain_score
-                compliance_results['domains'][domain].append({
-                    'score': domain_score,
-                    'status': 'passed' if domain_score >= 80 else 'partial'
-                })
-
-        compliance_results['compliance_score'] = total_score / len(domain_scores) if domain_scores else 0.0
-
-        return compliance_results
+        """Keep mapped findings and unknown checks visible in each ISO domain."""
+        checks = self._mapped_checks(risks, self.ISO_27001_MAPPINGS)
+        result = self._finding_summary('ISO 27001', checks)
+        domains = defaultdict(list)
+        for row in checks:
+            domains['.'.join(row['control'].split('.')[:2])].append(row)
+        result.update(domains=dict(domains), domain_scores={key: 0.0 for key in domains})
+        return result
 
     def analyze_gdpr(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Analyze compliance with GDPR.
-
-        Args:
-            risks: List of risk dictionaries
-
-        Returns:
-            Dict with GDPR compliance analysis
-        """
-        compliance_results = {
-            'framework': 'GDPR',
-            'articles': defaultdict(list),
-            'compliance_score': 0.0,
-            'details': {}
-        }
-
-        risk_counts = self._risk_type_counts(risks)
-        article_scores = defaultdict(lambda: {'total': 0, 'failed': 0})
-
-        for risk_type, gdpr_article in self.GDPR_MAPPINGS.items():
-            if risk_counts[risk_type]:
-                article_scores[gdpr_article]['total'] += 1
-                article_scores[gdpr_article]['failed'] += 1
-                compliance_results['articles'][gdpr_article].append({
-                    'risk_type': risk_type,
-                    'status': 'failed',
-                    'description': f"Risk violates {gdpr_article} - Data protection by design and by default"
-                })
-            else:
-                article_scores[gdpr_article]['total'] += 1
-
-        # Calculate scores per article
-        total_score = 0.0
-        for article, scores in article_scores.items():
-            if scores['total'] > 0:
-                article_score = (scores['total'] - scores['failed']) / scores['total'] * 100
-                total_score += article_score
-                compliance_results['articles'][article].append({
-                    'score': article_score,
-                    'status': 'passed' if article_score >= 80 else 'partial'
-                })
-
-        compliance_results['compliance_score'] = total_score / len(article_scores) if article_scores else 0.0
-
-        return compliance_results
+        """Expose mapped findings without inferring regulatory compliance."""
+        checks = self._mapped_checks(risks, self.GDPR_MAPPINGS)
+        result = self._finding_summary('GDPR', checks)
+        articles = defaultdict(list)
+        for row in checks:
+            articles[row['control']].append(row)
+        result.update(articles=dict(articles), article_scores={key: 0.0 for key in articles})
+        return result
 
     def analyze_cis_controls_v8(self, risks: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        Analyze compliance with CIS Controls v8 (Critical Security Controls).
-        """
-        compliance_results = {
-            'framework': 'CIS Controls v8',
-            'safeguards': [],
-            'failed_safeguards': [],
-            'passed_safeguards': [],
-            'compliance_score': 0.0,
-        }
-        risk_counts = self._risk_type_counts(risks)
-        for risk_type, safeguard in self.CIS_CONTROLS_V8_MAPPINGS.items():
-            if risk_counts[risk_type]:
-                compliance_results['failed_safeguards'].append({
-                    'safeguard': safeguard,
-                    'risk_type': risk_type,
-                    'count': risk_counts[risk_type]
-                })
-            else:
-                compliance_results['passed_safeguards'].append(safeguard)
-        total = len(self.CIS_CONTROLS_V8_MAPPINGS)
-        failed = len(compliance_results['failed_safeguards'])
-        compliance_results['compliance_score'] = max(0.0, (total - failed) / total * 100)
-        return compliance_results
+        """Expose observed safeguard failures and the remaining unknown checks."""
+        checks = self._mapped_checks(risks, self.CIS_CONTROLS_V8_MAPPINGS)
+        result = self._finding_summary('CIS Controls v8', checks)
+        result.update(safeguards=checks, passed_safeguards=[],
+                      failed_safeguards=[{'safeguard': row['control'], **row} for row in checks if row['status'] == 'failed'],
+                      unknown_safeguards=sorted({row['control'] for row in checks if row['status'] == 'unknown'}))
+        return result
 
     def generate_compliance_report(self, risks: list[dict[str, Any]],
                                   users: Optional[list[dict[str, Any]]] = None,
@@ -410,5 +267,9 @@ class ComplianceReporter:
             'iso_27001': iso_result,
             'gdpr': gdpr_result,
             'cis_controls_v8': cis_v8_result,
-            'overall_compliance_score': overall_score
+            'overall_compliance_score': overall_score,
+            'assessment_basis': 'findings_only',
+            'assessment_status': 'partial' if any(result['assessment_status'] == 'partial' for result in
+                (cis_result, nist_result, iso_result, gdpr_result, cis_v8_result)) else 'not_assessed',
+            'limitation': cis_result['limitation'],
         }

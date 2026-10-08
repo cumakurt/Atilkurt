@@ -62,11 +62,12 @@ def test_domain_controller_flag_receives_domain_controller_multiplier():
     assert scored[0]["object_type_multiplier"] == 2.0
 
 
-def test_fallback_nist_report_scores_all_mapped_checks():
+def test_fallback_nist_report_does_not_assume_unobserved_controls_passed():
     report = ComplianceReporter().analyze_nist_csf([])
 
-    assert report["compliance_score"] == 100.0
-    assert report["functions"]["PR"]["status"] == "passed"
+    assert report["compliance_score"] == 0.0
+    assert report["assessment_status"] == "not_assessed"
+    assert report["functions"]["PR"]["status"] == "not_assessed"
     assert report["functions"]["DE"]["status"] == "not_assessed"
     assert report["functions"]["DE"]["score"] is None
 

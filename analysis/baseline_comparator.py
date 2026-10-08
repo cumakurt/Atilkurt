@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 class BaselineComparator:
     """Compares current scan with baseline for drift detection."""
 
+    @staticmethod
+    def _risk_key(risk: dict[str, Any]) -> tuple[str, ...]:
+        evidence = risk.get('evidence')
+        evidence = evidence if isinstance(evidence, dict) else {}
+        return tuple(str(value or '').casefold() for value in (
+            risk.get('type'), risk.get('affected_object'), risk.get('object_type'),
+            risk.get('target_object') or evidence.get('target_dn'),
+            risk.get('trustee') or evidence.get('trustee_sid'),
+            risk.get('permission') or evidence.get('permission'),
+        ))
+
     def load_baseline(self, baseline_path: str) -> Optional[dict[str, Any]]:
         """
         Load baseline from JSON file (from --json-export or checkpoint).
@@ -43,8 +54,7 @@ class BaselineComparator:
         Compare current risks with baseline.
         Returns new risks, resolved risks, and summary.
         """
-        def _risk_key(r: dict) -> str:
-            return f"{r.get('type', '')}|{r.get('affected_object', '')}"
+        _risk_key = self._risk_key
 
         baseline_keys = {_risk_key(r) for r in baseline_risks}
         current_keys = {_risk_key(r) for r in current_risks}
@@ -101,10 +111,11 @@ class BaselineComparator:
         baseline = baseline_document if baseline_document is not None else self.load_baseline(baseline_path)
         if not baseline:
             return {"error": "Baseline not loaded", "risks": [], "summary": {}}
-        if isinstance(baseline.get("data"), dict) and any(
+        if not any(key in baseline for key in ('analysis', 'scoring', 'risks')) and isinstance(baseline.get("data"), dict) and any(
             key in baseline["data"] for key in ("users", "analysis", "scoring")
         ):
             baseline = baseline["data"]
+        baseline_objects = baseline.get('data') if isinstance(baseline.get('data'), dict) else baseline
 
         object_specs = {
             "users": ("sAMAccountName", (
@@ -123,7 +134,7 @@ class BaselineComparator:
         changed_fields: list[dict[str, Any]] = []
         for collection, (identity_key, fields) in object_specs.items():
             current_items = current_data.get(collection, []) or []
-            baseline_items = baseline.get(collection, []) or []
+            baseline_items = baseline_objects.get(collection, []) or []
             current_map = self._object_map(current_items, identity_key)
             baseline_map = self._object_map(baseline_items, identity_key)
             added = sorted(set(current_map) - set(baseline_map))
@@ -146,6 +157,13 @@ class BaselineComparator:
 
         baseline_risks = baseline.get("risks", []) or (baseline.get("scoring") or {}).get("scored_risks", [])
         risk_comparison = self.compare(current_risks, baseline_risks)
+        # Snapshot differences record observations. Only the dedicated retest
+        # workflow can establish remediation from fresh, complete evidence.
+        risk_comparison['unobserved_risks'] = risk_comparison['resolved_risks']
+        risk_comparison['resolved_risks'] = []
+        risk_comparison['summary']['unobserved_count'] = risk_comparison['summary']['resolved_count']
+        risk_comparison['summary']['resolved_count'] = 0
+        risk_comparison['limitation'] = 'Unobserved findings are not verified as resolved; use the remediation retest workflow.'
         severity_changes = self._severity_changes(current_risks, baseline_risks)
         current_graph = current_analysis.get("attack_graph_v2") or {}
         baseline_graph = baseline.get("attack_graph_v2") or (baseline.get("analysis") or {}).get("attack_graph_v2") or {}
@@ -216,6 +234,7 @@ class BaselineComparator:
             "summary": {
                 "new_risks": risk_comparison["summary"]["new_count"],
                 "resolved_risks": risk_comparison["summary"]["resolved_count"],
+                "unobserved_risks": risk_comparison["summary"]["unobserved_count"],
                 "severity_changes": len(severity_changes),
                 "object_field_changes": len(changed_fields),
                 "added_attack_edges": len(added_edges),
@@ -245,16 +264,18 @@ class BaselineComparator:
 
     @staticmethod
     def _severity_changes(current: list[dict[str, Any]], baseline: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        def key(risk: dict[str, Any]) -> tuple[str, str]:
-            return str(risk.get("type") or ""), str(risk.get("affected_object") or "")
+        key = BaselineComparator._risk_key
+        def severity(risk):
+            basis = risk.get('review_basis') or {}
+            return str(basis.get('severity') or risk.get('source_severity') or risk.get('severity') or '').casefold()
         baseline_map = {key(risk): risk for risk in baseline}
         changes = []
         for risk in current:
             prior = baseline_map.get(key(risk))
-            if prior and str(prior.get("severity")) != str(risk.get("severity")):
+            if prior and severity(prior) != severity(risk):
                 changes.append({
                     "type": risk.get("type"), "affected_object": risk.get("affected_object"),
-                    "before": prior.get("severity"), "after": risk.get("severity"),
+                    "before": severity(prior), "after": severity(risk),
                 })
         return changes
 

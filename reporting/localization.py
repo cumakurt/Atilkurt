@@ -500,6 +500,9 @@ TEXT_TRANSLATIONS_TR = {
     "Critical": "Kritik", "Critical:": "Kritik:", "High": "Yüksek", "High:": "Yüksek:",
     "Medium": "Orta", "Medium:": "Orta:", "Low": "Düşük", "Low:": "Düşük:",
     "UNKNOWN": "BİLİNMİYOR", "PASSED": "BAŞARILI", "FAILED": "BAŞARISIZ", "WARNING": "UYARI",
+    "Not assessed": "Değerlendirilmedi",
+    "Findings establish mapped failures only. Absence of a finding does not verify compliance.":
+        "Bulgular yalnızca eşleştirilen ihlalleri gösterir. Bulgu bulunmaması uyumluluğu doğrulamaz.",
     "Unknown": "Bilinmiyor", "Active": "Etkin", "Disabled": "Devre Dışı", "Locked": "Kilitli",
     "YES": "EVET", "Yes": "Evet", "No": "Hayır", "OK": "Uygun", "N/A": "Uygulanamaz",
     "User": "Kullanıcı", "Computer": "Bilgisayar", "Group": "Grup", "Workstation": "İş İstasyonu",

@@ -228,6 +228,10 @@ class RiskScorer:
         if not risks:
             return []
         for risk in risks:
+            basis = risk.get('review_basis') or {}
+            risk.setdefault('source_severity', basis.get('severity') or risk.get('potential_severity')
+                            or risk.get('severity') or risk.get('severity_level') or 'unknown')
+            risk.pop('combination_bonus', None)
             annotate_validation(risk)
 
         # Build context maps
@@ -315,7 +319,7 @@ class RiskScorer:
 
     def _get_fallback_base_score(self, risk):
         """Use incoming severity as the fallback for risk types without a fixed score."""
-        severity = risk.get('severity_level') or risk.get('severity') or ''
+        severity = risk.get('source_severity') or risk.get('severity') or risk.get('severity_level') or ''
         if not isinstance(severity, str):
             severity = str(severity)
         return self.SEVERITY_FALLBACK_SCORES.get(severity.lower(), 50)
