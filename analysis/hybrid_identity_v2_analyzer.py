@@ -152,9 +152,9 @@ class HybridIdentityV2Analyzer:
                 RiskTypes.HYBRID_ENTRA_CONNECT_EXCESSIVE_RIGHTS,
                 Severity.CRITICAL,
                 f'Entra Connect account "{name}" has domain replication rights',
-                "The account SID appears in a domain-root ACE that grants replication or all extended rights.",
+                "The account has a sensitive replication capability. Password Hash Synchronization may require these rights; imported feature evidence is needed before calling them excessive.",
                 name,
-                {"trustee_sid": sid, "permissions": replication},
+                {"trustee_sid": sid, "permissions": replication, "requires_runtime_validation": True},
             ))
         return risks
 

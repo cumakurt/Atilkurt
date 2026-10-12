@@ -68,7 +68,12 @@ def test_posture_evidence_verifies_endpoint_controls(tmp_path):
         }
     }
     path = tmp_path / "posture.json"
-    path.write_text(json.dumps(evidence), encoding="utf-8")
+    from datetime import datetime, timezone
+    document = {'schema_version': 1, 'domain': 'example.com', 'observations': [
+        {'target': 'dc1.example.com', 'name': name, 'value': value, 'source': 'registry export',
+         'collected_at': datetime.now(timezone.utc).isoformat()}
+        for name, value in evidence['DC1'].items()]}
+    path.write_text(json.dumps(document), encoding="utf-8")
 
     result = PostureEvidenceAnalyzer().analyze([str(path)])
     types = {risk["type"] for risk in result["risks"]}

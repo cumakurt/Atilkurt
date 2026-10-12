@@ -146,7 +146,11 @@ class AttackGraphV2Analyzer:
                 "node_count": len(graph_nodes), "edge_count": len(graph_edges),
                 "tier0_target_count": len(targets), "open_path_count": len(paths),
                 "chokepoint_count": len(chokepoints),
+                "reported_path_count": min(len(paths), self.MAX_REPORTED_PATHS),
+                "report_truncated": len(paths) > self.MAX_REPORTED_PATHS,
+                "max_depth": self.MAX_DEPTH,
             },
+            "limitation": "Paths are bounded by max_depth and findings by reported_path_count. Absence of a reported path does not establish absence of attack paths.",
         }
         graph["opengraph"] = self._opengraph(graph_nodes, graph_edges)
         return {"risks": risks, "graph": graph}

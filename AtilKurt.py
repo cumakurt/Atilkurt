@@ -162,8 +162,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--json-export',
                         help='Optional JSON export file path')
-    parser.add_argument('--ssl', action='store_true',
-                        help='Use LDAPS on port 636 (default: plaintext LDAP on port 389)')
+    transport = parser.add_mutually_exclusive_group()
+    transport.add_argument('--ssl', action='store_true', default=True,
+                           help='Use certificate-verified LDAPS on port 636 (default)')
+    transport.add_argument('--insecure-ldap', action='store_false', dest='ssl',
+                           help='Explicitly allow LDAP without TLS for a controlled compatibility assessment')
+    transport.add_argument('--starttls', action='store_true', help='Require StartTLS before binding on port 389')
+    parser.add_argument('--ca-certs-file', help='Trusted PEM CA bundle for LDAP TLS')
+    parser.add_argument('--auth-method', choices=('ntlm', 'kerberos', 'simple'), default='ntlm',
+                        help='LDAP authentication; Kerberos uses the existing credential cache')
     parser.add_argument('--stealth', action='store_true',
                         help='Enable stealth mode (enhanced rate limiting)')
     parser.add_argument('--rate-limit', type=_finite_nonnegative_float, default=None,
@@ -299,6 +306,12 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error('--retest-finding requires --retest')
     if args.require_signed_evidence and not args.trusted_key:
         parser.error('--require-signed-evidence requires at least one --trusted-key')
+    if args.ca_certs_file and not Path(args.ca_certs_file).is_file():
+        parser.error('--ca-certs-file requires a readable PEM bundle')
+    if args.auth_method == 'simple' and not (args.ssl or args.starttls):
+        parser.error('SIMPLE authentication requires LDAPS or StartTLS')
+    if args.require_signed_evidence and args.event_log:
+        parser.error('Raw event logs cannot satisfy signed-evidence policy; use signed --security-evidence')
     if (args.ticket_file or args.tickets_export or args.notifications_export or args.audit_export) and not args.history_db:
         args.history_db = '.atilkurt_history.sqlite3'
     if args.export_changes_only and not args.history_db:
@@ -376,8 +389,10 @@ def validate_output_paths(args: argparse.Namespace) -> None:
             'baseline', 'review_file', 'remediation_scenario', 'offline_snapshot', 'quality_dataset',
             'retest', 'ticket_file', 'signing_key', 'scope_file', 'protocol_evidence', 'gpo_context', 'rsop_file',
         )}
-        for name in ('event_log', 'posture_file', 'validation_evidence', 'trusted_key', 'bloodhound_import', 'federation_snapshot'):
+        for name in ('event_log', 'posture_file', 'validation_evidence', 'trusted_key', 'bloodhound_import', 'federation_snapshot', 'security_evidence'):
             inputs.update({f'{name}[{index}]': path for index, path in enumerate(getattr(args, name, []))})
+        inputs.update({f'gpo_policy_file[{index}]': specification.partition('=')[2]
+                       for index, specification in enumerate(args.gpo_policy_file)})
         from core.progress_persistence import validate_checkpoint_id
         for name in ('resume', 'checkpoint'):
             if getattr(args, name, None):
@@ -508,6 +523,9 @@ def _clone_ldap_connection(ldap_conn: LDAPConnection) -> LDAPConnection:
         adaptive_timeout=ldap_conn.adaptive_timeout,
         enable_cache=ldap_conn.enable_cache,
         validate_certificate=ldap_conn.validate_certificate,
+        start_tls=ldap_conn.start_tls,
+        ca_certs_file=ldap_conn.ca_certs_file,
+        auth_method=ldap_conn.auth_method,
     )
     connection.assessment_scope = getattr(ldap_conn, 'assessment_scope', None)
     return connection
@@ -666,27 +684,56 @@ def apply_package_c_evidence(
 
         print(f"[*] Correlating offline event evidence from {len(args.event_log)} file(s)...")
         existing = deduplicate_risks(list(itertools.chain(*get_consolidated_risk_lists(analysis))))
-        result = EventCorrelationAnalyzer().analyze(args.event_log, existing)
+        from core.ad_security import as_text
+        event_targets = [as_text(row.get('dNSHostName') or row.get('name')) for row in data.get('computers', [])]
+        result = EventCorrelationAnalyzer().analyze(args.event_log, existing, domain=args.domain,
+                                                    expected_targets=event_targets, max_age_days=args.evidence_max_age_days)
         analysis["event_correlation_risks"] = result["risks"]
         analysis["event_correlation"] = result["summary"]
+        controls = analysis.setdefault('engagement', {}).setdefault('security_controls', {})
+        readiness = controls.setdefault('transition_readiness', {'dependencies': []})
+        readiness['dependencies'].extend(result['summary']['transition_readiness']['dependencies'])
+        readiness['status'] = 'dependencies_observed' if readiness['dependencies'] else 'unknown'
+        readiness['limitation'] = result['summary']['transition_readiness']['limitation']
         print(f"[+] Event correlation: {len(result['risks'])} findings from {result['summary']['parsed_events']} events")
 
     posture_paths = args.posture_file
     observations = []
+    observations.extend(analysis.get('security_control_observations') or [])
     review_document = getattr(args, '_workflow_review_document', None)
     if review_document and review_document.get('observations'):
         from core.finding_review import FindingReviewManager
-        observations = FindingReviewManager().apply([], data, args.domain, review_document,
-                                                    max_age_days=args.evidence_max_age_days)['observations']
-    if posture_paths or observations:
+        observations.extend(FindingReviewManager().apply([], data, args.domain, review_document,
+                                                        max_age_days=args.evidence_max_age_days)['observations'])
+    if not posture_paths:
+        from analysis.posture_evidence_analyzer import PostureEvidenceAnalyzer
+        def observation_key(row):
+            return (str(row.get('target') or '').casefold(),
+                    PostureEvidenceAnalyzer._normalize_key(row.get('name') or row.get('policy') or ''))
+        supplied = {observation_key(row) for row in observations}
+        saved = analysis.get('posture_evidence') or {}
+        saved_rows = saved.get('observations')
+        if saved_rows is None:
+            saved_rows = [row for rows in (saved.get('evidence') or {}).values() for row in rows]
+        observations.extend(row for row in saved_rows if observation_key(row) not in supplied)
+    from core.ad_identity import computer_is_domain_controller
+    from core.ad_security import as_text
+    dc_targets = [as_text(row.get('dNSHostName') or row.get('name')) for row in data.get('computers', []) if computer_is_domain_controller(row)]
+    if posture_paths or observations or dc_targets:
         from analysis.posture_evidence_analyzer import PostureEvidenceAnalyzer
 
         print(f"[*] Verifying DC/GPO posture evidence from {len(posture_paths)} file(s)...")
-        result = PostureEvidenceAnalyzer().analyze(posture_paths, observations=observations)
-        analysis["posture_evidence_risks"] = result["risks"]
+        result = PostureEvidenceAnalyzer().analyze(posture_paths, observations=observations, domain=args.domain,
+                                                  max_age_days=args.evidence_max_age_days,
+                                                  trusted_keys=args.trusted_key, require_signed=args.require_signed_evidence,
+                                                  expected_targets=dc_targets)
+        from analysis.posture_evidence_analyzer import refresh_posture_findings
+        analysis["posture_evidence_risks"] = refresh_posture_findings(analysis.get('posture_evidence_risks') or [], result)
         analysis["posture_evidence"] = {
             "summary": result["summary"],
             "evidence": result["evidence"],
+            "observations": result["observations"],
+            "checks": result["checks"],
         }
         print(f"[+] Posture evidence: {len(result['risks'])} findings")
 
@@ -1215,7 +1262,8 @@ def load_workflow_inputs(args: argparse.Namespace) -> tuple[dict[str, Any], list
     from core.finding_review import empty_review_document, load_review_document
     signature_options = {'trusted_keys': args.trusted_key, 'require_signed': args.require_signed_evidence}
     document = load_review_document(args.review_file, args.domain, **signature_options) if args.review_file else empty_review_document(args.domain)
-    args._signature_verifications = []
+    if not hasattr(args, '_signature_verifications'):
+        args._signature_verifications = []
     if args.review_file:
         args._signature_verifications.append({'source': args.review_file, **document.get('signature_verification', {})})
     for path in args.validation_evidence:
@@ -1250,6 +1298,9 @@ def _load_bounded_json(path: str) -> dict[str, Any]:
 
 def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], removed: list[str]) -> None:
     """Re-evaluate saved evidence and review expiry without opening a connection."""
+    if not hasattr(args, '_assessment_scope'):
+        from core.engagement_workflow import prepare_engagement_inputs
+        prepare_engagement_inputs(args)
     from analysis.registry import EXPORT_KEY_TO_ANALYSIS_KEY
     from core.product_workflow import load_workflow_document
     snapshot = load_workflow_document(args.offline_snapshot, args)
@@ -1288,8 +1339,13 @@ def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], 
     replacements = []
     if args.event_log:
         replacements.append(('event_', 'event_correlation_risks'))
-    if args.posture_file or args.validation_evidence:
+    if args.posture_file or args.validation_evidence or analysis.get('posture_evidence'):
         replacements.append(('posture_', 'posture_evidence_risks'))
+    if args.security_evidence or analysis.get('security_control_observations'):
+        replacements.append(('security_control_', 'security_control_risks'))
+        replacements.append(('posture_', 'posture_evidence_risks'))
+        from analysis.security_controls_analyzer import reconcile_hybrid_findings
+        reconcile_hybrid_findings(risks, analysis.get('security_control_observations') or [])
     if args.baseline:
         replacements.append(('snapshot_', 'snapshot_delta_risks'))
     if getattr(args, 'sysvol_dir', []):
@@ -1423,7 +1479,10 @@ def main() -> None:
             if checkpoint_payload is None:
                 print('[*] Partial checkpoint validated; running a fresh scan')
         # --- Password -------------------------------------------------------
-        password, password_manager = resolve_password(args)
+        if args.auth_method == 'kerberos':
+            password = ''
+        else:
+            password, password_manager = resolve_password(args)
 
         # --- Stealth mode ----------------------------------------------------
         random_delay = args.random_delay if args.random_delay else (0.0, 0.0)
@@ -1461,7 +1520,10 @@ def main() -> None:
             username=args.username,
             password=password,
             dc_ip=args.dc_ip,
-            use_ssl=args.ssl,
+            use_ssl=args.ssl and not args.starttls,
+            start_tls=args.starttls,
+            ca_certs_file=args.ca_certs_file,
+            auth_method=args.auth_method,
             timeout=args.timeout,
             page_size=args.page_size,
             enable_paging=True,
@@ -1483,7 +1545,7 @@ def main() -> None:
             configuration_dn = forest_configuration_dn(ldap_conn)
             if configuration_dn:
                 args._assessment_scope.metadata_roots.append(configuration_dn)
-        if not args.ssl:
+        if not args.ssl and not args.starttls:
             print(
                 "[!] LDAP is using port 389 without TLS. Prefer --ssl so credentials "
                 "and directory data are not sent in the clear."

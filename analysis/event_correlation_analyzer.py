@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -34,6 +34,7 @@ class EventCorrelationAnalyzer:
 
     def analyze(
         self, paths: list[str], existing_risks: list[dict[str, Any]] | None = None,
+        *, domain=None, expected_targets=None, now=None, max_age_days=30,
     ) -> dict[str, Any]:
         events: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
@@ -58,13 +59,59 @@ class EventCorrelationAnalyzer:
         risks.extend(self._directory_changes(normalized))
         risks.extend(self._dcsync(normalized))
         risks.extend(self._certificate_events(normalized, existing_risks or []))
+        if domain:
+            from core.control_evidence import evidence_status
+            for event in normalized:
+                event['provenance_reason'] = evidence_status(
+                    {'domain': domain, 'target': event['computer'], 'source': 'offline event import',
+                     'collected_at': event['timestamp']}, domain, now=now,
+                    max_age_days=max_age_days, targets=expected_targets)
+            for risk in risks:
+                supporting = [event for event in normalized if event['event_id'] in risk['evidence']['event_ids']]
+                gaps = sorted({event['provenance_reason'] for event in supporting if event.get('provenance_reason')})
+                if gaps:
+                    risk['evidence'].update(requires_runtime_validation=True, provenance_gaps=gaps)
+        transitions = self._protocol_dependencies(normalized, now=now, max_age_days=max_age_days)
         summary = {
             "input_files": len(paths), "parsed_events": len(normalized),
             "formats": sorted(formats), "parse_errors": errors,
             "finding_count": len(risks),
             "event_id_counts": self._event_counts(normalized),
+            "transition_readiness": transitions,
+            "evidence_gaps": sum(bool(event.get('provenance_reason')) for event in normalized),
         }
         return {"risks": risks, "summary": summary}
+
+    def _protocol_dependencies(self, events, *, now=None, max_age_days=30):
+        now = now or datetime.now(timezone.utc)
+        groups = {}
+        for event in events:
+            if event.get('provenance_reason') or not self._successful_security_event(event):
+                continue
+            try:
+                stamp = datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00'))
+                if stamp.tzinfo is None or not now - timedelta(days=max_age_days) <= stamp <= now + timedelta(minutes=5):
+                    continue
+            except ValueError:
+                continue
+            fields = event['fields']
+            encryption = self._integer(self._first(fields, 'ticketencryptiontype', 'eventdata.ticketencryptiontype'))
+            protocol = 'NTLM' if event['event_id'] == 4776 else 'RC4' if event['event_id'] == 4769 and encryption == 0x17 else None
+            if not protocol or not event['computer']:
+                continue
+            client = self._first(fields, 'workstation', 'clientaddress', 'ipaddress', 'eventdata.workstation', 'eventdata.ipaddress')
+            account = self._first(fields, 'targetusername', 'eventdata.targetusername')
+            service = self._first(fields, 'servicename', 'eventdata.servicename')
+            key = (event['computer'], protocol, str(client or ''), str(account or ''), str(service or ''))
+            group = groups.setdefault(key, {'target': event['computer'], 'protocol': protocol, 'client': client,
+                                            'account': account, 'service': service, 'count': 0, 'owner': None,
+                                            'exception_status': 'unowned_or_expired', 'first_seen': event['timestamp'],
+                                            'last_seen': event['timestamp'], 'source': 'Windows Security events'})
+            group['count'] += 1
+            group['first_seen'] = min(group['first_seen'], event['timestamp'])
+            group['last_seen'] = max(group['last_seen'], event['timestamp'])
+        return {'dependencies': list(groups.values()), 'status': 'dependencies_observed' if groups else 'unknown',
+                'limitation': 'Telemetry shows dependencies, not complete protocol coverage. Assign an owner and expiring exception before staged enforcement.'}
 
     def _load(self, path: Path) -> tuple[list[dict[str, Any]], str]:
         if not path.is_file():

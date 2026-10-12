@@ -81,6 +81,8 @@ class ConfidenceScorer:
             "level": level,
             "level_label": level.title(),
             "basis": basis,
+            "interpretation": "Heuristic evidence strength, not a measured probability or production accuracy rate",
+            "calibrated": False,
             "evidence_count": source_count,
             "sources": list(dict.fromkeys(step["source"] for step in chain)),
         }

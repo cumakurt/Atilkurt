@@ -10,8 +10,38 @@ from typing import Any
 import xml.etree.ElementTree as ET
 
 from core.constants import MITRETechniques, RiskTypes, Severity
+from core.control_evidence import evidence_status, observation_document
+from core.evidence_signing import read_json, unwrap_document
 
 logger = logging.getLogger(__name__)
+
+
+def refresh_posture_findings(previous, result):
+    """Keep previously observed weaknesses visible when their evidence expires."""
+    from core.finding_evidence import invalidate_finding_evidence
+
+    risks = list(result['risks'])
+    states = {(str(row['target']).casefold(), row.get('policy')): row['status'] for row in result['checks']}
+    for original in previous:
+        if original.get('type') == RiskTypes.POSTURE_EVIDENCE_INCOMPLETE:
+            continue
+        basis = original.get('review_basis') or original
+        unresolved = []
+        for row in (basis.get('evidence') or {}).get('posture_values', []):
+            policy = row.get('policy') or PostureEvidenceAnalyzer._normalize_key(row.get('name') or '')
+            state = states.get((str(row.get('target') or '').casefold(), policy), 'unknown')
+            if state not in ('secure', 'insecure', 'not_applicable'):
+                unresolved.append(row)
+        if not unresolved:
+            continue
+        current = next((risk for risk in risks if risk.get('type') == original.get('type')), None)
+        if current:
+            current['evidence']['unverified_previous_observations'] = unresolved
+        else:
+            retained = invalidate_finding_evidence(original, 'unknown')
+            retained['evidence']['posture_values'] = unresolved
+            risks.append(retained)
+    return risks
 
 
 class PostureEvidenceAnalyzer:
@@ -19,7 +49,7 @@ class PostureEvidenceAnalyzer:
 
     MAX_FILE_BYTES = 64 * 1024 * 1024
     CONTROL_ALIASES = {
-        "ldap_signing": ("ldapserverintegrity",),
+        "ldap_signing": ("ldapserverintegrity", "ldapserverenforceintegrity"),
         "channel_binding": ("ldapenforcechannelbinding",),
         "ntlm_restriction": (
             "restrictntlmindomain", "restrictreceivingntlmtraffic", "restrictsendingntlmtraffic",
@@ -29,36 +59,82 @@ class PostureEvidenceAnalyzer:
         "certificate_mapping": ("certificatemappingmethods",),
     }
 
-    def analyze(self, paths: list[str], observations: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def analyze(self, paths: list[str], observations: list[dict[str, Any]] | None = None,
+                *, domain=None, targets=None, now=None, max_age_days=30,
+                trusted_keys=None, require_signed=False, expected_targets=None) -> dict[str, Any]:
         values: dict[str, list[dict[str, Any]]] = {}
         errors: list[dict[str, str]] = []
         for raw_path in paths:
             path = Path(raw_path)
             try:
-                loaded = self._load(path)
-                for key, value in loaded.items():
-                    normalized = self._normalize_key(key)
-                    values.setdefault(normalized, []).append({"value": value, "source": str(path)})
+                if path.suffix.casefold() == '.json':
+                    document, signature = unwrap_document(read_json(str(path)), trusted_keys, require_signed)
+                    expected_domain = domain or document.get('domain')
+                    if not expected_domain:
+                        raise ValueError('Posture evidence requires domain and target-bound observations')
+                    rows = observation_document(document, expected_domain, now=now, max_age_days=max_age_days, targets=targets)
+                    for row in rows:
+                        row['signature_status'] = signature['status']
+                        values.setdefault(self._normalize_key(row.get('name') or ''), []).append(row)
+                else:
+                    # Unbound exports are never authoritative endpoint observations.
+                    if require_signed:
+                        raise ValueError('Raw posture exports cannot satisfy signed-evidence policy')
+                    for key, value in self._load(path).items():
+                        values.setdefault(self._normalize_key(key), []).append(
+                            {'value': value, 'source': str(path), 'status': 'unknown',
+                             'reason': 'Raw export lacks target, domain and collection time'})
             except Exception as exc:
+                if require_signed:
+                    raise
                 logger.warning("Could not parse posture evidence %s: %s", path, exc)
                 errors.append({"path": str(path), "error": str(exc)})
 
         for observation in observations or []:
-            if observation.get('status') == 'available':
-                normalized = self._normalize_key(observation.get('name') or '')
-                values.setdefault(normalized, []).append({key: observation.get(key) for key in
-                                                          ('value', 'source', 'target', 'collected_at')})
+            row = dict(observation)
+            # Reviewed collector documents have already checked domain binding.
+            row.setdefault('domain', domain)
+            reason = evidence_status(row, domain, now=now, max_age_days=max_age_days, targets=targets)
+            row.update(status='unknown' if reason else 'available', reason=reason)
+            values.setdefault(self._normalize_key(row.get('name') or ''), []).append(row)
         resolved: dict[str, list[dict[str, Any]]] = {}
+        checks = []
+        server2025 = set()
+        older_servers = set()
+        for record in values.get('operatingsystem', []):
+            value = record.get('value')
+            if record.get('status') == 'available' and isinstance(value, dict) and 'server' in str(value.get('caption', '')).casefold():
+                build = self._int(value.get('build'))
+                if build is not None:
+                    (server2025 if build >= 26100 else older_servers).add(str(record.get('target') or '').casefold())
         for control, aliases in self.CONTROL_ALIASES.items():
             matches = []
             for key, records in values.items():
                 if any(key.endswith(alias) for alias in aliases):
-                    matches.extend(records)
+                    matches.extend({**record, 'policy': next(alias for alias in aliases if key.endswith(alias))}
+                                   for record in records)
             if matches:
-                valid = [record for record in matches
-                         if self._int(record['value']) is not None and self._int(record['value']) >= 0]
-                if valid:
-                    resolved[control] = valid
+                grouped = {}
+                for record in matches:
+                    grouped.setdefault((str(record.get('target') or 'unknown').casefold(), record['policy']), []).append(record)
+                for (target, policy), records in grouped.items():
+                    evaluated = [self._policy_state(policy, record.get('value')) for record in records]
+                    invalid = any(record.get('status') != 'available' for record in records)
+                    conflict = len({self._int(record.get('value')) for record in records}) > 1
+                    state = 'conflicting' if conflict else 'unknown' if invalid or 'unknown' in evaluated else evaluated[0]
+                    if policy == 'ldapserverenforceintegrity':
+                        if target in older_servers and target in server2025:
+                            state = 'conflicting'
+                        elif target in older_servers:
+                            state = 'not_applicable'
+                        elif target not in server2025:
+                            state = 'unknown'
+                    reason = next((record.get('reason') for record in records if record.get('reason')), None)
+                    checks.append({'target': target, 'control': control, 'policy': policy, 'status': state,
+                                   'source_count': len(records), 'reason': reason or ('Conflicting values' if conflict else
+                                   'Invalid or unsupported policy value' if state == 'unknown' else None)})
+                    if state in ('secure', 'insecure'):
+                        resolved.setdefault(control, []).extend({**record, 'policy_status': state} for record in records)
 
         risks: list[dict[str, Any]] = []
         risks.extend(self._check_minimum(resolved, "ldap_signing", 2, RiskTypes.POSTURE_LDAP_SIGNING_WEAK,
@@ -71,6 +147,25 @@ class PostureEvidenceAnalyzer:
                                          "SMB signing is not required", Severity.HIGH))
         risks.extend(self._check_kerberos(resolved.get("kerberos_encryption") or []))
         risks.extend(self._check_certificate_mapping(resolved.get("certificate_mapping") or []))
+        for target in expected_targets or []:
+            for control in self.CONTROL_ALIASES:
+                if not any(check['target'].casefold() == target.casefold() and check['control'] == control for check in checks):
+                    checks.append({'target': target, 'control': control, 'status': 'unknown', 'source_count': 0,
+                                   'reason': 'No fresh policy evidence for this assessed domain controller'})
+        # Server 2025 enforcement takes precedence over the legacy signing setting.
+        enforcing = {row['target'] for row in checks if row.get('policy') == 'ldapserverenforceintegrity' and row['status'] == 'secure'}
+        if enforcing:
+            for risk in list(risks):
+                if risk['type'] == RiskTypes.POSTURE_LDAP_SIGNING_WEAK:
+                    rows = [row for row in risk['evidence']['posture_values'] if str(row.get('target') or '').casefold() not in enforcing]
+                    if not rows:
+                        risks.remove(risk)
+                    else:
+                        risk['evidence']['posture_values'] = rows
+            for check in checks:
+                if check['control'] == 'ldap_signing' and check['target'] in enforcing and check['status'] == 'insecure':
+                    check.update(status='secure', configured_status='insecure', effective_policy='LDAPServerEnforceIntegrity',
+                                 reason='Server signing enforcement policy overrides the legacy setting')
         if (paths or observations) and len(resolved) < len(self.CONTROL_ALIASES):
             missing = sorted(set(self.CONTROL_ALIASES) - set(resolved))
             risks.append({
@@ -94,7 +189,34 @@ class PostureEvidenceAnalyzer:
                 "parse_errors": errors, "finding_count": len(risks),
             },
             "evidence": resolved,
+            "observations": [{**row, 'name': row.get('name') or name}
+                             for name, records in values.items() for row in records],
+            "checks": checks,
         }
+
+    @classmethod
+    def _policy_state(cls, policy, raw):
+        value = cls._int(raw)
+        enums = {'ldapserverintegrity': {0, 1, 2}, 'ldapserverenforceintegrity': {0, 1},
+                 'ldapenforcechannelbinding': {0, 1, 2}, 'requiresecuritysignature': {0, 1},
+                 'restrictntlmindomain': {0, 1, 2, 4, 7}, 'restrictreceivingntlmtraffic': {0, 1, 2},
+                 'restrictsendingntlmtraffic': {0, 1, 2}}
+        if policy in enums and value not in enums[policy]:
+            return 'unknown'
+        if value is None or value < 0:
+            return 'unknown'
+        if policy in ('defaultdomainsupportedenctypes', 'supportedencryptiontypes'):
+            return 'unknown' if value & ~0x3ff else 'insecure' if value & 4 or not value & 0x18 else 'secure'
+        if policy == 'certificatemappingmethods':
+            return 'unknown' if value & ~0x1f else 'insecure' if value & 7 else 'secure'
+        # Incoming value 1 denies domain accounts; outgoing value 1 is audit only.
+        required = {'restrictntlmindomain': 7, 'restrictreceivingntlmtraffic': 1,
+                    'restrictsendingntlmtraffic': 2, 'ldapserverintegrity': 2,
+                    'ldapserverenforceintegrity': 1, 'ldapenforcechannelbinding': 2,
+                    'requiresecuritysignature': 1}
+        if policy == 'ldapserverenforceintegrity' and value == 0:
+            return 'unknown'  # Disabled enforcement delegates to the legacy setting.
+        return 'secure' if value >= required[policy] else 'insecure'
 
     def _load(self, path: Path) -> dict[str, Any]:
         if not path.is_file():
@@ -160,8 +282,7 @@ class PostureEvidenceAnalyzer:
 
     def _check_minimum(self, resolved: dict[str, list[dict[str, Any]]], control: str,
                        minimum: int, risk_type: str, title: str, severity: str) -> list[dict[str, Any]]:
-        weak = [record for record in resolved.get(control, [])
-                if self._int(record['value']) is not None and 0 <= self._int(record['value']) < minimum]
+        weak = [record for record in resolved.get(control, []) if record.get('policy_status') == 'insecure']
         return [self._risk(
             risk_type, severity, title,
             f"One or more supplied posture values for {control} are below the required value {minimum}.",

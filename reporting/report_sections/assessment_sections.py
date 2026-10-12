@@ -272,6 +272,11 @@ class AssessmentSectionsMixin:
             f"<tr><td><code>{esc(row['control'])}</code></td><td>{text(row['status'])}</td><td>{row['source_count']}</td></tr>"
             for row in coverage.get("controls", [])
         )
+        target_controls = "".join(
+            f"<tr><td>{esc(row.get('target'))}</td><td><code>{esc(row.get('control'))}</code></td>"
+            f"<td>{esc(row.get('status'))}</td><td>{esc(row.get('reason'))}</td></tr>"
+            for row in coverage.get('target_controls', [])
+        )
         steps = "".join(
             f"<tr><td>{step_description(row)}<br><code>{esc(row['key'])}</code></td><td>{text(row['status'] if row['status'] != 'unknown' else 'execution_unknown')}</td><td>{text(row['reason'])}</td></tr>"
             for row in coverage.get("analysis_steps", [])
@@ -332,6 +337,7 @@ class AssessmentSectionsMixin:
         </section>
         <section class="tab-pane fade" id="scan-coverage" role="tabpanel" aria-labelledby="scan-coverage-tab">
           <h3>{text("coverage")}</h3><p>{text("score_scope")}</p>
+          <div class="table-responsive"><table class="table"><thead><tr><th>{text("target")}</th><th>{text("record")}</th><th>{text("status")}</th><th>{text("value")}</th></tr></thead><tbody>{target_controls}</tbody></table></div>
           <div class="assessment-metrics"><div>{text("execution")}<strong>{esc(execution_label)}</strong>{summary.get("completed_steps", 0)} / {summary.get("total_steps", 0)}</div>
           <div>{text("control_evidence")}<strong>{summary.get("posture_controls_with_evidence", 0)} / {summary.get("total_posture_controls", 0)}</strong></div>
           <div>{text("pending")}<strong>{summary.get("validation_required", 0)}</strong></div></div>

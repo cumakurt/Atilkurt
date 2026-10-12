@@ -29,7 +29,7 @@ ATILKURT_PASS='your-password' \
 .venv/bin/atilkurt --domain example.com --username auditor
 ```
 
-Replace the example values with the assessment account details. The password is passed through the environment instead of a command-line argument, so it is not exposed in the process argument list. If the domain name does not resolve to a reachable domain controller, add `--dc-ip 192.168.1.10`. Add `--ssl` when the domain controller provides LDAPS on port 636.
+Replace the example values with the assessment account details. The password is passed through the environment instead of a command-line argument, so it is not exposed in the process argument list. If the domain name does not resolve to a reachable domain controller, add `--dc-ip 192.168.1.10`. LDAPS with certificate verification is the default. Use a DC hostname matching its certificate, and `--ca-certs-file company-ca.pem` for an enterprise CA. See [evidence-based security controls](docs/SECURITY_CONTROLS.md).
 
 To generate the same assessment with a Turkish report, add `--lan tr`:
 
@@ -535,15 +535,15 @@ Explicit CLI options take precedence over equivalent `.env` values. Existing pro
 
 A username may be supplied as `username`, `DOMAIN\username`, or `username@example.com`; the connection layer normalizes it for LDAP authentication.
 
-- Without `--ssl`, AtilKurt connects to port 389 and attempts NTLM only. It never sends a SIMPLE bind password over plaintext LDAP. The CLI prints a warning so operators prefer LDAPS when it is available.
-- With `--ssl`, AtilKurt connects to port 636 and may use NTLM or SIMPLE inside the protected TLS connection.
+- LDAPS on port 636 is the default. `--starttls` requires TLS before binding on port 389. `--insecure-ldap` explicitly permits NTLM-only plaintext compatibility; SIMPLE never runs without TLS.
+- Authentication defaults to NTLM without fallback. Select `--auth-method simple` explicitly over TLS, or `--auth-method kerberos` to use an existing ticket cache.
 - TLS certificate validation is enabled by default. A failed explicit LDAPS connection is reported and never downgraded to plaintext LDAP.
 - `--no-validate-cert` is intended only for controlled labs with a certificate chain that cannot be validated.
 - Connection and search failures use bounded retry and timeout settings; failed LDAP result codes are not cached as successful empty results.
 
 ### Certificate Validation
 
-TLS certificate validation is enabled by default when `--ssl` is used. An explicit TLS connection never falls back to plaintext LDAP. Disable certificate validation only for controlled lab environments.
+TLS certificate validation is enabled by default for LDAPS and StartTLS. An explicit TLS connection never falls back to plaintext LDAP. Disable certificate validation only for controlled lab environments.
 
 ### Output Files
 
@@ -615,7 +615,7 @@ ATILKURT_PASS='read-from-your-secret-manager' \
   --ssl
 ```
 
-Use `--ssl` for LDAPS on port 636. Without it, the application uses LDAP on port 389 and restricts authentication to NTLM; it does not send SIMPLE credentials over plaintext LDAP. If `--output` is omitted, a timestamped HTML filename is generated for the target domain.
+LDAPS on port 636 is the default; `--ssl` remains supported. Use `--starttls` for mandatory TLS on port 389, or `--insecure-ldap` for explicit NTLM-only plaintext compatibility. If `--output` is omitted, a timestamped HTML filename is generated for the target domain.
 
 ### Report Language
 
@@ -796,7 +796,13 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `-u, --username`: LDAP username
 - `-p, --password`: LDAP password, deprecated in favor of `ATILKURT_PASS`
 - `--dc-ip`: Domain controller IP address or hostname; defaults to the domain name
-- `--ssl`: Use LDAPS on port 636
+- `--ssl`: Use LDAPS on port 636 (default)
+- `--starttls`: Require TLS before binding on port 389
+- `--insecure-ldap`: Explicit NTLM-only plaintext compatibility
+- `--auth-method`: Select ntlm, kerberos or simple without fallback
+- `--ca-certs-file`: Trusted PEM CA bundle
+- `--security-evidence`: Target-bound endpoint, PKI, cloud and recovery evidence
+- `--gpo-policy-file`: Offline GPO content, using GPO_ID=PATH
 - `--validate-cert`: Backward-compatible certificate validation flag
 - `--no-validate-cert`: Disable certificate validation
 - `--version`: Print the AtilKurt version and exit
@@ -1040,7 +1046,7 @@ The Makefile provides common development and container shortcuts:
 - The tool performs read-only LDAP search operations only
 - It does not modify Active Directory objects
 - Passwords should be provided through `ATILKURT_PASS` or interactive input
-- Prefer `--ssl`; plaintext LDAP does not attempt SIMPLE password authentication
+- Certificate-verified LDAPS is the default; plaintext compatibility is explicit and never uses SIMPLE
 - Explicit TLS failures are reported and never downgraded to plaintext LDAP
 - Use `--no-validate-cert` only in lab environments
 - Treat reports, JSON exports, and checkpoints as sensitive directory data

@@ -47,6 +47,9 @@ class ParallelLDAPExecutor:
             'adaptive_timeout': ldap_connection.adaptive_timeout,
             'enable_cache': ldap_connection.enable_cache,
             'validate_certificate': ldap_connection.validate_certificate,
+            'start_tls': getattr(ldap_connection, 'start_tls', False),
+            'ca_certs_file': getattr(ldap_connection, 'ca_certs_file', None),
+            'auth_method': getattr(ldap_connection, 'auth_method', 'ntlm'),
         }
         self.max_workers = max_workers
         self.rate_limit = rate_limit

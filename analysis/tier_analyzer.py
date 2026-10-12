@@ -4,15 +4,18 @@ Assesses Tier 0 (DCs), Tier 1 (Admin Infrastructure), Tier 2 (Workstations/Serve
 Based on Microsoft's privileged access tier model
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 
-from core.ad_identity import computer_is_domain_controller, first_ldap_rdn
+from core.ad_identity import computer_is_domain_controller, first_ldap_rdn, group_is_role
+from core.ad_security import as_list, as_text, principal_group_tokens, sid_text
 
 logger = logging.getLogger(__name__)
 
-TIER_0_GROUPS = ['Domain Controllers', 'Enterprise Admins', 'Schema Admins']
-TIER_1_GROUPS = ['Domain Admins', 'Administrators', 'Backup Operators', 'Account Operators',
+TIER_0_GROUPS = ['Domain Controllers', 'Domain Admins', 'Administrators', 'Enterprise Admins', 'Schema Admins']
+TIER_1_GROUPS = ['Backup Operators', 'Account Operators',
                  'Server Operators', 'Print Operators', 'DnsAdmins', 'Group Policy Creator Owners']
 
 
@@ -23,7 +26,8 @@ class TierAnalyzer:
         self,
         users: list[dict[str, Any]],
         computers: list[dict[str, Any]],
-        groups: list[dict[str, Any]]
+        groups: list[dict[str, Any]],
+        control_relationships: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Categorize users and computers into Tier 0, 1, 2.
@@ -37,6 +41,42 @@ class TierAnalyzer:
             'tier_risks': []
         }
 
+        group_map = {as_text(g.get('distinguishedName') or g.get('dn')).casefold(): g for g in groups}
+        tokens = principal_group_tokens(users + computers, groups)
+        tier0_sids = {sid_text(g.get('objectSid')) for g in groups if any(group_is_role(g, role) for role in TIER_0_GROUPS)}
+        tier1_sids = {sid_text(g.get('objectSid')) for g in groups if any(group_is_role(g, role) for role in TIER_1_GROUPS)}
+        aliases = {}
+        for computer in computers:
+            host = as_text(computer.get('dNSHostName') or computer.get('name')).casefold().rstrip('.')
+            for field in ('dNSHostName', 'name', 'sAMAccountName'):
+                alias = as_text(computer.get(field)).casefold().rstrip('.')
+                if alias:
+                    aliases.setdefault(alias, set()).add(host)
+
+        def host_identity(value):
+            matches = aliases.get(str(value or '').casefold().rstrip('.'), set())
+            return next(iter(matches)) if len(matches) == 1 else None
+
+        tier0_targets = {host_identity(c.get('dNSHostName') or c.get('name')) for c in computers if computer_is_domain_controller(c)} - {None}
+        controlled = set(tier0_targets)
+        # Only caller-validated, explicit management relationships promote assets.
+        relationships = [r for r in control_relationships or [] if r.get('status') == 'available']
+        changed = True
+        while changed:
+            changed = False
+            for row in relationships:
+                value = row.get('value') or {}
+                if row.get('name') != 'controls_identity_asset' or not isinstance(value, dict):
+                    continue
+                manager = host_identity(row.get('target'))
+                if manager and host_identity(value.get('controlled_target')) in controlled and manager not in controlled:
+                    controlled.add(manager)
+                    changed = True
+        local_admins = {row.get('value', {}).get('principal_sid') for row in relationships
+                        if row.get('name') == 'local_administrator' and isinstance(row.get('value'), dict)
+                        and isinstance(row['value'].get('principal_sid'), str)
+                        and host_identity(row.get('target')) in controlled}
+
         def _user_tier(user: dict[str, Any]) -> int:
             member_of = user.get('memberOf', []) or []
             if not isinstance(member_of, list):
@@ -44,17 +84,39 @@ class TierAnalyzer:
             names = {
                 first_ldap_rdn(dn).casefold()
                 for dn in member_of
-                if dn
+                if dn and str(dn).casefold() not in group_map
             }
+            pending = list(member_of)
+            visited = set()
+            tier1_member = False
+            while pending:
+                dn = str(pending.pop()).casefold()
+                if dn in visited:
+                    continue
+                visited.add(dn)
+                group = group_map.get(dn)
+                if group:
+                    if any(group_is_role(group, role) for role in TIER_0_GROUPS):
+                        return 0
+                    tier1_member |= any(group_is_role(group, role) for role in TIER_1_GROUPS)
+                    pending.extend(as_list(group.get('memberOf')))
+            if tokens.get(sid_text(user.get('objectSid')), set()) & (tier0_sids - {None}):
+                return 0
+            if sid_text(user.get('objectSid')) in local_admins - {None} or tokens.get(sid_text(user.get('objectSid')), set()) & (local_admins - {None}):
+                return 0
+            if user.get('primaryGroupID') in (512, 516, 518, 519, '512', '516', '518', '519'):
+                return 0
             if any(name in names for name in (g.casefold() for g in TIER_0_GROUPS)):
                 return 0
-            if any(name in names for name in (g.casefold() for g in TIER_1_GROUPS)):
+            if tier1_member or tokens.get(sid_text(user.get('objectSid')), set()) & (tier1_sids - {None}) or any(name in names for name in (g.casefold() for g in TIER_1_GROUPS)):
                 return 1
             return 2
 
         def _computer_tier(computer: dict[str, Any]) -> int:
             os_name = computer.get('operatingSystem', '') or ''
             if computer_is_domain_controller(computer):
+                return 0
+            if host_identity(computer.get('dNSHostName') or computer.get('name')) in controlled:
                 return 0
             # Servers typically Tier 1, workstations Tier 2
             if 'SERVER' in os_name.upper():
@@ -89,6 +151,8 @@ class TierAnalyzer:
             'tier_2_users': len(tier2_users),
             'tier_2_computers': len(tier2_computers),
         }
+        result['control_relationships'] = relationships
+        result['limitation'] = 'Non-DC infrastructure is Tier 0 only when validated control relationships reach an identity asset. Missing endpoint relationships remain unassessed.'
 
         # Tier risks: too many Tier 0/1, Tier 2 in admin groups, etc.
         if len(tier0_users) > 5:

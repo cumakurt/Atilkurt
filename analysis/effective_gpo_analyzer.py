@@ -245,6 +245,16 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
                     status = 'excluded'
                 elif wmi is not True:
                     missing.append('WMI filter outcome requires host evidence')
+            if policy.get('content_evidence'):
+                if any(content.get('unresolved_directives') for content in policy['content_evidence']):
+                    missing.append('Registry.pol deletion/security directives require host evidence')
+                try:
+                    stamp = datetime.fromisoformat(str(policy.get('collected_at')).replace('Z', '+00:00'))
+                    fresh_content = stamp.tzinfo is not None and now - timedelta(days=30) <= stamp <= now + timedelta(minutes=5)
+                except ValueError:
+                    fresh_content = False
+                if not fresh_content:
+                    missing.append('Policy content collection time is unavailable or stale')
             if missing and status != 'excluded':
                 status = 'conditional'
             evaluated.append({**candidate, 'status': status, 'prerequisites': missing})
@@ -267,7 +277,13 @@ def analyze_effective_gpo(document, rsop=None, *, now=None):
             predicted = {row['gpo_id'] for row in evaluated if row['status'] != 'excluded'}
             differences = {'status': 'observed' if fresh else 'stale', 'only_observed': sorted(set(observed) - predicted),
                            'only_predicted': sorted(predicted - set(observed))}
+        observed_settings = observation.get('settings', {}) if observation else {}
+        setting_comparison = {key: {'predicted': setting['value'], 'observed': observed_settings[key],
+                                    'matches': setting['value'] == observed_settings[key],
+                                    'status': differences.get('status', 'unknown')}
+                              for key, setting in settings.items() if key in observed_settings}
         results.append({'target': dn, 'kind': kind, 'policies': evaluated, 'settings': settings,
+                        'setting_comparison': setting_comparison,
                         'metadata_complete': metadata_complete, 'observed_applied_gpos': observed, 'comparison': differences})
     return {'schema_version': 1, 'targets': results, 'errors': document.get('errors', []),
             'limitation': 'Predictions require complete container metadata, Read/Apply permissions and WMI outcomes. Local/site policy and loopback require RSoP confirmation.'}

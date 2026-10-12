@@ -41,9 +41,12 @@ def build_scan_coverage(
             }
         )
     pending = sum(requires_validation(risk) for risk in risks)
+    target_controls = list((analysis.get('posture_evidence') or {}).get('checks') or [])
+    target_controls.extend(((analysis.get('engagement') or {}).get('security_controls') or {}).get('checks') or [])
     return {
         "analysis_steps": steps,
         "controls": controls,
+        "target_controls": target_controls,
         "summary": {
             "completed_steps": len(completed),
             "partial_steps": len(partial),
@@ -56,6 +59,9 @@ def build_scan_coverage(
             "endpoint_observations": len(observations),
             "posture_controls_with_evidence": len(posture.get("covered_controls") or []),
             "total_posture_controls": len(controls),
+            "target_control_states": {state: sum(row.get('status') == state for row in target_controls)
+                                      for state in ('secure', 'insecure', 'unknown', 'conflicting', 'not_applicable')},
+            "assurance_status": 'incomplete' if not target_controls or any(row.get('status') in ('unknown', 'conflicting') for row in target_controls) else 'measured_targets_only',
         },
         "score_scope": "The security score describes supported findings. Completed analysis does not prove that every control or host was verified.",
     }

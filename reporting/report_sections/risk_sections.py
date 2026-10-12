@@ -55,8 +55,8 @@ class RiskSectionsMixin:
         color = "success" if level == "high" else "warning" if level == "medium" else "secondary"
         basis = self._html_escape(confidence.get("basis") or "")
         return (
-            f'<span class="badge bg-{color}" title="Basis: {basis}">'
-            f'Confidence: {level_label} ({score:.1f}%)</span>'
+            f'<span class="badge bg-{color}" title="Heuristic evidence strength, not a probability. Basis: {basis}">'
+            f'Confidence: {level_label} ({score:.1f}/100)</span>'
         )
 
     def _generate_evidence_details(self, risk):
@@ -90,7 +90,7 @@ class RiskSectionsMixin:
             </h2>
             <div id="evidence_{{accordion_id}}" class="accordion-collapse collapse" data-bs-parent="#{{accordion_id}}">
                 <div class="accordion-body matrix-theme">
-                    <p><strong>Confidence Score:</strong> {score:.1f}% ({level})</p>
+                    <p><strong>Confidence Score:</strong> {score:.1f}/100 ({level})</p>
                     <p><strong>Basis:</strong> {basis}</p>
                     <ol>{''.join(items)}</ol>
                 </div>

@@ -4,7 +4,7 @@ Read-only LDAP connection using ldap3 library
 """
 
 from typing import Optional, Any, Callable
-from ldap3 import Server, Connection, ALL, Tls, NTLM, SIMPLE
+from ldap3 import Server, Connection, ALL, Tls, NTLM, SIMPLE, SASL, KERBEROS
 from ldap3.core.exceptions import LDAPException
 import ssl
 import logging
@@ -27,11 +27,12 @@ class LDAPConnection:
     """
 
     def __init__(self, domain: str, username: str, password: str, dc_ip: str,
-                 use_ssl: bool = False, timeout: Optional[int] = None, page_size: Optional[int] = None,
+                 use_ssl: bool = True, timeout: Optional[int] = None, page_size: Optional[int] = None,
                  enable_paging: bool = True, max_retries: Optional[int] = None,
                  retry_delay: Optional[float] = None, adaptive_timeout: bool = True,
                  enable_cache: bool = True, cache_ttl: int = 300,
-                 validate_certificate: bool = True):
+                 validate_certificate: bool = True, start_tls: bool = False,
+                 ca_certs_file: Optional[str] = None, auth_method: str = 'ntlm'):
         """
         Initialize LDAP connection parameters.
 
@@ -41,7 +42,7 @@ class LDAPConnection:
                      Can also accept domain\\username or username@domain format for compatibility
             password: LDAP password
             dc_ip: Domain Controller IP address or hostname
-            use_ssl: Enable SSL/TLS (default: False)
+            use_ssl: Enable SSL/TLS (default: True)
             timeout: Base connection timeout in seconds (default: 30)
             page_size: Page size for paged searches (default: 1000)
             enable_paging: Enable LDAP paging for large result sets (default: True)
@@ -60,8 +61,17 @@ class LDAPConnection:
 
         # Validate inputs and use config defaults if not provided
         self.domain = validate_domain(domain)
+        if auth_method not in ('ntlm', 'kerberos', 'simple'):
+            raise LDAPConnectionError('Unsupported LDAP authentication method')
+        self.auth_method = auth_method
+        self.start_tls = bool(start_tls)
+        if self.start_tls and use_ssl:
+            raise LDAPConnectionError('LDAPS and StartTLS cannot be requested together')
+        if auth_method == 'simple' and not (use_ssl or start_tls):
+            raise LDAPConnectionError('SIMPLE authentication requires TLS')
+        self.ca_certs_file = ca_certs_file
         self.username = validate_username(username)
-        self.password = validate_password(password)
+        self.password = '' if auth_method == 'kerberos' else validate_password(password)
         self.dc_ip = validate_server_address(dc_ip)
         self.use_ssl = bool(use_ssl)
         self.base_timeout = validate_timeout(timeout if timeout is not None else (ldap_config.default_timeout if ldap_config else 30))
@@ -82,7 +92,11 @@ class LDAPConnection:
         self.query_cache = LDAPQueryCache(default_ttl=cache_ttl) if enable_cache else None
 
         # Normalize username format
-        self.username = self._normalize_username(self.username, self.domain)
+        if auth_method == 'ntlm':
+            self.username = self._normalize_username(self.username, self.domain)
+        elif auth_method == 'simple':
+            parts = self.username.split('\\', 1)
+            self.username = f'{parts[-1]}@{parts[0] if len(parts) == 2 else self.domain}' if '@' not in self.username else self.username
         self.connection: Optional[Connection] = None
         self.base_dn = self._get_base_dn(self.domain)
         self.pre_search_hook: Optional[Callable[[], None]] = None
@@ -144,10 +158,10 @@ class LDAPConnection:
             try:
                 # Configure TLS if SSL is enabled
                 tls_config: Optional[Tls] = None
-                if use_ssl_attempt:
+                if use_ssl_attempt or self.start_tls:
                     # Validate certificate if requested (recommended for production)
                     tls_validate = ssl.CERT_REQUIRED if self.validate_certificate else ssl.CERT_NONE
-                    tls_config = Tls(validate=tls_validate)
+                    tls_config = Tls(validate=tls_validate, ca_certs_file=self.ca_certs_file)
 
                 # Create server object
                 port = 636 if use_ssl_attempt else 389
@@ -179,36 +193,46 @@ class LDAPConnection:
 
                 # Try different authentication methods
                 # SIMPLE bind exposes the password without transport security.
-                auth_methods = [NTLM, SIMPLE] if use_ssl_attempt else [NTLM]
+                auth_methods = [{'ntlm': NTLM, 'simple': SIMPLE, 'kerberos': SASL}[self.auth_method]]
 
                 for auth_method in auth_methods:
                     if self.assessment_scope:
-                        self.assessment_scope.consume(self.dc_ip, 'ldaps' if use_ssl_attempt else 'ldap')
+                        self.assessment_scope.consume(self.dc_ip, 'ldaps' if use_ssl_attempt or self.start_tls else 'ldap')
+                    candidate_connection = None
                     try:
-                        candidate_connection = Connection(
-                            server,
-                            user=self.username,
-                            password=self.password,
-                            authentication=auth_method,
-                            auto_referrals=False,
-                            auto_bind=True,
-                            receive_timeout=self.base_timeout
-                        )
+                        options = dict(user=self.username, password=self.password,
+                                       authentication=auth_method, auto_referrals=False,
+                                       auto_bind=not self.start_tls, receive_timeout=self.base_timeout)
+                        if auth_method == SASL:
+                            options.update(sasl_mechanism=KERBEROS, password=None)
+                        candidate_connection = Connection(server, **options)
+                        if self.start_tls:
+                            candidate_connection.open()
+                            if not candidate_connection.start_tls():
+                                candidate_connection.unbind()
+                                raise LDAPConnectionError('StartTLS negotiation failed; refusing to bind')
+                            if not candidate_connection.bind():
+                                candidate_connection.unbind()
+                                raise LDAPConnectionError('LDAP bind failed after StartTLS')
                         if not candidate_connection.bound:
-                            last_error = LDAPConnectionError(
+                            raise LDAPConnectionError(
                                 f"LDAP {auth_method} bind did not establish a bound connection"
                             )
-                            continue
                         self.connection = candidate_connection
 
                         # Connection successful
-                        ssl_status = "SSL" if use_ssl_attempt else "non-SSL"
-                        auth_status = "NTLM" if auth_method == NTLM else "SIMPLE"
+                        ssl_status = "SSL" if use_ssl_attempt else 'StartTLS' if self.start_tls else "non-SSL"
+                        auth_status = self.auth_method.upper()
                         logger.info(f"LDAP connection established to {self.dc_ip}:{port} ({ssl_status}, {auth_status})")
                         self.use_ssl = use_ssl_attempt  # Update actual SSL status
                         return True
 
-                    except LDAPException as auth_error:
+                    except (LDAPException, LDAPConnectionError) as auth_error:
+                        if candidate_connection is not None:
+                            try:
+                                candidate_connection.unbind()
+                            except LDAPException:
+                                logger.debug('Failed to close unsuccessful LDAP bind', exc_info=True)
                         # Try next authentication method
                         logger.debug(f"Authentication method {auth_method} failed: {str(auth_error)}")
                         last_error = auth_error
@@ -301,7 +325,7 @@ class LDAPConnection:
 
     def _consume_request(self):
         if self.assessment_scope:
-            self.assessment_scope.consume(self.dc_ip, 'ldaps' if self.use_ssl else 'ldap')
+            self.assessment_scope.consume(self.dc_ip, 'ldaps' if self.use_ssl or self.start_tls else 'ldap')
 
     def _audited_query(self, query, base, ldap_filter, attributes, limit, scope):
         import hashlib

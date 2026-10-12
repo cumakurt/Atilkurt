@@ -34,7 +34,11 @@ def add_engagement_arguments(parser):
     ):
         section.add_argument('--' + flag, action='append', default=[], help=help_text + '; repeatable')
     section.add_argument('--protocol-evidence', help='Fresh local signing/channel-binding/EPA policy evidence JSON')
+    section.add_argument('--security-evidence', action='append', default=[],
+                         help='Target-bound endpoint, CA, Entra, recovery and management evidence JSON; repeatable')
     section.add_argument('--gpo-context', help='Offline effective GPO target/container/filter input JSON')
+    section.add_argument('--gpo-policy-file', action='append', default=[], metavar='GPO_ID=PATH',
+                         help='Registry.pol, GptTmpl.inf or audit.csv bound to an imported GPO; repeatable')
     section.add_argument('--rsop-file', help='gpresult XML; bind target and timestamp in --gpo-context')
     section.add_argument('--plan-start', help='Unique graph node ID, label or SID for attack path start')
     section.add_argument('--plan-goal', help='Unique graph node ID, label or SID for attack path goal')
@@ -46,6 +50,16 @@ def add_engagement_arguments(parser):
 
 
 def validate_engagement_arguments(parser, args):
+    if getattr(args, 'gpo_target', []) and getattr(args, 'gpo_context', None):
+        parser.error('--gpo-target and --gpo-context are alternative GPO sources; choose one')
+    if getattr(args, 'gpo_policy_file', []) and not getattr(args, 'gpo_context', None):
+        parser.error('--gpo-policy-file requires --gpo-context')
+    for value in getattr(args, 'gpo_policy_file', []):
+        identifier, separator, path = value.partition('=')
+        if not identifier or not separator or not Path(path).is_file():
+            parser.error('--gpo-policy-file requires GPO_ID=PATH to an existing file')
+    if len(getattr(args, 'gpo_policy_file', [])) > 100:
+        parser.error('--gpo-policy-file is limited to 100 files')
     if bool(getattr(args, 'plan_start', None)) != bool(getattr(args, 'plan_goal', None)):
         parser.error('--plan-start and --plan-goal must be supplied together')
     for field, upper in (('plan_max_hops', 16), ('max_queries', 10000000), ('max_scan_seconds', 86400)):
@@ -56,7 +70,7 @@ def validate_engagement_arguments(parser, args):
         value = getattr(args, field, None)
         if value and not Path(value).is_file():
             parser.error(f'--{field.replace("_", "-")} must reference an existing file')
-    for field in ('bloodhound_import', 'federation_snapshot'):
+    for field in ('bloodhound_import', 'federation_snapshot', 'security_evidence'):
         paths = getattr(args, field, [])
         if len(paths) > 20 or any(not Path(path).is_file() for path in paths):
             parser.error(f'--{field.replace("_", "-")} requires at most 20 existing files')

@@ -76,79 +76,18 @@ class AuditPolicyAnalyzer:
 
     # ── Audit GPO Analysis ──────────────────────────────────────────────────
 
-    def _check_audit_gpos(
-        self, base_dn: str
-    ) -> list[dict[str, Any]]:
-        """Check for GPOs that configure audit policies."""
-        risks: list[dict[str, Any]] = []
-
-        try:
-            results = self.ldap.search(
-                search_base=base_dn,
-                search_filter=(
-                    '(&(objectClass=groupPolicyContainer)'
-                    '(|(displayName=*audit*)(displayName=*Audit*)'
-                    '(displayName=*logging*)(displayName=*Logging*)))'
-                ),
-                attributes=['displayName', 'gPCFileSysPath', 'cn'],
-            )
-
-            if not results:
-                risks.append({
-                    'type': RiskTypes.AUDIT_POLICY_INSUFFICIENT,
-                    'severity': Severity.HIGH,
-                    'title': 'No audit-specific GPO found',
-                    'description': (
-                        'No GPO with "audit" or "logging" in its name '
-                        'was found. This suggests that advanced audit policies '
-                        'may not be centrally configured. Without proper audit '
-                        'configuration, security events will not be logged.'
-                    ),
-                    'affected_object': 'Domain',
-                    'object_type': 'configuration',
-                    'impact': (
-                        'Without audit logging, you cannot detect attacks '
-                        'such as DCSync, Golden Ticket usage, lateral movement, '
-                        'or privilege escalation. Incident response becomes '
-                        'nearly impossible.'
-                    ),
-                    'mitigation': (
-                        'Create a GPO to configure Advanced Audit Policy:\n'
-                        '  - Account Logon: Audit Kerberos Auth (Success+Failure)\n'
-                        '  - Logon/Logoff: Audit Logon (Success+Failure)\n'
-                        '  - Object Access: Audit SAM, DS Access\n'
-                        '  - Privilege Use: Audit Sensitive Privilege Use\n'
-                        '  - Account Management: Audit User/Group Management\n'
-                        '  - DS Access: Audit Directory Service Changes'
-                    ),
-                    'cis_reference': 'CIS Benchmark §17 — Advanced Audit Policy',
-                })
-            else:
-                gpo_names = [r.get('displayName', '?') for r in results]
-                risks.append({
-                    'type': RiskTypes.AUDIT_POLICY_INSUFFICIENT,
-                    'severity': Severity.LOW,
-                    'title': f'{len(results)} audit GPO(s) found — verify coverage',
-                    'description': (
-                        f'Found {len(results)} GPO(s) related to auditing: '
-                        f'{", ".join(gpo_names[:5])}. Verify these GPOs configure '
-                        'all required advanced audit subcategories.'
-                    ),
-                    'affected_object': ', '.join(gpo_names[:5]),
-                    'object_type': 'configuration',
-                    'mitigation': (
-                        'Review audit GPO settings with:\n'
-                        '  auditpol /get /category:*\n'
-                        'Ensure all CIS §17 subcategories are enabled.'
-                    ),
-                    'cis_reference': 'CIS Benchmark §17',
-                    'audit_gpos': gpo_names,
-                })
-
-        except Exception as e:
-            logger.debug(f"Could not check audit GPOs: {e}")
-
-        return risks
+    def _check_audit_gpos(self, base_dn: str) -> list[dict[str, Any]]:
+        """GPO names cannot prove audit policy; request observed subcategories."""
+        return [{
+            'type': RiskTypes.AUDIT_POLICY_INSUFFICIENT,
+            'severity': Severity.LOW,
+            'title': 'Advanced audit policy requires endpoint evidence',
+            'description': 'LDAP GPO names and metadata do not establish effective audit subcategories.',
+            'affected_object': 'Domain', 'object_type': 'configuration',
+            'requires_validation': True,
+            'evidence': {'requires_runtime_validation': True},
+            'mitigation': 'Import target-bound auditpol subcategory evidence and verify RSoP and log forwarding on each DC.',
+        }]
 
     # ── AdminSDHolder SACL ──────────────────────────────────────────────────
 
@@ -172,6 +111,7 @@ class AuditPolicyAnalyzer:
                 # for manual verification
                 risks.append({
                     'type': RiskTypes.AUDIT_SACL_MISSING,
+                    'requires_validation': True,
                     'severity': Severity.MEDIUM,
                     'title': 'Verify SACL on AdminSDHolder container',
                     'description': (
@@ -203,6 +143,7 @@ class AuditPolicyAnalyzer:
         """Recommend SACL on domain root for replication rights monitoring."""
         return [{
             'type': RiskTypes.AUDIT_SACL_MISSING,
+                    'requires_validation': True,
             'severity': Severity.MEDIUM,
             'title': 'Verify SACL on domain root for DCSync detection',
             'description': (

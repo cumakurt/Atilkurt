@@ -16,6 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+kerberos = [
+    "gssapi>=1.8,<2; platform_system != 'Windows'",
+    "winkerberos>=0.10,<1; platform_system == 'Windows'",
+]
 dev = [
     "pytest>=7.4,<9.0",
     "ruff>=0.8,<0.17",

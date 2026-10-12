@@ -10,7 +10,7 @@ from core.graph_import import validate_graph
 
 CONTROL = {'MemberOf', 'Controls', 'ControlADCSObject', 'ControlADFSDKM', 'ReplicationRight', 'ACLControls', 'AdminTo', 'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner',
            'ForceChangePassword', 'AddMember', 'Owns', 'ReadGMSAPassword', 'ReadLAPSPassword', 'DCSync'}
-CONDITIONAL = {'CanRDP', 'CanPSRemote', 'ExecuteDCOM', 'AllowedToDelegate', 'AllowedToAct', 'Enroll',
+CONDITIONAL = {'HasSession', 'CanRDP', 'CanPSRemote', 'ExecuteDCOM', 'AllowedToDelegate', 'AllowedToAct', 'Enroll',
                'ManageCA', 'ManageCertificates', 'WriteGPLink', 'GPLink', 'GPOAppliesTo'}
 
 
@@ -45,6 +45,9 @@ def plan_attack_paths(graph, start, goal, *, max_hops=8, max_paths=20, max_expan
         conditional = (relationship in CONDITIONAL or props.get('status') in {'conditional', 'pending', 'unknown', 'needs_validation'}
                        or props.get('requires_validation') is True or props.get('requires_runtime_validation') is True)
         provenance = props.get('provenance') or edge.get('snapshot_provenance') or {}
+        if relationship == 'HasSession' and (props.get('status') != 'conditional' or provenance.get('fresh') is not True):
+            excluded += 1
+            continue
         fresh = provenance.get('fresh') is True
         if provenance.get('collected_at'):
             try:

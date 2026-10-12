@@ -152,9 +152,9 @@ def test_confidence_and_evidence_chain_are_bilingual():
     turkish = _render("tr", risks=[risk])
     localized = localize_export_payload({"risks": [risk]}, "tr")["risks"][0]
 
-    assert "Confidence: High (99.0%)" in english
+    assert "Confidence: High (99.0/100)" in english
     assert "Observed security telemetry" in english
-    assert "Güven Düzeyi: Yüksek (99.0%)" in turkish
+    assert "Güven Düzeyi: Yüksek (99.0/100)" in turkish
     assert "Gözlemlenen güvenlik telemetrisi" in turkish
     assert "Eşleşen bir Windows güvenlik olayı gözlemlendi" in turkish
     assert "Observed security telemetry" not in turkish

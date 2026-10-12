@@ -195,7 +195,10 @@ def test_unknown_posture_values_remain_coverage_gaps(tmp_path):
     result = PostureEvidenceAnalyzer().analyze([str(path)])
     assert {risk['type'] for risk in result['risks']} == {'posture_evidence_incomplete'}
     assert 'ldap_signing' in result['summary']['missing_controls']
-    path.write_text(json.dumps({'LDAPServerIntegrity': 0}))
+    from datetime import datetime, timezone
+    path.write_text(json.dumps({'schema_version': 1, 'domain': 'example.com', 'observations': [
+        {'target': 'dc.example.com', 'name': 'LDAPServerIntegrity', 'value': 0, 'source': 'registry export',
+         'collected_at': datetime.now(timezone.utc).isoformat()}]}))
     assert any(risk['type'] == 'posture_ldap_signing_weak'
                for risk in PostureEvidenceAnalyzer().analyze([str(path)])['risks'])
 

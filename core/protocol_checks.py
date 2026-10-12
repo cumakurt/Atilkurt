@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import http.client
 import socket
 import ssl
@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from core.exceptions import ValidationError
 from core.validators import validate_server_address
+from core.control_evidence import evidence_status
 
 
 def _policy_observations(local_evidence, scope, now):
@@ -27,11 +28,8 @@ def _policy_observations(local_evidence, scope, now):
             raise ValidationError('Protocol evidence requires target and a boolean value')
         target = validate_server_address(target)
         scope.check_host(target, 'adcs_http' if check == 'epa_required' else 'ldaps')
-        try:
-            stamp = datetime.fromisoformat(str(row.get('collected_at')).replace('Z', '+00:00'))
-            fresh = stamp.tzinfo is not None and now - timedelta(days=30) <= stamp <= now + timedelta(minutes=5)
-        except ValueError:
-            fresh = False
+        bound = {**row, 'domain': row.get('domain', (local_evidence or {}).get('domain'))}
+        fresh = evidence_status(bound, scope.domain, now=now) is None
         grouped.setdefault((target.casefold(), check), []).append((row, fresh))
     records = []
     for (_, check), rows in grouped.items():

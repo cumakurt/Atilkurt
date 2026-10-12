@@ -13,6 +13,19 @@ from core.product_workflow import load_workflow_document
 
 def prepare_engagement_inputs(args):
     documents = {}
+    documents['security_evidence'] = [load_workflow_document(path, args) for path in getattr(args, 'security_evidence', [])]
+    if getattr(args, 'require_signed_evidence', False):
+        for path in getattr(args, 'posture_file', []):
+            load_workflow_document(path, args)
+        if getattr(args, 'posture_file', []):
+            from analysis.posture_evidence_analyzer import PostureEvidenceAnalyzer
+            PostureEvidenceAnalyzer().analyze(args.posture_file, domain=args.domain,
+                                               require_signed=True, trusted_keys=args.trusted_key,
+                                               max_age_days=getattr(args, 'evidence_max_age_days', 30))
+    if documents['security_evidence']:
+        from analysis.security_controls_analyzer import analyze_security_controls
+        analyze_security_controls(documents['security_evidence'], args.domain,
+                                  max_age_days=getattr(args, 'evidence_max_age_days', 30))
     for field in ('protocol_evidence', 'gpo_context'):
         path = getattr(args, field, None)
         if path:
@@ -55,6 +68,10 @@ def prepare_engagement_inputs(args):
         if getattr(args, 'require_signed_evidence', False) and (documents.get('gpo_context') or {}).get('rsop_sha256') != documents['rsop']['sha256']:
             raise ValidationError('Signed-evidence policy requires the RSoP digest in the signed GPO context')
     if documents.get('gpo_context'):
+        if getattr(args, 'gpo_policy_file', []):
+            from core.gpo_policy_content import attach_policy_content
+            documents['gpo_context'] = attach_policy_content(documents['gpo_context'], args.gpo_policy_file,
+                                                           require_signed=getattr(args, 'require_signed_evidence', False))
         from analysis.effective_gpo_analyzer import analyze_effective_gpo
         analyze_effective_gpo(documents['gpo_context'], documents.get('rsop'))
     args._engagement_documents = documents
@@ -77,6 +94,32 @@ def apply_engagement(args, data, analysis):
     documents = getattr(args, '_engagement_documents', {})
     ldap = getattr(args, '_active_ldap', None)
     engagement = deepcopy(analysis.get('engagement') or {})
+    if documents.get('security_evidence') or analysis.get('security_control_observations') or analysis.get('security_control_targets') or (data.get('computers') and not engagement.get('security_controls')):
+        from analysis.security_controls_analyzer import analyze_security_controls, reconcile_hybrid_findings
+        from analysis.tier_analyzer import TierAnalyzer
+        from core.ad_identity import computer_is_domain_controller
+        from core.ad_security import as_text
+        targets = [as_text(row.get('dNSHostName') or row.get('name')) for row in data.get('computers', []) if computer_is_domain_controller(row)]
+        inputs = documents.get('security_evidence') or []
+        if not inputs and (analysis.get('security_control_observations') or analysis.get('security_control_targets')):
+            inputs = [{'schema_version': 1, 'domain': args.domain,
+                       'observations': analysis.get('security_control_observations') or [],
+                       'targets': analysis.get('security_control_targets') or []}]
+        result = analyze_security_controls(inputs, args.domain,
+                                           max_age_days=getattr(args, 'evidence_max_age_days', 30), expected_targets=targets)
+        engagement['security_controls'] = {key: value for key, value in result.items() if key not in ('risks', 'observations')}
+        from analysis.security_controls_analyzer import refresh_security_findings
+        analysis['security_control_risks'] = refresh_security_findings(analysis.get('security_control_risks') or [], result)
+        analysis['security_control_observations'] = result['observations']
+        analysis['security_control_targets'] = result['targets']
+        reconcile_hybrid_findings(analysis.get('hybrid_identity_v2_risks', []), result['observations'])
+        analysis['tier_data'] = TierAnalyzer().analyze_tiers(data.get('users', []), data.get('computers', []), data.get('groups', []), result['observations'])
+        from core.endpoint_graph import attach_endpoint_graph
+        endpoint_graph = attach_endpoint_graph(analysis.get('attack_graph_v2') or {}, data, result['observations'])
+        if endpoint_graph['edges'] or endpoint_graph['gaps']:
+            engagement['endpoint_graph'] = endpoint_graph
+        else:
+            engagement.pop('endpoint_graph', None)
     if getattr(args, 'protocol_target', []) or getattr(args, 'adcs_endpoint', []) or documents.get('protocol_evidence'):
         from core.protocol_checks import verify_protocols
         protocols = verify_protocols(getattr(args, 'protocol_target', []), getattr(args, 'adcs_endpoint', []), scope,
@@ -91,6 +134,8 @@ def apply_engagement(args, data, analysis):
         from analysis.sysvol_analyzer import inspect_remote_shared_files
         if ldap is None:
             raise ValidationError('Remote shared-file inspection requires a live authenticated assessment')
+        if getattr(ldap, 'auth_method', 'ntlm') == 'kerberos':
+            raise ValidationError('Kerberos LDAP credentials cannot be reused for password-based SYSVOL inspection; use offline shared files')
         for host in args.sysvol_host:
             shared.append(inspect_remote_shared_files(host, ldap.username, ldap.password, args.domain, scope,
                                                       timeout=min(args.timeout, 30)))
@@ -124,16 +169,19 @@ def refresh_engagement_graph(args, data, analysis):
     provenance = {'source': 'current_assessment', 'collected_at': context.get('collected_at'),
                   'fresh': context.get('fresh_ldap') is True, 'scope': scope.snapshot()}
     inputs = [(args.domain, local, provenance)] + documents.get('federation', [])
+    if engagement.get('endpoint_graph'):
+        inputs.append((args.domain, engagement['endpoint_graph'], {'source': 'validated_endpoint_evidence', 'fresh': True}))
     saved = getattr(args, '_saved_federated_graph', None)
     if saved and not documents.get('federation') and not documents.get('bloodhound'):
         supplemental = {**saved, 'edges': [edge for edge in saved.get('edges', [])
-                        if (edge.get('snapshot_provenance') or {}).get('source') != 'current_assessment']}
+                        if (edge.get('snapshot_provenance') or {}).get('source') not in
+                        {'current_assessment', 'validated_endpoint_evidence'}]}
         inputs.append((args.domain, supplemental, {'source': 'saved_federation', 'fresh': False}))
     if documents.get('bloodhound'):
         graph = documents['bloodhound']
         inputs.append((args.domain, graph, {'source': 'bloodhound_import', 'fresh': all(row.get('fresh') for row in graph['sources'])}))
         engagement['bloodhound'] = {'sources': graph['sources'], 'nodes': len(graph['nodes']), 'edges': len(graph['edges'])}
-    if saved or documents.get('federation') or documents.get('bloodhound') or getattr(args, 'plan_start', None):
+    if saved or documents.get('federation') or documents.get('bloodhound') or engagement.get('endpoint_graph') or getattr(args, 'plan_start', None):
         from core.graph_import import federate_graphs
         graph = federate_graphs(inputs)
         analysis['federated_graph'] = graph

@@ -3,6 +3,24 @@
 from typing import Any
 
 
+def invalidate_finding_evidence(original: dict[str, Any], state: str) -> dict[str, Any]:
+    """Retain finding identity when prior evidence no longer proves its condition."""
+    from copy import deepcopy
+
+    risk = deepcopy(original)
+    basis = risk.pop('review_basis', None)
+    if isinstance(basis, dict):
+        risk.update(basis)
+    risk.update(requires_validation=True, finding_status='needs_validation', score_excluded=True)
+    evidence = risk.get('evidence')
+    evidence = evidence if isinstance(evidence, dict) else {}
+    evidence.pop('vulnerability_confirmed', None)
+    evidence.pop('validation_review', None)
+    evidence.update(requires_runtime_validation=True, control_state=state)
+    risk['evidence'] = evidence
+    return risk
+
+
 # These LDAP rules identify a component, an absent observation, or a prerequisite.
 # Their output alone does not establish an exploitable configuration.
 VALIDATION_REQUIRED_TYPES = frozenset({
