@@ -235,9 +235,10 @@ def test_domain_replication_ace_reaches_the_domain_and_can_be_simulated_closed()
             "trustee": user["objectSid"],
             "affected_object": "Domain",
             "object_dn": domain_dn,
-            "permission": "DS-Replication-Get-Changes-All",
-            "type": "acl_ds_replication_get_changes_all",
-        }],
+            # Secret replication requires both rights on the same domain.
+            "permission": permission,
+            "type": "acl_" + permission.lower().replace('-', '_'),
+        } for permission in ("DS-Replication-Get-Changes", "DS-Replication-Get-Changes-All")],
     })
     graph = result["graph"]
     assert graph["summary"]["open_path_count"] == 1

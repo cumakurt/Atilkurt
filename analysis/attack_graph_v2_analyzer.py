@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import hashlib
 import logging
 import re
 from typing import Any
@@ -34,12 +35,30 @@ class AttackGraphV2Analyzer:
         dn_to_id: dict[str, str] = {}
         label_to_id: dict[str, str] = {}
 
+        # Keep established IDs for unique labels, but never collapse distinct
+        # directory identities after punctuation/Unicode normalization.
+        object_ids: dict[int, str] = {}
+        candidates: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for kind, objects in (("user", users), ("group", groups), ("computer", computers)):
+            for obj in objects:
+                label = as_text(obj.get("sAMAccountName") or obj.get("name") or obj.get("cn"))
+                if label:
+                    identity = sid_text(obj.get("objectSid")) or as_text(
+                        obj.get("distinguishedName") or obj.get("dn") or label
+                    ).casefold()
+                    candidates[self._node_id(kind, label)].append((id(obj), identity))
+        for base_id, entries in candidates.items():
+            ambiguous = len({identity for _, identity in entries}) > 1
+            for object_id, identity in entries:
+                suffix = ':' + hashlib.sha256(identity.encode()).hexdigest() if ambiguous else ''
+                object_ids[object_id] = base_id + suffix
+
         for kind, objects in (("user", users), ("group", groups), ("computer", computers)):
             for obj in objects:
                 label = as_text(obj.get("sAMAccountName") or obj.get("name") or obj.get("cn"))
                 if not label:
                     continue
-                node_id = self._node_id(kind, label)
+                node_id = object_ids[id(obj)]
                 sensitive = account_has_current_privileged_membership(obj) or (
                     kind == "group" and is_privileged_group_record(obj)
                 )
@@ -59,9 +78,9 @@ class AttackGraphV2Analyzer:
                     dn_to_id[dn.casefold()] = node_id
                     nodes[node_id]["dn"] = dn
 
-        for kind, objects in (("user", users), ("group", groups), ("computer", computers)):
+        for objects in (users, groups, computers):
             for obj in objects:
-                source = self._lookup_object(obj, kind, nodes)
+                source = object_ids.get(id(obj))
                 if not source:
                     continue
                 for parent_dn in as_list(obj.get("memberOf")):
@@ -78,7 +97,7 @@ class AttackGraphV2Analyzer:
             if source and target and nodes[target].get("security_enabled"):
                 self._edge(edges, source, target, "MemberOf", {"evidence": "primaryGroupID"})
         for group in groups:
-            target = self._lookup_object(group, "group", nodes)
+            target = object_ids.get(id(group))
             if not target or not nodes[target].get("security_enabled"):
                 continue
             for member in as_list(group.get("member")):
@@ -109,12 +128,14 @@ class AttackGraphV2Analyzer:
         # inventory nodes. ACL findings name it "Domain" and carry object_dn,
         # so control edges must be resolved only once that node exists.
         self._mark_assessed_domain(nodes)
+        label_candidates: dict[str, set[str]] = defaultdict(set)
         for node_id, node in nodes.items():
             dn = as_text(node.get("dn"))
             if dn:
                 dn_to_id[dn.casefold()] = node_id
             label = as_text(node.get("label"))
-            label_to_id.setdefault(label.casefold(), node_id)
+            label_candidates[label.casefold()].add(node_id)
+        label_to_id = {label: next(iter(ids)) for label, ids in label_candidates.items() if len(ids) == 1}
         self._add_control_edges(
             nodes, edges, analysis_results.get("comprehensive_acl_risks") or [],
             sid_to_id, dn_to_id, label_to_id,
@@ -136,14 +157,14 @@ class AttackGraphV2Analyzer:
         predecessor: dict[str, str] = {}
         distance: dict[str, int] = {}
         queue = deque()
-        for target in targets:
+        for target in sorted(targets):
             queue.append(target)
             distance[target] = 0
         while queue:
             current = queue.popleft()
             if distance[current] >= self.MAX_DEPTH:
                 continue
-            for parent in reverse_adj.get(current, set()):
+            for parent in sorted(reverse_adj.get(current, set())):
                 if parent in distance:
                     continue
                 distance[parent] = distance[current] + 1
@@ -235,22 +256,47 @@ class AttackGraphV2Analyzer:
         findings: list[dict[str, Any]], sid_to_id: dict[str, str], dn_to_id: dict[str, str],
         label_to_id: dict[str, str],
     ) -> None:
+        replication: dict[tuple[str, str], set[str]] = defaultdict(set)
+        required = {'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All'}
         for finding in findings:
             if requires_validation(finding) or is_disproved(finding):
                 continue
             source = sid_to_id.get(as_text(finding.get("trustee")))
             target = self._control_target(finding, dn_to_id, label_to_id)
             if source in nodes and target in nodes:
+                permission = str(finding.get('permission') or '')
+                if permission.startswith('DS-Replication-'):
+                    if nodes[target].get('kind') == 'domain':
+                        replication[(source, target)].add(permission)
+                    continue
+                if nodes[target].get('kind') == 'domain' and permission not in {
+                    'GenericAll', 'WriteDACL', 'WriteOwner', 'AllExtendedRights',
+                }:
+                    # Writing an arbitrary domain attribute does not grant
+                    # replication or administrative control of the domain.
+                    continue
                 self._edge(edges, source, target, "Controls", {
                     "permission": finding.get("permission"), "risk_type": finding.get("type"),
+                })
+        for (source, target), permissions in replication.items():
+            if required <= permissions:
+                # Model the conjunction as one capability; two parallel edges
+                # would incorrectly model either replication right as enough.
+                self._edge(edges, source, target, 'Controls', {
+                    'permission': 'DS-Replication-Get-Changes + DS-Replication-Get-Changes-All',
+                    'required_permissions': sorted(required), 'risk_type': 'acl_dcsync',
                 })
 
     @staticmethod
     def _control_target(finding: dict[str, Any], dn_to_id: dict[str, str], label_to_id: dict[str, str]) -> str | None:
+        explicit_dn = False
         for key in ("object_dn", "distinguishedName", "target_dn"):
             dn = as_text(finding.get(key)).casefold()
+            explicit_dn = explicit_dn or bool(dn)
             if dn and dn in dn_to_id:
                 return dn_to_id[dn]
+        if explicit_dn:
+            return None
         return label_to_id.get(as_text(finding.get("affected_object")).casefold())
 
     def _merge_component_graphs(

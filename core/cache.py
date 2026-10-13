@@ -4,6 +4,7 @@ LRU cache implementation for LDAP queries and other expensive operations
 """
 
 import hashlib
+from copy import deepcopy
 import json
 import logging
 import threading
@@ -236,7 +237,9 @@ class LDAPQueryCache:
             page_size=page_size,
             enable_paging=enable_paging,
         )
-        return self.cache.get(key)
+        # Consumers annotate and redact directory records in place. Neither a
+        # returned result nor the caller's original list may mutate evidence.
+        return deepcopy(self.cache.get(key))
 
     def set_query_result(
         self,
@@ -266,7 +269,7 @@ class LDAPQueryCache:
             page_size=page_size,
             enable_paging=enable_paging,
         )
-        self.cache.set(key, result, ttl)
+        self.cache.set(key, deepcopy(result), ttl)
 
     def _make_key(
         self,

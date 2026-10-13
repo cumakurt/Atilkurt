@@ -1122,8 +1122,10 @@ def generate_reports(
     if getattr(args, 'redact_secrets', True):
         redact_assessment_secrets(data, analysis)
         from core.directory_redaction import redact_nested_secrets
+        data = redact_nested_secrets(data)
         analysis = redact_nested_secrets(analysis)
         scoring = redact_nested_secrets(scoring)
+        compliance = redact_nested_secrets(compliance)
     refresh_engagement_graph(args, data, analysis)
 
     with product_workspace_transaction(args, data, analysis, scoring) as workspace:
@@ -1369,8 +1371,10 @@ def build_checkpoint_payload(
     if getattr(args, 'redact_secrets', True):
         redact_assessment_secrets(data, analysis)
         from core.directory_redaction import redact_nested_secrets
+        data = redact_nested_secrets(data)
         analysis = redact_nested_secrets(analysis)
         scoring = redact_nested_secrets(scoring)
+        compliance = redact_nested_secrets(compliance)
     return {
         "domain": args.domain,
         "created_at": datetime.now(timezone.utc).isoformat(),

@@ -734,6 +734,14 @@ def build_saas_report(
                 sidebarBtn.classList.add('active');
                 sidebarBtn.setAttribute('aria-selected', 'true');
             }}
+            // The overlay sidebar covers the report. Leaving it open makes the
+            // selected section and every control under it ignore clicks.
+            var sb = document.getElementById('sidebar');
+            var bd = document.getElementById('sidebar-backdrop');
+            if (window.innerWidth < 992) {{
+                if (sb) sb.classList.remove('open');
+                if (bd) bd.classList.remove('active');
+            }}
             var cardsEl = document.getElementById('overview-cards');
             if (cardsEl) cardsEl.style.display = (paneId === 'dashboard') ? '' : 'none';
             document.getElementById('main-content').scrollIntoView({{ behavior: 'smooth', block: 'start' }});

@@ -322,7 +322,7 @@ class CISODashboardGenerator:
 
     def _calculate_password_statistics(self, users):
         """Calculate password-related statistics."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         stats = {
             'never_changed': 0,
@@ -334,7 +334,7 @@ class CISODashboardGenerator:
             'details': []
         }
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         for user in users:
             pwd_last_set = user.get('pwdLastSet')
@@ -373,9 +373,10 @@ class CISODashboardGenerator:
             if not pwd_date:
                 continue
 
-            # Remove timezone for calculation
-            if pwd_date.tzinfo:
-                pwd_date = pwd_date.replace(tzinfo=None)
+            # LDAP naive values are UTC; offsets in offline values identify
+            # the same instant and must not be discarded at age thresholds.
+            pwd_date = (pwd_date.replace(tzinfo=timezone.utc) if pwd_date.tzinfo is None
+                        else pwd_date.astimezone(timezone.utc))
 
             # Calculate age
             age_days = (now - pwd_date).days
@@ -398,8 +399,8 @@ class CISODashboardGenerator:
                                 created_date = None
 
                 if created_date:
-                    if created_date.tzinfo:
-                        created_date = created_date.replace(tzinfo=None)
+                    created_date = (created_date.replace(tzinfo=timezone.utc) if created_date.tzinfo is None
+                                    else created_date.astimezone(timezone.utc))
                     # If password set date is within 1 day of creation, consider it same
                     if abs((pwd_date - created_date).days) <= 1:
                         stats['same_as_creation'] += 1

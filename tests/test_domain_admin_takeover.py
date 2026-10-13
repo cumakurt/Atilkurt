@@ -264,6 +264,8 @@ class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):
             except OSError:
                 pass
         self.assertIn("domain-admin-takeover", report)
+        self.assertIn("bd.classList.remove('active')", report)
+        self.assertIn("window.innerWidth < 992", report)
         self.assertIn("Domain Admin Map", report)
         self.assertIn("Domain Admin takeover map", report)
         self.assertIn("DCSync", report)

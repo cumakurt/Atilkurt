@@ -6,7 +6,7 @@ Enables resume capability and incremental scanning
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 from pathlib import Path
 import hashlib
@@ -80,7 +80,7 @@ class ProgressPersistence:
             str: Checkpoint ID
         """
         if timestamp is None:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         safe_domain = "".join(
             char if char.isalnum() or char in "._-" else "_"
             for char in str(domain)
@@ -103,7 +103,7 @@ class ProgressPersistence:
 
         checkpoint_data = {
             'checkpoint_id': checkpoint_id,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'data': data
         }
 
@@ -222,7 +222,7 @@ class ProgressPersistence:
             'items': items,
             'count': len(items),
             'completed': completed,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
         self.save_checkpoint(checkpoint_id, checkpoint_data)

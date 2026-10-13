@@ -41,6 +41,16 @@ def filetime_utc(value: Any) -> datetime | None:
         return None
 
 
+def directory_time_utc(value: Any) -> datetime | None:
+    """Normalize live datetimes, offline ISO strings and raw AD FILETIME."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            pass
+    return filetime_utc(value)
+
+
 def as_list(value: Any) -> list[Any]:
     """Normalize a single- or multi-valued LDAP attribute."""
     if value in (None, ""):

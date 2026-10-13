@@ -101,3 +101,16 @@ Follow-up details: `docs/AUDIT_2026-10-13.md`. Private evidence: `output/audit-2
 ## Review
 
 The fast profile omits `attack_graph_v2`, so simulation stays empty there by design. A full lab scan now shows one exposed source. Removing that account's three domain replication edges drops exposure to zero; reset restores it.
+
+# Full local review — 2026-10-13
+
+- [x] Reproduce and fix domain capability, graph identity and explicit-DN matching defects.
+- [x] Close redaction gaps in nested secret fields, report inputs and checkpoints.
+- [x] Isolate cached LDAP evidence from mutable analysis/publication results.
+- [x] Align directory privilege display and age calculations with shared identity/UTC rules.
+- [x] Index directory risk associations and measure before/after rendering time.
+- [x] Verify 903 tests, 49 labelled cases, lint, dependency consistency, wheel and EN/TR browser navigation.
+
+Details, compatibility changes and untested live scenarios: `docs/AUDIT_2026-10-13_FULL.md`.
+The earlier three independent replication edges are now one joint capability;
+the prior single-right graph fixture overstated what its evidence established.

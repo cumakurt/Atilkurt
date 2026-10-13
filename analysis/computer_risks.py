@@ -4,10 +4,10 @@ Analyzes computer objects for security risks including EOL OS detection
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from core.ad_identity import computer_has_unexpected_unconstrained_delegation
 from core.constants import BROAD_DELEGATION_SERVICE_THRESHOLD, RiskTypes, Severity
-from core.ad_security import as_list
+from core.ad_security import as_list, directory_time_utc
 
 logger = logging.getLogger(__name__)
 
@@ -75,35 +75,17 @@ class ComputerRiskAnalyzer:
             computer: Computer dictionary to enrich
         """
         # Calculate days since last logon
-        last_logon = computer.get('lastLogonTimestamp')
-        if last_logon:
-            try:
-                if isinstance(last_logon, str):
-                    last_logon = datetime.fromisoformat(last_logon.replace('Z', '+00:00'))
-                if isinstance(last_logon, datetime):
-                    days_since_logon = (datetime.now() - last_logon.replace(tzinfo=None)).days
-                    computer['daysSinceLastLogon'] = days_since_logon
+        now = datetime.now(timezone.utc)
+        last_logon = directory_time_utc(computer.get('lastLogonTimestamp'))
+        if last_logon is not None:
+            days_since_logon = (now - last_logon).days
+            computer['daysSinceLastLogon'] = days_since_logon
+            for days in (10, 30, 60, 90):
+                computer[f'inactiveFor{days}Days'] = days_since_logon >= days
 
-                    # Check if inactive for specific periods
-                    computer['inactiveFor10Days'] = days_since_logon >= 10
-                    computer['inactiveFor30Days'] = days_since_logon >= 30
-                    computer['inactiveFor60Days'] = days_since_logon >= 60
-                    computer['inactiveFor90Days'] = days_since_logon >= 90
-            except Exception:
-                pass
-
-        # Check if computer was never used (no lastLogonTimestamp or very old whenCreated)
-        when_created = computer.get('whenCreated')
-        if when_created and not last_logon:
-            try:
-                if isinstance(when_created, str):
-                    when_created = datetime.fromisoformat(when_created.replace('Z', '+00:00'))
-                if isinstance(when_created, datetime):
-                    days_since_created = (datetime.now() - when_created.replace(tzinfo=None)).days
-                    # Consider never used if created more than 30 days ago and no logon
-                    computer['neverUsed'] = days_since_created > 30
-            except Exception:
-                pass
+        when_created = directory_time_utc(computer.get('whenCreated'))
+        if when_created is not None and not computer.get('lastLogonTimestamp'):
+            computer['neverUsed'] = (now - when_created).days > 30
 
     def _check_eol_os(self, computer):
         """Check for End of Life operating systems."""

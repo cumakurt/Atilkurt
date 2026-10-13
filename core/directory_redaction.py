@@ -26,11 +26,20 @@ def redact_credential_text(value: str) -> str:
 def redact_nested_secrets(value: Any) -> Any:
     """Copy publication evidence with secrets removed, preserving binary attributes."""
     if isinstance(value, dict):
-        return {key: '[REDACTED]' if SECRET_KEYS.search(str(key)) and isinstance(item, (str, bytes))
+        return {key: _redact_secret_value(item) if SECRET_KEYS.search(str(key))
                 else redact_nested_secrets(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact_nested_secrets(item) for item in value]
     return redact_credential_text(value) if isinstance(value, str) else value
+
+
+def _redact_secret_value(value: Any) -> Any:
+    """LDAP attributes and imported evidence can hold multivalued secrets."""
+    if isinstance(value, dict):
+        return {key: _redact_secret_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_secret_value(item) for item in value]
+    return value if value is None or value == '' else '[REDACTED]'
 
 
 def redact_directory_record(record: dict[str, Any]) -> None:

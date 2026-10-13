@@ -2,11 +2,14 @@
 Mixin for directory objects section (users, groups, computers tables).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+from collections import defaultdict
 import html as html_stdlib
 import json
 
 from reporting.html_safety import json_for_html_script
+from core.ad_identity import first_ldap_rdn, group_is_role, is_privileged_group_record, is_security_group
+from core.ad_security import directory_time_utc
 
 
 
@@ -33,6 +36,13 @@ class DirectorySectionMixin:
             else:
                 return data
 
+        risks_by_object = defaultdict(list)
+        for risk in risks:
+            risks_by_object[risk.get('affected_object')].append(risk)
+        groups_by_dn = {str(group.get('distinguishedName') or group.get('dn') or '').casefold(): group
+                        for group in groups if group.get('distinguishedName') or group.get('dn')}
+        now = datetime.now(timezone.utc)
+
         # Prepare users data with group memberships
         users_data = []
         for user in users:
@@ -41,69 +51,39 @@ class DirectorySectionMixin:
                 member_of = [member_of] if member_of else []
 
             # Get user risks
-            user_risks = [r for r in risks if r.get('affected_object') == user.get('sAMAccountName')]
+            user_risks = risks_by_object.get(user.get('sAMAccountName'), [])
 
             # Extract group names
-            group_names = []
-            for group_dn in member_of:
-                if 'CN=' in group_dn:
-                    try:
-                        group_name = group_dn.split('CN=')[1].split(',')[0]
-                        group_names.append(group_name)
-                    except Exception:
-                        pass
+            group_names = [first_ldap_rdn(group_dn) for group_dn in member_of]
 
             # Extract admin group names
             domain_admin_groups = []
             enterprise_admin_groups = []
             schema_admin_groups = []
             for group_dn in member_of:
-                group_str = str(group_dn).upper()
-                if 'DOMAIN ADMINS' in group_str:
-                    try:
-                        group_name = group_dn.split('CN=')[1].split(',')[0] if 'CN=' in group_dn else str(group_dn)
-                        domain_admin_groups.append(group_name)
-                    except Exception:
-                        pass
-                if 'ENTERPRISE ADMINS' in group_str:
-                    try:
-                        group_name = group_dn.split('CN=')[1].split(',')[0] if 'CN=' in group_dn else str(group_dn)
-                        enterprise_admin_groups.append(group_name)
-                    except Exception:
-                        pass
-                if 'SCHEMA ADMINS' in group_str:
-                    try:
-                        group_name = group_dn.split('CN=')[1].split(',')[0] if 'CN=' in group_dn else str(group_dn)
-                        schema_admin_groups.append(group_name)
-                    except Exception:
-                        pass
+                group = groups_by_dn.get(str(group_dn).casefold(), {'distinguishedName': group_dn})
+                if not is_security_group(group):
+                    continue
+                for role, destination in (('Domain Admins', domain_admin_groups),
+                                          ('Enterprise Admins', enterprise_admin_groups),
+                                          ('Schema Admins', schema_admin_groups)):
+                    if group_is_role(group, role):
+                        destination.append(group.get('name') or first_ldap_rdn(group_dn))
 
             # Format last logon
             last_logon_display = 'N/A'
             days_since_logon = None
-            if user.get('lastLogonTimestamp'):
-                try:
-                    last_logon = user.get('lastLogonTimestamp')
-                    if isinstance(last_logon, str):
-                        last_logon = datetime.fromisoformat(last_logon.replace('Z', '+00:00'))
-                    if isinstance(last_logon, datetime):
-                        last_logon_display = last_logon.strftime('%Y-%m-%d %H:%M:%S')
-                        days_since_logon = (datetime.now() - last_logon.replace(tzinfo=None)).days
-                except Exception:
-                    pass
+            last_logon = directory_time_utc(user.get('lastLogonTimestamp'))
+            if last_logon is not None:
+                last_logon_display = last_logon.strftime('%Y-%m-%d %H:%M:%S UTC')
+                days_since_logon = (now - last_logon).days
 
             # Format account age
             account_age_display = 'N/A'
-            if user.get('whenCreated'):
-                try:
-                    when_created = user.get('whenCreated')
-                    if isinstance(when_created, str):
-                        when_created = datetime.fromisoformat(when_created.replace('Z', '+00:00'))
-                    if isinstance(when_created, datetime):
-                        account_age_days = (datetime.now() - when_created.replace(tzinfo=None)).days
-                        account_age_display = f"{account_age_days} days"
-                except Exception:
-                    pass
+            when_created = directory_time_utc(user.get('whenCreated'))
+            if when_created is not None:
+                account_age_days = (now - when_created).days
+                account_age_display = f"{account_age_days} days"
 
             # Check SPN
             spns = user.get('servicePrincipalName', []) or []
@@ -181,7 +161,7 @@ class DirectorySectionMixin:
                     member_names.append(str(member_dn))
 
             # Get group risks
-            group_risks = [r for r in risks if r.get('affected_object') == group.get('name')]
+            group_risks = risks_by_object.get(group.get('name'), [])
 
             groups_data.append({
                 'name': group.get('name', 'N/A'),
@@ -189,14 +169,13 @@ class DirectorySectionMixin:
                 'members': member_names,  # All members, not limited
                 'risk_count': len(group_risks),
                 'critical_risks': len([r for r in group_risks if r.get('severity', '').lower() == 'critical']),
-                'is_privileged': any(priv in group.get('name', '').upper() for priv in
-                                    ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'ACCOUNT OPERATORS', 'BACKUP OPERATORS'])
+                'is_privileged': is_security_group(group) and is_privileged_group_record(group)
             })
 
         # Prepare computers data
         computers_data = []
         for computer in computers:
-            comp_risks = [r for r in risks if r.get('affected_object') == computer.get('name')]
+            comp_risks = risks_by_object.get(computer.get('name'), [])
             computers_data.append({
                 'name': computer.get('name', 'N/A'),
                 'operatingSystem': computer.get('operatingSystem', 'Unknown'),
