@@ -23,6 +23,19 @@ logger = logging.getLogger(__name__)
 # and is unused by the analyzers.
 _NTSECURITYDESCRIPTOR = "ntsecuritydescriptor"
 _SD_FLAGS_OWNER_GROUP_DACL = 0x07
+# ldap3's read_only flag rejects modify, delete and rename, but not add.
+_DIRECTORY_WRITE_METHODS = ("add", "delete", "modify", "modify_dn")
+
+
+def _refuse_directory_modification(connection):
+    """Stop a bound client from sending a directory update."""
+    connection.read_only = True
+
+    def reject(*_args, **_kwargs):
+        raise LDAPConnectionError("LDAP connection is read-only; directory modifications are refused")
+
+    for name in _DIRECTORY_WRITE_METHODS:
+        setattr(connection, name, reject)
 
 
 def _security_descriptor_controls(attributes: Optional[list[str]]):
@@ -218,7 +231,7 @@ class LDAPConnection:
                     candidate_connection = None
                     try:
                         options = dict(user=self.username, password=self.password,
-                                       authentication=auth_method, auto_referrals=False,
+                                       authentication=auth_method, auto_referrals=False, read_only=True,
                                        auto_bind=not self.start_tls, receive_timeout=self.base_timeout)
                         if auth_method == SASL:
                             options.update(sasl_mechanism=KERBEROS, password=None)
@@ -235,6 +248,7 @@ class LDAPConnection:
                             raise LDAPConnectionError(
                                 f"LDAP {auth_method} bind did not establish a bound connection"
                             )
+                        _refuse_directory_modification(candidate_connection)
                         self.connection = candidate_connection
 
                         # Connection successful

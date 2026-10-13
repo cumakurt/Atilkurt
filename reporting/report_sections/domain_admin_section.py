@@ -143,8 +143,8 @@ class DomainAdminSectionMixin:
                 This view is written the way an internal penetration test is scoped: every technique that
                 can become Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a
                 privileged certificate). Each open path is backed by findings from this scan. Every path
-                includes a detailed PoC roadmap and the verification and authorized-assessment commands
-                a tester would use. Commands are templates for authorized engagements only.
+                includes a step-by-step procedure. Each step states what to do, the example command,
+                and the evidence to record. Commands are templates for authorized engagements only.
             </p>
             <p class="text-muted small mt-2 mb-0">
                 Domain: <code>{domain_label}</code> | DC: <code>{dc_label}</code>.
@@ -561,12 +561,19 @@ class DomainAdminSectionMixin:
                 if expected
                 else ""
             )
+            command_html = self._da_command_items(step.get("commands") or [])
+            command_block = (
+                f'<div class="mt-2"><strong>Example command:</strong>{command_html}</div>'
+                if command_html
+                else ""
+            )
             items.append(
                 f"""<div class="da-poc-step da-stage">
                     <div class="da-num">{idx}</div>
                     <div>
                         <strong>{title}</strong>
-                        <div class="da-why">{detail}</div>
+                        <div class="da-why"><strong>What to do:</strong> {detail}</div>
+                        {command_block}
                         {expected_html}
                     </div>
                 </div>"""
@@ -574,7 +581,7 @@ class DomainAdminSectionMixin:
         return f"""
             <h6 class="mt-3">PoC roadmap</h6>
             <p class="small text-muted">
-                Finding-specific proof path from this scan to Domain Admin (or equivalent).
+                Follow the steps in order. Record the expected evidence before continuing.
                 Stop after evidence is recorded; do not persist privileged access.
             </p>
             <div class="da-poc">{''.join(items)}</div>

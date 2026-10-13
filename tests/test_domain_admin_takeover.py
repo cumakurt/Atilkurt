@@ -10,7 +10,7 @@ from analysis.domain_admin_takeover_analyzer import (
     DA_PATH_CATALOG,
     DomainAdminTakeoverAnalyzer,
 )
-from analysis.domain_admin_takeover_playbooks import DA_PATH_PLAYBOOKS
+from analysis.domain_admin_takeover_playbooks import DA_PATH_PLAYBOOKS, playbook_for
 from analysis.registry import (
     CONSOLIDATION_RISK_KEYS,
     EXPORT_KEY_TO_ANALYSIS_KEY,
@@ -37,6 +37,8 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
             playbook = DA_PATH_PLAYBOOKS[spec["id"]]
             self.assertTrue(playbook.get("poc_roadmap"))
             self.assertTrue(playbook.get("verify_commands") or playbook.get("assessment_commands"))
+            rendered = playbook_for(spec["id"])
+            self.assertTrue(any(step.get("commands") for step in rendered["poc_roadmap"]))
 
     def test_dcsync_finding_opens_dcsync_path(self):
         result = DomainAdminTakeoverAnalyzer().analyze(
@@ -62,6 +64,9 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
         self.assertGreaterEqual(len(path["poc_roadmap"]), 3)
         self.assertTrue(path["verify_commands"])
         self.assertTrue(path["assessment_commands"])
+        self.assertIn("dsacls", path["poc_roadmap"][0]["commands"][0]["command"])
+        self.assertTrue(any("secretsdump.py" in item["command"] for item in path["poc_roadmap"][-2]["commands"]))
+        self.assertEqual(path["poc_roadmap"][-1]["commands"][-1]["id"], "retest_dcsync_dsacls")
         joined = "\n".join(item["command"] for item in path["assessment_commands"])
         self.assertIn("helper", joined)
         self.assertIn("10.0.0.5", joined)
@@ -152,6 +157,8 @@ class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):
         self.assertIn("helper", html)
         self.assertIn("How to break the path", html)
         self.assertIn("PoC roadmap", html)
+        self.assertIn("What to do:", html)
+        self.assertIn("Example command:", html)
         self.assertIn("Usable commands", html)
         self.assertIn("Finding verification commands", html)
         self.assertIn("Authorized assessment commands", html)
@@ -213,6 +220,9 @@ class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):
             inline_assets=False,
         )
         self.assertIn("PoC yol haritası", report)
+        self.assertIn("Yapılacak işlem:", report)
+        self.assertIn("Örnek komut:", report)
+        self.assertIn("Yeniden test — düzeltmeden sonra doğrulama komutunu tekrar çalıştırın", report)
         self.assertIn("Kullanılabilir komutlar", report)
         self.assertIn("secretsdump.py", report)
         self.assertIn("helper", report)

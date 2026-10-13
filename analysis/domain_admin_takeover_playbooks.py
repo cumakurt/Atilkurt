@@ -1646,12 +1646,61 @@ DA_PATH_PLAYBOOKS: dict[str, dict[str, Any]] = {
 }
 
 
+def _retest_command(verify_commands: list[dict[str, str]]) -> dict[str, str] | None:
+    """Repeat the first read-only check after the path is closed."""
+    if not verify_commands:
+        return _cmd(
+            "retest_rescan",
+            "Retest — rerun the assessment and confirm this path is closed",
+            "# After remediation, rerun the assessment against the same domain controller.\n"
+            "# AtilKurt.py -d {DOMAIN} -u USER --dc-ip {DC_IP}",
+        )
+    source = verify_commands[0]
+    return _cmd(
+        "retest_" + str(source.get("id") or "verify"),
+        "Retest — run the verification command again after remediation",
+        str(source.get("command") or ""),
+    )
+
+
+def _commands_for_steps(
+    steps: list[dict[str, Any]],
+    verify_commands: list[dict[str, str]],
+    assessment_commands: list[dict[str, str]],
+) -> None:
+    """Place each example command on the roadmap step where it is used.
+
+    Confirmation commands sit on the first step. Authorized proof commands sit
+    on the step immediately before closure. The closing step repeats a
+    read-only check so the operator can see that the path is gone.
+    """
+    count = len(steps)
+    if not count:
+        return
+    buckets: list[list[dict[str, str]]] = [[] for _ in steps]
+    if verify_commands:
+        buckets[0].extend(dict(item) for item in verify_commands)
+    if assessment_commands:
+        proof_index = 0 if count == 1 else (count - 1 if count == 2 else count - 2)
+        buckets[proof_index].extend(dict(item) for item in assessment_commands)
+    retest = _retest_command(verify_commands)
+    if retest and retest.get("command"):
+        buckets[-1].append(retest)
+    for step, commands in zip(steps, buckets):
+        if commands and not step.get("commands"):
+            step["commands"] = commands
+
+
 def playbook_for(path_id: str) -> dict[str, Any]:
     """Return a deep-copy-safe playbook dict for a catalog path id."""
     spec = DA_PATH_PLAYBOOKS.get(path_id) or {}
+    roadmap = [dict(item) for item in spec.get("poc_roadmap") or []]
+    verify_commands = [dict(item) for item in spec.get("verify_commands") or []]
+    assessment_commands = [dict(item) for item in spec.get("assessment_commands") or []]
+    _commands_for_steps(roadmap, verify_commands, assessment_commands)
     return {
-        "poc_roadmap": [dict(item) for item in spec.get("poc_roadmap") or []],
-        "verify_commands": [dict(item) for item in spec.get("verify_commands") or []],
-        "assessment_commands": [dict(item) for item in spec.get("assessment_commands") or []],
+        "poc_roadmap": roadmap,
+        "verify_commands": verify_commands,
+        "assessment_commands": assessment_commands,
         "tools": list(spec.get("tools") or []),
     }

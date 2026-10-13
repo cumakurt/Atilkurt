@@ -578,6 +578,14 @@ TEXT_TRANSLATIONS_TR = {
     "DA equivalent": "Etki alanı yöneticisine eşdeğer", "Enables DA targeting": "Etki alanı yöneticisinin hedeflenmesini sağlar",
     "open": "açık", "not observed": "gözlemlenmedi",
     "PoC roadmap": "PoC yol haritası", "Expected evidence:": "Beklenen kanıt:",
+    "What to do:": "Yapılacak işlem:",
+    "Example command:": "Örnek komut:",
+    "Follow the steps in order. Record the expected evidence before continuing. Stop after evidence is recorded; do not persist privileged access.":
+        "Adımları sırayla uygulayın. Devam etmeden önce beklenen kanıtı kaydedin. Kanıt kaydedildikten sonra durun; ayrıcalıklı erişimi sürdürmeyin.",
+    "Retest — run the verification command again after remediation":
+        "Yeniden test — düzeltmeden sonra doğrulama komutunu tekrar çalıştırın",
+    "Retest — rerun the assessment and confirm this path is closed":
+        "Yeniden test — değerlendirmeyi tekrar çalıştırın ve bu yolun kapandığını doğrulayın",
     "Usable commands": "Kullanılabilir komutlar",
     "Finding verification commands": "Bulgu doğrulama komutları",
     "Authorized assessment commands": "Yetkili değerlendirme komutları",
@@ -1196,8 +1204,8 @@ def localize_html_document(html: str, language: str = "en") -> str:
         (
             "Bu görünüm iç sızma testi kapsamına göre hazırlanmıştır. Etki Alanı Yöneticisine "
             "veya eşdeğer denetime dönüşebilecek teknikleri, bu taramadaki kanıtlarla birlikte "
-            "gösterir. Her yol, ayrıntılı bir PoC yol haritası ile doğrulama ve yetkili "
-            "değerlendirme komutlarını içerir. Komutlar yalnızca yetkili çalışmalar için şablondur."
+            "gösterir. Her yol, adım adım ne yapılacağını, örnek komutu ve kaydedilecek kanıtı "
+            "içerir. Komutlar yalnızca yetkili çalışmalar için şablondur."
         ),
         localized,
         flags=re.IGNORECASE | re.DOTALL,

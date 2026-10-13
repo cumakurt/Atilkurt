@@ -104,18 +104,21 @@ class AttackGraphV2Analyzer:
                     nodes[child]["privilege_basis"] = "existing_nested_membership"
                     membership_queue.append(child)
 
-        for finding in analysis_results.get("comprehensive_acl_risks") or []:
-            if requires_validation(finding) or is_disproved(finding):
-                continue
-            trustee_sid = as_text(finding.get("trustee"))
-            source = sid_to_id.get(trustee_sid)
-            target = label_to_id.get(as_text(finding.get("affected_object")).casefold())
-            if source and target:
-                self._edge(edges, source, target, "Controls", {
-                    "permission": finding.get("permission"), "risk_type": finding.get("type"),
-                })
-
         self._merge_component_graphs(nodes, edges, analysis_results)
+        # The domain naming context is created by the trust graph, after the
+        # inventory nodes. ACL findings name it "Domain" and carry object_dn,
+        # so control edges must be resolved only once that node exists.
+        self._mark_assessed_domain(nodes)
+        for node_id, node in nodes.items():
+            dn = as_text(node.get("dn"))
+            if dn:
+                dn_to_id[dn.casefold()] = node_id
+            label = as_text(node.get("label"))
+            label_to_id.setdefault(label.casefold(), node_id)
+        self._add_control_edges(
+            nodes, edges, analysis_results.get("comprehensive_acl_risks") or [],
+            sid_to_id, dn_to_id, label_to_id,
+        )
         adjacency: dict[str, set[str]] = defaultdict(set)
         for edge in edges.values():
             # A trust is an authentication relationship, not an object-control
@@ -216,6 +219,39 @@ class AttackGraphV2Analyzer:
         }
         graph["opengraph"] = self._opengraph(graph_nodes, graph_edges)
         return {"risks": risks, "graph": graph}
+
+    @staticmethod
+    def _mark_assessed_domain(nodes: dict[str, dict[str, Any]]) -> None:
+        """Control of the assessed domain naming context is Tier-0."""
+        for node_id, node in nodes.items():
+            if node.get("kind") != "domain":
+                continue
+            node["privileged"] = True
+            if not node.get("dn") and str(node_id).startswith("domain:"):
+                node["dn"] = str(node_id).split(":", 1)[1]
+
+    def _add_control_edges(
+        self, nodes: dict[str, dict[str, Any]], edges: dict[tuple[str, str, str, str], dict[str, Any]],
+        findings: list[dict[str, Any]], sid_to_id: dict[str, str], dn_to_id: dict[str, str],
+        label_to_id: dict[str, str],
+    ) -> None:
+        for finding in findings:
+            if requires_validation(finding) or is_disproved(finding):
+                continue
+            source = sid_to_id.get(as_text(finding.get("trustee")))
+            target = self._control_target(finding, dn_to_id, label_to_id)
+            if source in nodes and target in nodes:
+                self._edge(edges, source, target, "Controls", {
+                    "permission": finding.get("permission"), "risk_type": finding.get("type"),
+                })
+
+    @staticmethod
+    def _control_target(finding: dict[str, Any], dn_to_id: dict[str, str], label_to_id: dict[str, str]) -> str | None:
+        for key in ("object_dn", "distinguishedName", "target_dn"):
+            dn = as_text(finding.get(key)).casefold()
+            if dn and dn in dn_to_id:
+                return dn_to_id[dn]
+        return label_to_id.get(as_text(finding.get("affected_object")).casefold())
 
     def _merge_component_graphs(
         self, nodes: dict[str, dict[str, Any]], edges: dict[tuple[str, str, str, str], dict[str, Any]],

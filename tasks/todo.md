@@ -92,3 +92,12 @@ Detailed findings and validation limits: `docs/AUDIT_2026-10-12.md`. Private liv
 - [ ] Lab operator: restore LDAPS/StartTLS; current reset/unavailable results remain failed checks.
 
 Follow-up details: `docs/AUDIT_2026-10-13.md`. Private evidence: `output/audit-20261013/`.
+
+# Remediation simulation live check — 2026-10-13
+
+- [x] Bind domain replication ACEs to the domain naming context and treat that node as Tier-0.
+- [x] Confirm the lab report lists the control edge and that closing it changes the before/after counts.
+
+## Review
+
+The fast profile omits `attack_graph_v2`, so simulation stays empty there by design. A full lab scan now shows one exposed source. Removing that account's three domain replication edges drops exposure to zero; reset restores it.

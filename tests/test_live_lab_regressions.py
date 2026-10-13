@@ -8,6 +8,7 @@ import pytest
 from analysis.adcs_control_plane_analyzer import ADCSControlPlaneAnalyzer
 from analysis.assessment_da_paths import build_assessment_account_view
 from analysis.attack_graph_v2_analyzer import AttackGraphV2Analyzer
+from analysis.remediation_simulator import edge_id, simulate_remediation
 from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
 from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
 from analysis.sccm_attack_surface_analyzer import SCCMAttackSurfaceAnalyzer
@@ -219,6 +220,34 @@ def test_legacy_playbook_does_not_embed_command_metacharacters(target):
     result = fill_playbook_fields({"detail": "{TARGET}", "command": "Get-ADUser {TARGET}"}, target=target)
     assert result["detail"] == target
     assert result["command"] == "Get-ADUser TARGET_REQUIRES_MANUAL_REPLACEMENT"
+
+
+def test_domain_replication_ace_reaches_the_domain_and_can_be_simulated_closed():
+    user, groups = inventory()
+    user["memberOf"] = []
+    domain_dn = "DC=lab,DC=local"
+    result = AttackGraphV2Analyzer().analyze([user], groups, [], {
+        "trust_security_v2_graph": {
+            "nodes": [{"id": "domain:" + domain_dn.casefold(), "label": domain_dn, "kind": "domain"}],
+            "edges": [],
+        },
+        "comprehensive_acl_risks": [{
+            "trustee": user["objectSid"],
+            "affected_object": "Domain",
+            "object_dn": domain_dn,
+            "permission": "DS-Replication-Get-Changes-All",
+            "type": "acl_ds_replication_get_changes_all",
+        }],
+    })
+    graph = result["graph"]
+    assert graph["summary"]["open_path_count"] == 1
+    assert graph["shortest_paths"][0]["labels"] == ["alice", domain_dn]
+    control = next(edge for edge in graph["edges"] if edge["type"] == "Controls")
+    simulation = simulate_remediation(graph)
+    assert simulation["before"]["exposed_sources"] == 1
+    closed = simulate_remediation(graph, [edge_id(control)])
+    assert closed["after"]["exposed_sources"] == 0
+    assert closed["closed_sources"]
 
 
 def test_writable_domain_controller_primary_group_is_tier0():

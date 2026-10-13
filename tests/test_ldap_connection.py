@@ -102,6 +102,29 @@ class TestLDAPTransportSecurity(unittest.TestCase):
         self.assertEqual(connection_mock.call_count, 1)
         self.assertEqual(connection_mock.call_args.kwargs["authentication"], NTLM)
 
+    @patch("core.ldap_connection.Connection")
+    @patch("core.ldap_connection.Server")
+    def test_bound_connection_rejects_directory_writes(self, server_mock, connection_mock):
+        """A bound client cannot add, change, delete or rename a directory object."""
+        server_mock.return_value = Mock()
+        client = Mock()
+        client.bound = True
+        client.read_only = False
+        attempted = []
+        for name in ("add", "delete", "modify", "modify_dn"):
+            getattr(client, name).side_effect = lambda *args, name=name, **kwargs: attempted.append(name)
+        connection_mock.return_value = client
+        ldap = build_connection(use_ssl=True)
+
+        self.assertTrue(ldap.connect())
+
+        self.assertTrue(connection_mock.call_args.kwargs["read_only"])
+        self.assertTrue(client.read_only)
+        for name in ("add", "delete", "modify", "modify_dn"):
+            with self.assertRaisesRegex(LDAPConnectionError, "read-only"):
+                getattr(ldap.connection, name)("CN=unchanged,DC=example,DC=com")
+        self.assertEqual(attempted, [])
+
 
 class TestLDAPSearchCorrectness(unittest.TestCase):
     """LDAP result codes and partial paging must not become successful data."""
