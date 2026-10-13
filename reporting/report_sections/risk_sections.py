@@ -42,7 +42,10 @@ class RiskSectionsMixin:
         else:
             color = 'secondary'
 
-        return f'<span class="badge bg-{color}" title="Exploitability Score: {score}/10, Difficulty: {difficulty}">Exploitability: {score:.1f}/10</span>'
+        return (
+            f'<span class="badge bg-{color}" title="Exploitability Score: {score}/10, '
+            f'Difficulty: {self._html_escape(difficulty)}">Exploitability: {score:.1f}/10</span>'
+        )
 
     def _generate_confidence_badge(self, risk):
         """Generate a confidence badge from the evidence scorer."""
@@ -250,7 +253,7 @@ class RiskSectionsMixin:
                 <p class="text-muted">Accounts vulnerable to Kerberoasting and AS-REP roasting attacks. These accounts can be targeted for offline password cracking.</p>
                 <div class="input-group mb-3">
                     <span class="input-group-text"><i class="fas fa-search"></i></span>
-                    <input type="text" class="form-control" id="kerberoastingSearch" placeholder="Search targets by account, SPN, or description..." onkeyup="filterKerberoasting()">
+                    <input type="text" class="form-control" id="kerberoastingSearch" placeholder="Search targets by account, SPN, or description..." aria-label="Search targets by account, SPN, or description..." onkeyup="filterKerberoasting()">
                     <button class="btn btn-outline-secondary" type="button" onclick="clearKerberoastingSearch()">
                         <i class="fas fa-times"></i> Clear
                     </button>
@@ -390,8 +393,13 @@ class RiskSectionsMixin:
             if affected_computers:
                 base_risk['affected_computers'] = affected_computers
             if computers_with_laps or affected_computers:
-                base_risk['affected_objects'] = computers_with_laps or affected_computers
-                base_risk['affected_object'] = f'{len(base_risk["affected_objects"])} affected'
+                merged_objects = list(dict.fromkeys([
+                    *affected_objects, *computers_with_laps, *affected_computers,
+                ]))
+                base_risk['affected_objects'] = merged_objects
+                base_risk['affected_object'] = (
+                    f'{len(merged_objects)} affected' if len(merged_objects) != 1 else merged_objects[0]
+                )
             elif affected_objects:
                 base_risk['affected_objects'] = affected_objects
                 base_risk['affected_object'] = f'{len(affected_objects)} affected' if len(affected_objects) > 1 else (affected_objects[0] if affected_objects else base_risk.get('affected_object', 'Unknown'))

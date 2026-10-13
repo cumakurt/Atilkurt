@@ -2,20 +2,28 @@
 
 AtilKurt remains a read-only assessment tool. These features collect or import
 configuration and runtime observations; they do not change AD, enable policies,
-rotate credentials, restore backups, or run attacks.
+rotate credentials or restore backups. The opt-in `--collect-password-hashes`
+workflow additionally requests current account key material and NT password-history digests using read-only DRS
+replication under the supplied credentials. It does not escalate privileges.
+
+Scan reports/checkpoints expose collected secret values by default. Use
+`--redact-secrets` to publish a redacted copy; identity masking is independent.
+The bind password remains excluded from reports and logs. See the README's
+password-hash section for transport, permission and scope limitations.
 
 ## Connection migration
 
-LDAPS with certificate verification is now the scan default. Existing `--ssl`
-commands continue to work. A failed TLS connection never falls back to LDAP.
+LDAP on port 389 without TLS is the scan default, equivalent to `--insecure-ldap`.
+Select `--ssl` for certificate-verified LDAPS. A failed explicit TLS connection
+never falls back to LDAP.
 
 ```bash
-Atilkurt -d example.com -u auditor --dc-ip dc.example.com --ca-certs-file company-ca.pem
+Atilkurt -d example.com -u auditor --dc-ip dc.example.com --ssl --ca-certs-file company-ca.pem
 Atilkurt -d example.com -u auditor --dc-ip dc.example.com --starttls --ca-certs-file company-ca.pem
 ```
 
 `--starttls` opens port 389 and completes TLS before binding. An explicit
-`--insecure-ldap` retains NTLM-only plaintext compatibility; SIMPLE authentication
+`--insecure-ldap` selects the same transport as the default; SIMPLE authentication
 is rejected without TLS. `--auth-method simple` explicitly selects SIMPLE over
 TLS, without automatic authentication fallback.
 

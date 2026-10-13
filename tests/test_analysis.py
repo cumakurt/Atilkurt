@@ -79,8 +79,25 @@ class TestUserRiskAnalyzer(unittest.TestCase):
     def test_user_with_no_password_expiry(self):
         """User with DONT_EXPIRE_PASSWORD flag should be flagged."""
         users = [{
-            'sAMAccountName': 'svc_account',
+            'sAMAccountName': 'standard_user',
             'userAccountControl': 66048,  # NORMAL + DONT_EXPIRE_PASSWORD
+            'adminCount': 0,
+            'memberOf': [],
+            'pwdLastSet': None,
+            'lastLogonTimestamp': None,
+            'servicePrincipalName': [],
+            'isDisabled': False,
+            'distinguishedName': 'CN=standard_user,CN=Users,DC=test,DC=com',
+        }]
+        risks = self.analyzer.analyze(users)
+        self.assertIsInstance(risks, list)
+        self.assertTrue(any(r.get('type') == 'user_password_never_expires' for r in risks))
+
+    def test_service_account_password_never_expires_is_not_counted_twice(self):
+        """A service account with the same flag gets the specific finding only."""
+        users = [{
+            'sAMAccountName': 'svc_account',
+            'userAccountControl': 66048,
             'adminCount': 0,
             'memberOf': [],
             'pwdLastSet': None,
@@ -89,22 +106,42 @@ class TestUserRiskAnalyzer(unittest.TestCase):
             'isDisabled': False,
             'distinguishedName': 'CN=svc_account,CN=Users,DC=test,DC=com',
         }]
-        risks = self.analyzer.analyze(users)
-        self.assertIsInstance(risks, list)
-        self.assertTrue(any(r.get('type') == 'user_password_never_expires' for r in risks))
+        types = {risk.get('type') for risk in self.analyzer.analyze(users)}
+        self.assertIn('service_account_password_never_expires', types)
+        self.assertNotIn('user_password_never_expires', types)
+
+    def test_nested_domain_admin_is_an_inactive_privileged_account(self):
+        """Privilege held only through a nested group is still current privilege."""
+        from datetime import timedelta, timezone
+        user = {
+            'sAMAccountName': 'alice',
+            'userAccountControl': 512,
+            'memberOf': ['CN=Helpdesk,OU=Groups,DC=test,DC=com'],
+            'lastLogonTimestamp': datetime.now(timezone.utc) - timedelta(days=400),
+            'distinguishedName': 'CN=alice,CN=Users,DC=test,DC=com',
+        }
+        groups = [{
+            'name': 'Helpdesk',
+            'distinguishedName': 'CN=Helpdesk,OU=Groups,DC=test,DC=com',
+            'memberOf': ['CN=Domain Admins,CN=Users,DC=test,DC=com'],
+        }]
+        direct = {risk.get('type') for risk in self.analyzer.analyze([dict(user)])}
+        nested = {risk.get('type') for risk in self.analyzer.analyze([dict(user)], groups)}
+        self.assertNotIn('inactive_privileged_account', direct)
+        self.assertIn('inactive_privileged_account', nested)
 
 
 class TestUserCollectorLockout(unittest.TestCase):
-    """Locked-account detection must honor UAC LOCKOUT and non-zero lockoutTime."""
+    """Lockout timestamps alone cannot prove that a lockout is still effective."""
 
-    def test_nonzero_filetime_is_locked(self):
+    def test_nonzero_filetime_without_effective_flags_is_unknown(self):
         from unittest.mock import MagicMock
         from core.collectors.user_collector import UserCollector
 
         collector = UserCollector(MagicMock(), show_progress=False)
-        self.assertTrue(collector._is_account_locked(132000000000000000))
+        self.assertIsNone(collector._is_account_locked(132000000000000000))
         self.assertFalse(collector._is_account_locked(0))
-        self.assertTrue(collector._is_account_locked(datetime.now()))
+        self.assertIsNone(collector._is_account_locked(datetime.now()))
 
     def test_uac_lockout_flag_marks_account_locked(self):
         from unittest.mock import MagicMock
@@ -346,6 +383,30 @@ class TestPrivilegeEscalationMatching(unittest.TestCase):
             analyzer._extract_group_name("CN=Helpdesk,OU=Domain Admins,DC=test,DC=com"),
             "Helpdesk",
         )
+
+    def test_admincount_alone_does_not_skip_nested_group_paths(self):
+        from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+        users = [{
+            'sAMAccountName': 'stale',
+            'adminCount': 1,
+            'memberOf': ['CN=Helpdesk,CN=Users,DC=test,DC=com'],
+        }]
+        groups = [
+            {
+                'name': 'Helpdesk',
+                'sAMAccountName': 'Helpdesk',
+                'memberOf': ['CN=Domain Admins,CN=Users,DC=test,DC=com'],
+            },
+            {
+                'name': 'Domain Admins',
+                'sAMAccountName': 'Domain Admins',
+                'objectSid': 'S-1-5-21-1-2-3-512',
+                'memberOf': [],
+            },
+        ]
+        risks = PrivilegeEscalationAnalyzer().analyze(users, groups, [])
+        self.assertTrue(any(risk['type'] == 'privilege_escalation_path' for risk in risks))
 
 
 if __name__ == '__main__':

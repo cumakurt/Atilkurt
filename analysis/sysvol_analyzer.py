@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,7 @@ SECRET = re.compile(r'''(?im)\b(password|passwd|pwd|secret|api[_-]?key|connectio
 PLACEHOLDER = re.compile(r'(?i)^(?:\$|%|\{|<|change.?me|example|placeholder|redacted|none|null|false|true)')
 
 
-def _inspect(content, location):
+def _inspect(content, location, *, redact_secrets=True):
     if b'\x00' in content[:100]:
         encoding = 'utf-16' if content.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-16-le'
         text = content.decode(encoding, errors='replace')
@@ -39,6 +40,8 @@ def _inspect(content, location):
                     records.append({'type': 'sysvol_gpp_cpassword', 'title': 'GPP password ciphertext exposed in policy file',
                                     'severity': 'High', 'requires_validation': False, 'line': None,
                                     'evidence': 'Nonempty cpassword attribute observed; value redacted and not decrypted.'})
+                    if not redact_secrets:
+                        records[-1].update(secret_value=value, evidence='cpassword = ' + json.dumps(value))
     for match in SECRET.finditer(text):
         candidate = match.group(2).strip()
         if PLACEHOLDER.match(candidate) or len(candidate) < 4:
@@ -46,6 +49,8 @@ def _inspect(content, location):
         records.append({'type': 'sysvol_suspected_secret', 'title': 'Suspected hardcoded secret in shared script/configuration',
                         'severity': 'Medium', 'requires_validation': True, 'line': text.count('\n', 0, match.start()) + 1,
                         'evidence': f'{match.group(1)} assignment found; value redacted. Confirm context locally.'})
+        if not redact_secrets:
+            records[-1].update(secret_value=candidate, evidence=f'{match.group(1)} = ' + json.dumps(candidate))
     for record in records:
         record.update({'affected_object': location, 'source': 'sysvol_read_only',
                        'description': record['evidence'], 'recommendation': 'Remove stored credentials and rotate the affected secret after confirming ownership.',
@@ -54,7 +59,8 @@ def _inspect(content, location):
 
 
 class SharedFileInspection:
-    def __init__(self):
+    def __init__(self, *, redact_secrets=True):
+        self.redact_secrets = redact_secrets
         self.risks = []
         self.errors = []
         self.files = 0
@@ -67,18 +73,19 @@ class SharedFileInspection:
         self.files += 1
         self.total_bytes += len(content)
         try:
-            self.risks.extend(_inspect(content, location))
+            self.risks.extend(_inspect(content, location, redact_secrets=self.redact_secrets))
         except ValidationError as exc:
             self.errors.append({'file': location, 'reason': str(exc)})
 
     def result(self):
         return {'schema_version': 1, 'risks': self.risks, 'files_read': self.files, 'bytes_read': self.total_bytes,
                 'skipped': self.skipped, 'errors': self.errors, 'status': 'partial' if self.errors or self.skipped else 'completed',
-                'limitation': 'Only supported text files are inspected. Values are never retained or decrypted; secret candidates require contextual confirmation.'}
+                'limitation': 'Only supported text files are inspected; ciphertext is not decrypted. Secret candidates require contextual confirmation.',
+                'secrets_redacted': self.redact_secrets}
 
 
-def inspect_local_shared_files(roots):
-    inspection = SharedFileInspection()
+def inspect_local_shared_files(roots, *, redact_secrets=True):
+    inspection = SharedFileInspection(redact_secrets=redact_secrets)
     for root_value in roots:
         root = Path(root_value)
         if not root.is_dir() or root.is_symlink():
@@ -120,11 +127,11 @@ def inspect_local_shared_files(roots):
     return inspection.result()
 
 
-def inspect_remote_shared_files(host, username, password, domain, scope, *, timeout=15, connection_factory=None):
+def inspect_remote_shared_files(host, username, password, domain, scope, *, timeout=15, connection_factory=None, redact_secrets=True):
     if connection_factory is None:
         from impacket.smbconnection import SMBConnection
         connection_factory = SMBConnection
-    inspection, connection = SharedFileInspection(), None
+    inspection, connection = SharedFileInspection(redact_secrets=redact_secrets), None
     try:
         scope.consume(host, 'smb')
         connection = connection_factory(host, host, sess_port=445, timeout=timeout)

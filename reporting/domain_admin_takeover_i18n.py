@@ -39,6 +39,14 @@ DA_PATH_NAMES_TR: dict[str, str] = {
     'password_spray': 'Ayrıcalıklı Hesaplara Parola Püskürtme Yolu',
     'hidden_primary_group': 'Birincil Grup Üzerinden Gizli Ayrıcalık',
     'ldap_recon': 'Anonim veya Geniş LDAP Dizin Keşfi',
+    'tier0_graph': 'Kanıt grafı üzerinden Tier-0 / Domain Admins yolu',
+    'adcs_control': 'AD CS kontrol düzlemi ACL (CA, şablon, NTAuth)',
+    'gmsa_readers': 'gMSA yönetilen parola okuyucuları',
+    'adminsdholder': 'AdminSDHolder / SDProp koruma sapması',
+    'privileged_hygiene': 'Domain Admin yolunu açık tutan ayrıcalıklı hesap hijyeni',
+    'ad_dns': 'AD bütünleşik DNS ele geçirme (WPAD / DC kayıtları)',
+    'bitlocker': "Active Directory'de okunabilir BitLocker kurtarma parolaları",
+    'other_da': 'Diğer Domain Admin ile ilgili bulgular',
 }
 
 
@@ -1232,6 +1240,290 @@ DA_PATH_NARRATIVE_TR: dict[str, dict[str, Any]] = {
             'ldap_enum_note': 'Yetkili değerlendirme — anonim bağdan sonra dizin listeleme',
         },
     },
+    'tier0_graph': {
+        "why_da": 'Ayrıcalıklı bir gruba giden kanıtlı üyelik/ACL/kontrol kenarları, tek bir katalog tekniği tetiklenmese bile tam bir Domain Admin yoludur.',
+        "starting_access": 'Grafın ayrıcalıklı bir düğüme ulaşabildiği herhangi bir ayrıcalıksız kimlik.',
+        "detection": "Aynı zincir üzerindeki 4728/4732 iç içe grup değişikliklerini 5136 ACL yazılarıyla ilişkilendirin.",
+        "stages": [
+            {
+                "title": "Yalnızca en kısa değil, her ayrı rotayı yürüyün",
+                "why": "Bir sıçramayı düzeltmek paralel bir MemberOf veya Enroll kenarını bırakabilir.",
+                "action": "Her sıçrama türünü (MemberOf, Controls, Enroll) ve birkaç rotanın paylaştığı dar noktaları kaydedin.",
+            },
+            {
+                "title": "İlk yönetici olmayan kenarı kırın",
+                "why": "En ucuz sıçrama, testçinin gerçekten kullandığı sıçramadır.",
+                "action": "Ayrıcalıksız bir hesabın Tier-0'a doğru tuttuğu ilk kontrol veya iç içe grup kenarını kaldırın.",
+            },
+        ],
+        "break_path": [
+            "Ayrıcalıksız hesapların Domain Admins'e ulaşmasını sağlayan iç içe grup üyeliğini ve nesne kontrolünü kaldırın.",
+            "Kanıt grafını yeniden çalıştırın ve her alternatif rotanın gittiğini doğrulayın.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "Listelenen kaynaktan her kanıtlı rotayı yürüyün",
+                "detail": "Tarama kanıtı {TARGETS}, ayrıcalıklı bir düğüme giden üyelik/ACL/kontrol zinciridir. Her rota bağımsız bir Domain Admin seçeneğidir.",
+                "expected": "Kanıt grafı, kaynaktan Domain Admins'e (veya başka bir Tier-0 grubuna) altı sıçrama içinde basit bir yol gösterir.",
+            },
+            {
+                "step": "Ayrıcalıksız hesabın zaten tuttuğu en kısa sıçramayı tercih edin",
+                "detail": "Testçiler ilk MemberOf veya Controls kenarını kullanır, kenar kaldırıldıktan sonra kalan rotaları yeniden kontrol eder.",
+                "expected": "İlk yönetici olmayan sıçramanın kaldırılması rotayı çökertir; kardeş rotalar bu haritada ayrı listelenir.",
+            },
+        ],
+        "command_labels": {
+            "graph_path": "PowerShell — kanıtlanan kaynak için grup zinciri",
+            "graph_break_note": "Düzeltme — ilk yönetici olmayan kenarı kaldırın (sömürü değil değişiklik)",
+        },
+    },
+    'adcs_control': {
+        "why_da": "NTAuth, bir CA veya bir şablonun kontrolü, saldırganın bir Domain Admin için kimlik doğrulama sertifikası yayımlamasına veya düzenlemesine izin verir. Bu ESC5 sınıfı etki alanı ele geçirmedir.",
+        "starting_access": "Bir PKI nesnesinde yazma, sahip veya DACL kontrolü olan ayrıcalıksız bir güvenilir taraf.",
+        "detection": "CN=Public Key Services üzerinde 5136; ayrıcalıklı UPN'ler için beklenmeyen sertifika düzenleme.",
+        "stages": [
+            {
+                "title": "Güvenilir tarafın değiştirebileceği PKI nesnesini belirleyin",
+                "why": "NTAuth ve Enrollment Services, kullanılmayan tek bir şablondan daha yüksek etkilidir.",
+                "action": "Adlandırılmış CA, şablon veya NTAuth kapsayıcısında GenericAll/WriteDACL/WriteOwner doğrulayın.",
+            },
+            {
+                "title": "Bir kimlik doğrulama sertifikası düzenleyin veya güvenin",
+                "why": "Yazılabilir bir şablon ESC1'e dönüştürülebilir; NTAuth kontrolü sahte bir CA'ya güvenir.",
+                "action": "Bu nesnelerdeki PKI yöneticisi olmayan her güvenilir tarafı Domain Admin eşdeğeri kabul edin.",
+            },
+        ],
+        "break_path": [
+            "Microsoft varsayılan PKI ACL'lerini geri yükleyin; CA nesnelerini yalnızca Enterprise Admins / PKI yöneticileri yazmalıdır.",
+            "NTAuthCertificates üyeliğini ve şablon kayıt ACL'lerini denetleyin.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "PKI nesnesinde yazma kontrolünü doğrulayın",
+                "detail": "Tarama kanıtı {TARGETS}, bir CA, şablon veya NTAuth nesnesinde GenericAll, WriteDACL veya WriteOwner taşır.",
+                "expected": "PKI DN üzerinde dsacls / Get-Acl yönetici olmayan güvenilir tarafı listeler.",
+            },
+            {
+                "step": "PKI yazmayı Domain Admin eşdeğeri kabul edin",
+                "detail": "Yazılabilir bir CA veya NTAuth nesnesi bir Domain Admin için kimlik doğrulama sertifikası düzenleyebilir veya güvenebilir.",
+                "expected": "Angajman notları {TARGET}'ı ESC5 sınıfı etki alanı ele geçirme olarak kaydeder.",
+            },
+        ],
+        "command_labels": {
+            "adcs_control_acl": "PowerShell — PKI nesnesi ACL",
+            "adcs_control_note": "Yetkili değerlendirme — kayıt hizmetlerini numaralandırın",
+        },
+    },
+    'gmsa_readers': {
+        "why_da": "Bir gMSA parolasını okuyabilen herkes o hizmet kimliği olarak kimlik doğrulayabilir. Tier-0 gMSA veya DCSync/yetkilendirmesi olan bir gMSA Domain Admin eşdeğeridir.",
+        "starting_access": "Özellikle Tier-0 bir gMSA'nın yönetilen parolasını almasına izin verilen bir güvenlik sorumlusu.",
+        "detection": "msDS-ManagedPassword'un olağandışı alınması; beklenmeyen konaklardan gMSA nesnelerinde 4662.",
+        "stages": [
+            {
+                "title": "Etkili msDS-GroupMSAMembership okuyucularını listeleyin",
+                "why": "Authenticated Users gibi geniş gruplar etki alanı genelinde kimlik bilgisi sızıntısıdır.",
+                "action": "Her gMSA parolasını hangi yönetici olmayan sorumluların alabileceğini doğrulayın.",
+            },
+            {
+                "title": "gMSA'yı DA'ya doğru kullanın",
+                "why": "Yönetilen kimlik zaten ayrıcalıklı olabilir veya kısıtlanmış yetkilendirme sıçraması barındırabilir.",
+                "action": "Yolu kapatmadan önce gMSA'nın gruplarını, SPN'lerini ve çoğaltma haklarını eşleyin.",
+            },
+        ],
+        "break_path": [
+            "Authenticated Users / Domain Computers okuyucularını gMSA'ya ihtiyaç duyan belirli konaklarla değiştirin.",
+            "Tier-0 gMSA nesnelerini ACL incelemesi için Domain Admins gibi kabul edin.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "gMSA parolasını kimin alabileceğini doğrulayın",
+                "detail": "Tarama kanıtı {TARGETS} msDS-ManagedPassword okuyabilir. Tier-0 gMSA Domain Admin eşdeğeridir.",
+                "expected": "msDS-GroupMSAMembership, gMSA nesnesinde güvenilir tarafı listeler.",
+            },
+            {
+                "step": "gMSA'nın kendi ayrıcalığını eşleyin",
+                "detail": "gMSA'nın DCSync, yetkilendirme veya Domain Admins üyeliği varsa parola okuma etki alanı ele geçirmedir.",
+                "expected": "gMSA'nın grupları ve ACL'leri okuyucu sorumlunun yanında kaydedilir.",
+            },
+        ],
+        "command_labels": {
+            "gmsa_readers_acl": "PowerShell — gMSA parola okuyucuları",
+            "gmsa_readers_note": "Yetkili değerlendirme — yönetilen hesabın kimliği",
+        },
+    },
+    'adminsdholder': {
+        "why_da": "AdminSDHolder, SDProp'un her korumalı yöneticiye kopyaladığı şablondur. Oradaki kalıcı bir ACE her SDProp döngüsünden sonra Domain Admins'i yeniden ele geçirir.",
+        "starting_access": "AdminSDHolder üzerinde tehlikeli bir ACE veya koruması sapmış ayrıcalıklı bir nesne.",
+        "detection": "CN=AdminSDHolder üzerinde 5136; SDProp sonrası adminCount=1 nesnelerinde yinelenen 4738.",
+        "stages": [
+            {
+                "title": "AdminSDHolder'ı Microsoft varsayılanına karşı karşılaştırın",
+                "why": "Tek bir ekstra ACE yinelenen DA ele geçirme için yeterlidir.",
+                "action": "AdminSDHolder'dan varsayılan olmayan GenericAll/WriteDACL/WriteOwner güvenilir taraflarını kaldırın.",
+            },
+            {
+                "title": "Eski adminCount nesnelerini düzeltin",
+                "why": "Sahipsiz adminCount=1 nesneleri eski bir DACL ile korunur ve kolay kaçırılır.",
+                "action": "Eski adminCount'u temizleyin veya nesneyi kasıtlı olarak korunan kümeye geri alın.",
+            },
+        ],
+        "break_path": [
+            "AdminSDHolder'ı belgelenmiş varsayılan DACL'ye sıfırlayın ve SDProp çalıştırın.",
+            "Artık korumalı bir grubun üyesi olmayan her adminCount=1 nesnesini gözden geçirin.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "AdminSDHolder'ı varsayılan DACL'ye karşı karşılaştırın",
+                "detail": "Tarama kanıtı {TARGETS}, AdminSDHolder / adminCount nesnelerinde tehlikeli bir ACE veya koruma sapmasıdır.",
+                "expected": "CN=AdminSDHolder,CN=System,{DOMAIN_DN} üzerinde dsacls varsayılan olmayan GenericAll/WriteDACL güvenilir tarafını gösterir.",
+            },
+            {
+                "step": "Eski adminCount'u düzeltin ve SDProp'u yeniden çalıştırın",
+                "detail": "Sahipsiz adminCount=1 nesneleri yönetici gruplarından ayrıldıktan sonra eski korumalı DACL tutar.",
+                "expected": "SDProp çalışmıştır ve adminCount yetimleri temizlenmiş veya kasıtlı olarak geri yüklenmiştir.",
+            },
+        ],
+        "command_labels": {
+            "sdholder_acl": "PowerShell — AdminSDHolder ACL",
+            "sdholder_orphans": "PowerShell — adminCount=1 nesneleri",
+        },
+    },
+    'privileged_hygiene': {
+        "why_da": "Hâlâ geçerli sırrı olan devre dışı Domain Admin'ler, iç içe yönetici grupları, adminCount yetimleri ve Protected Users dışındaki ayrıcalıklı kullanıcılar, testçilerin gerçekten çaldığı kimliklerdir.",
+        "starting_access": "Ayrıcalıklı hesabın kendisi (parola yeniden kullanımı, eski DA, eksik Protected Users).",
+        "detection": "Domain Admins üzerinde 4728/4729; ayrıcalıklı kullanıcılardan NTLM veya ön kimlik doğrulamasız 4768.",
+        "stages": [
+            {
+                "title": "Devre dışı olanlar dahil her ayrıcalıklı kimliği envanterleyin",
+                "why": "Devre dışı bir Domain Admin özeti, parola döndürülene kadar bilet sahteciliği yapar.",
+                "action": "Eski DA/EA hesaplarını döndürün veya silin; iç içe yönetici gruplarını küçültün.",
+            },
+            {
+                "title": "Kalan Tier 0'ı Protected Users / Authentication Policy'ye koyun",
+                "why": "Canlı bir DA üzerinde yetkilendirme ve NTLM, parola hırsızlığından sonra tek adımlık ele geçirmedir.",
+                "action": "Tier 0 için Protected Users, akıllı kart veya kimlik avına dirençli MFA ve silo zorunlu kılın.",
+            },
+        ],
+        "break_path": [
+            "Domain Admins'i belgelenmiş bir acil durum kümesine indirgeyin; iç içe grup olmasın.",
+            "Devre dışı ayrıcalıklı hesaplarda sırları döndürün; Protected Users ve Authentication Policy'yi etkinleştirin.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "Devre dışı olanlar dahil her ayrıcalıklı kimliği listeleyin",
+                "detail": "Tarama kanıtı {TARGETS} bir Domain Admin, Enterprise Admin, iç içe yönetici grubu veya Protected Users eksik ayrıcalıklı bir kullanıcıdır.",
+                "expected": "Get-ADGroupMember -Recursive, adlandırılmış hesabı içerir veya hesapta adminCount=1 vardır.",
+            },
+            {
+                "step": "Kimliği döndürün veya kısıtlayın",
+                "detail": "Kalan Tier 0'ı Protected Users ve bir Authentication Policy silosuna koyun. Devre dışı ayrıcalıklı hesaplarda sırları döndürün.",
+                "expected": "Hesap artık DA/EA içinde iç içe değildir, Protected Users içindedir ve parolası döndürülmüştür.",
+            },
+        ],
+        "command_labels": {
+            "priv_hygiene_members": "PowerShell — özyinelemeli Domain Admins",
+            "priv_hygiene_target": "PowerShell — kanıtlanan hesapta ayrıcalıklı bayraklar",
+        },
+    },
+    'ad_dns': {
+        "why_da": "Yazılabilir bir DNS bölgesi, saldırganın WPAD'e cevap vermesine veya bir Domain Controller adını taklit etmesine izin verir. Bu adın LDAP'ye NTLM rölesi standart bir Domain Admin bitişidir.",
+        "starting_access": "AD bütünleşik bir DNS bölgesinde veya WPAD / DC konak adı gibi yüksek riskli bir düğümde yazma.",
+        "detection": "WPAD/* için DNS kaydı oluşturma; DC adlarını kullanan beklenmeyen konaklardan LDAP bağları.",
+        "stages": [
+            {
+                "title": "Bölgeyi veya WPAD düğümünü kimin yazabileceğini bulun",
+                "why": "Bir bölgede Authenticated Users CreateChild, WPAD eklemek için yeterlidir.",
+                "action": "AD bütünleşik bölgelerden geniş ACE'leri kaldırın; DC ve WPAD kayıtlarını koruyun.",
+            },
+            {
+                "title": "Taklit edilen adı LDAP'ye röle edin",
+                "why": "WPAD veya bir DC A kaydı artı imzasız LDAP, DCSync olur.",
+                "action": "DNS yazma artı imzasız LDAP'yi tek bir Domain Admin seçeneği olarak kabul edin.",
+            },
+        ],
+        "break_path": [
+            "AD DNS bölgesi ACL'lerini DNS yöneticileriyle sınırlayın; GPO ile WPAD'i kapatın.",
+            "Taklit edilen bir adın röle edilememesi için LDAP imzalama ve kanal bağlamayı zorunlu kılın.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "AD bütünleşik bölge veya WPAD düğümünde yazmayı doğrulayın",
+                "detail": "Tarama kanıtı {TARGETS} AD bütünleşik bir bölgede DNS kaydı oluşturabilir veya değiştirebilir.",
+                "expected": "Bölge DN'sinde Get-Acl, CreateChild/WriteProperty ile DNS yöneticisi olmayan bir güvenilir taraf listeler.",
+            },
+            {
+                "step": "DNS yazma artı imzasız LDAP'yi Domain Admin kabul edin",
+                "detail": "WPAD veya taklit DC A kaydı artı eksik LDAP imzalama, NTLM rölesi DCSync yoludur.",
+                "expected": "Angajman notları {TARGET}'ı DNS-LDAP röle seçeneği olarak kaydeder.",
+            },
+        ],
+        "command_labels": {
+            "ad_dns_acl": "PowerShell — AD DNS bölgesi nesnesi",
+            "ad_dns_note": "Yetkili değerlendirme — WPAD / DC kayıtları",
+        },
+    },
+    'bitlocker': {
+        "why_da": "AD'de saklanan BitLocker kurtarma anahtarları korudukları bilgisayarın diskini açar. Bir DC veya DA atlama konağı diski Domain Admin eşdeğeridir.",
+        "starting_access": "Bir Domain Controller veya DA iş istasyonunda msFVE-RecoveryPassword LDAP okuması.",
+        "detection": "Beklenmeyen çağırıcılardan msFVE-RecoveryPassword LDAP okumaları.",
+        "stages": [
+            {
+                "title": "Hangi bilgisayarların AD'de kurtarma parolası olduğunu görün",
+                "why": "msFVE-* üzerinde helpdesk okuması çoğu zaman Domain Controller'ları da kapsar.",
+                "action": "Bilgisayarın bir DC, DA iş istasyonu veya Tier-0 atlama konağı olduğunu doğrulayın.",
+            },
+            {
+                "title": "Diski açın ve LSASS/NTDS toplayın",
+                "why": "Çevrimdışı disk erişimi çalışan işletim sisteminin kimlik bilgisi korumasını atlar.",
+                "action": "BitLocker AD yedeklemesini sahip destek katmanıyla sınırlayın; asla Authenticated Users'a vermeyin.",
+            },
+        ],
+        "break_path": [
+            "DC'ler için BitLocker kurtarma parolalarını AD'den kaldırın; çevrimdışı emanet kullanın.",
+            "msFVE-* okuma ACL'lerini kısıtlayın; herhangi bir geniş okumadan sonra kurtarma parolalarını döndürün.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "msFVE-RecoveryPassword'u kimin okuyabileceğini doğrulayın",
+                "detail": "Tarama kanıtı {TARGETS} AD'de bir BitLocker kurtarma parolası saklar. DC veya DA iş istasyonu diski Domain Admin eşdeğeridir.",
+                "expected": "LDAP, bilgisayar nesnesinde yönetici olmayan bir okuma ACE'si ile msFVE-RecoveryPassword gösterir.",
+            },
+            {
+                "step": "Kurtarmayı sahip destek katmanıyla sınırlayın",
+                "detail": "DC kurtarma parolalarını AD'den kaldırın; herhangi bir geniş okumadan sonra döndürün.",
+                "expected": "msFVE-* artık Tier-0 bilgisayarlarda Authenticated Users veya helpdesk tarafından okunamaz.",
+            },
+        ],
+        "command_labels": {
+            "bitlocker_search": "PowerShell — AD'de BitLocker kurtarması olan bilgisayarlar",
+            "bitlocker_target": "PowerShell — kanıtlanan bilgisayar için kurtarma nesnesi",
+        },
+    },
+    'other_da': {
+        "why_da": "Bu puanlanmış bulgular adlandırılmış bir teknik kartına uymadı ancak hâlâ Domain Admin ile ilgilidir. Haritanın eksiksiz olması için listelenirler.",
+        "starting_access": "Listelenen bulguya bağlıdır; her birini çürütülene kadar DA'ya komşu bir seçenek kabul edin.",
+        "detection": "Bulguya özgüdür; her kanıt satırına bakın.",
+        "stages": [
+            {
+                "title": "Her artan yüksek/kritik bulguyu gözden geçirin",
+                "why": "Yalnızca adlandırılmış kartları okuyan bir testçi tek seferlik DA seçeneklerini kaçırır.",
+                "action": "Aşağıdaki her nesne için DA, basamak taşı veya yanlış iz olup olmadığına karar verin.",
+            },
+        ],
+        "break_path": [
+            "Her artan bulguyu giderin veya resmi olarak kabul edin; DA'ya komşu sorunları takip edilmeden bırakmayın.",
+        ],
+        "poc_roadmap": [
+            {
+                "step": "Her artan Domain Admin ile ilgili bulguyu triyaj edin",
+                "detail": "Tarama kanıtı {TARGETS} adlandırılmış bir teknik kartına uymadı. Her satır çürütülene kadar bir DA seçeneğidir.",
+                "expected": "Her artan kritik/yüksek bulgunun bir sahibi, DA/DA değil kararı ve bir düzeltme veya istisnası vardır.",
+            },
+        ],
+        "command_labels": {
+            "other_da_list": "PowerShell — kanıtlanan nesneyi inceleyin",
+        },
+    },
 }
 
 
@@ -1308,6 +1600,62 @@ def localize_da_path_playbook(path: dict) -> dict:
     return localized
 
 
+def _assessment_account_headline_tr(account: dict[str, Any]) -> str:
+    sam = str(account.get("sam") or "bilinmiyor")
+    if not account.get("resolved") and not account.get("sid"):
+        return (
+            "Değerlendirme hesabı dizin envanterinde çözümlenemedi; aşağıdaki yollar "
+            "oturumu değil etki alanını anlatır."
+        )
+    if not account.get("reaches_tier0") and not account.get("has_assessment_options"):
+        return (
+            f"Bağlanan hesap ({sam}) bu grafikte Domain Admin / Tier-0 yoluna sahip değil. "
+            "Bu, etki alanının temiz olduğu anlamına gelmez; başka kimliklerin açık yolları olabilir."
+        )
+    routes = int(account.get("route_count") or 0)
+    hops = account.get("shortest_hops")
+    targets = int(account.get("target_count") or 0)
+    if any(isinstance(item, dict) and item.get("already_privileged") for item in (account.get("routes") or [])):
+        return f"Bağlanan hesap ({sam}) zaten bir Tier-0 kimliğidir."
+    if routes:
+        return (
+            f"Bağlanan hesap ({sam}) Tier-0'a {hops} hopta ulaşabilir "
+            f"({routes} ayrı rota, {targets} ayrıcalıklı nesne)."
+        )
+    templates = account.get("enrollable_templates") or []
+    names = ", ".join(str(item.get("template") or "") for item in templates[:5] if isinstance(item, dict))
+    if names or templates:
+        return f"Bağlanan hesap ({sam}) doğrulanmış ESC şablonuna kayıt olabilir: {names or 'yayımlanmış şablon'}."
+    findings = int(len(account.get("finding_options") or ()))
+    if findings:
+        return (
+            f"Bağlanan hesap ({sam}) {findings} Domain Admin ile ilgili bulgu seçeneğinde "
+            "güvenilir taraf veya nesnedir."
+        )
+    techniques = account.get("session_techniques") or []
+    return (
+        f"Bağlanan hesap ({sam}) kimliği doğrulanmış oturumun başlatabileceği "
+        f"{len(techniques)} Domain Admin tekniğini kullanabilir."
+    )
+
+
+def _nonadmin_starters_headline_tr(starters: dict[str, Any]) -> str:
+    count = int(starters.get("principal_count") or 0)
+    if not count:
+        return (
+            "Adlandırılmış yönetici olmayan bir hesabın kanıtlı Domain Admin tutunma noktası yok. "
+            "Her kimliği doğrulanmış kullanıcının başlatabileceği teknikler katalogda durur."
+        )
+    techniques = int(starters.get("technique_option_count") or 0)
+    evidence = int(starters.get("evidence_count") or 0)
+    hops = starters.get("shortest_hops")
+    hop_bit = f" En kısa kanıtlı grafik rotası: {hops} hop." if hops is not None else ""
+    return (
+        f"{count} yönetici olmayan hesabın Domain Admin / Tier-0'a kanıtlı yolu veya tutunma noktası var "
+        f"({techniques} teknik seçeneği, {evidence} kanıt satırı).{hop_bit}"
+    )
+
+
 def localize_domain_admin_takeover_tr(data: Any) -> Any:
     """Deep-copy and localize a Domain Admin takeover structure for Turkish UI."""
     localized = deepcopy(data)
@@ -1315,17 +1663,48 @@ def localize_domain_admin_takeover_tr(data: Any) -> Any:
         return localized
 
     summary = localized.get("summary")
+    account = localized.get("from_assessment_account")
+    account_tr = ""
+    if isinstance(account, dict):
+        account_tr = _assessment_account_headline_tr(account)
+        account["headline"] = account_tr
     if isinstance(summary, dict):
         count = int(summary.get("open_path_count") or 0)
+        options = int(summary.get("option_count") or 0)
+        starters = localized.get("nonadmin_starters")
+        starter_count = 0
+        if isinstance(starters, dict):
+            starter_count = int(starters.get("principal_count") or 0)
+            starters_tr = _nonadmin_starters_headline_tr(starters)
+            starters["headline"] = starters_tr
+            summary["nonadmin_starters"] = starters_tr
+            for principal in starters.get("principals") or []:
+                if not isinstance(principal, dict):
+                    continue
+                for technique in principal.get("techniques") or []:
+                    if not isinstance(technique, dict):
+                        continue
+                    path_id = str(technique.get("id") or "")
+                    technique["name"] = DA_PATH_NAMES_TR.get(path_id, technique.get("name") or path_id)
+        starter_bit = (
+            f" {starter_count} yönetici olmayan hesabın kanıtlı tutunma noktası var."
+            if starter_count
+            else ""
+        )
         if count == 0:
             summary["headline"] = (
                 "Bu taramada Etki Alanı Yöneticisine giden açık bir yol kanıtlanmadı. "
                 "Aşağıdaki katalog, gözlemlenmeyen teknikler için sızma testi kontrol listesidir."
+                f"{starter_bit}"
             )
         else:
             summary["headline"] = (
-                f"Bu taramada Etki Alanı Yöneticisine ulaşabilen {count} açık saldırı yolu belirlendi."
+                f"Bu taramada Domain Admin değerlendirmesiyle ilgili {count} kanıtlı koşul "
+                f"({options} nesne seçeneği) belirlendi.{starter_bit}"
             )
+        if account_tr:
+            summary["headline"] = f"{summary['headline']} {account_tr}"
+            summary["from_assessment_account"] = account_tr
 
     for collection in ("open_paths", "pending_paths", "unobserved_paths"):
         paths = localized.get(collection) or []

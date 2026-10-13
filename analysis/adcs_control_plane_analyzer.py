@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence, forest_configuration_dn, is_privileged_group_record
+from core.ad_identity import account_has_current_privileged_membership, forest_configuration_dn, is_privileged_group_record
 from core.ad_security import (
     DANGEROUS_DIRECTORY_PERMISSIONS,
     ace_permission_names,
@@ -14,6 +14,8 @@ from core.ad_security import (
     sid_text,
 )
 from core.security_descriptor_parser import effective_allow_aces
+from core.optional_directory import optional_subtree
+from ldap3.utils.conv import escape_filter_chars
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,7 @@ class ADCSControlPlaneAnalyzer:
 
         pki_base = f"CN=Public Key Services,CN=Services,{config_dn}"
         targets: list[tuple[str, str, str]] = [
-            (pki_base, "(objectClass=*)", "pki_root"),
+            (pki_base, f"(distinguishedName={escape_filter_chars(pki_base)})", "pki_root"),
             (f"CN=Certificate Templates,{pki_base}", "(objectClass=pKICertificateTemplate)", "template"),
             (f"CN=Enrollment Services,{pki_base}", "(objectClass=pKIEnrollmentService)", "ca"),
             (f"CN=NTAuthCertificates,{pki_base}", "(objectClass=*)", "ntauth"),
@@ -55,8 +57,8 @@ class ADCSControlPlaneAnalyzer:
 
         for base, ldap_filter, kind in targets:
             try:
-                rows = self.ldap.search(
-                    search_base=base,
+                rows = optional_subtree(
+                    self.ldap, config_dn, base,
                     search_filter=ldap_filter,
                     attributes=["cn", "displayName", "distinguishedName", "nTSecurityDescriptor"],
                 ) or []
@@ -66,6 +68,8 @@ class ADCSControlPlaneAnalyzer:
             for row in rows:
                 scanned_objects += 1
                 dn = as_text(row.get("distinguishedName")) or base
+                if kind == "pki_root" and dn.casefold() != pki_base.casefold():
+                    continue
                 label = as_text(row.get("displayName") or row.get("cn")) or dn
                 target_id = f"adcs:{dn.casefold()}"
                 nodes[target_id] = {"id": target_id, "label": label, "kind": kind, "dn": dn}
@@ -78,7 +82,7 @@ class ADCSControlPlaneAnalyzer:
                     principal = principals.get(trustee_sid)
                     broad = trustee_sid in self.BROAD_SIDS
                     privileged = bool(principal and (
-                        account_has_privileged_evidence(principal) or is_privileged_group_record(principal)
+                        account_has_current_privileged_membership(principal) or is_privileged_group_record(principal)
                     ))
                     # Unknown SIDs are retained in graph evidence, but not
                     # promoted to a finding without low-trust evidence.
@@ -106,8 +110,9 @@ class ADCSControlPlaneAnalyzer:
                         "title": f'{trustee} can modify AD CS {kind} object "{label}"',
                         "description": (
                             f"A broad or non-privileged principal has {', '.join(sorted(permissions))} on {dn}. "
-                            "This is direct ACL evidence rather than an inferred ESC checklist item."
+                            "The ACL is observed; certificate authentication and a complete privilege-escalation chain still require validation."
                         ),
+                        "takeover_requires_validation": True,
                         "affected_object": label,
                         "object_type": "configuration",
                         "impact": "Control-plane modification can alter trusted CAs, enrollment behavior, templates, or issuance-policy mappings.",
@@ -117,6 +122,13 @@ class ADCSControlPlaneAnalyzer:
                         "evidence": {
                             "trustee_sid": trustee_sid, "trustee": trustee,
                             "permissions": sorted(permissions), "target_dn": dn, "target_kind": kind,
+                            "acl_observed": True,
+                            "takeover_requires_validation": True,
+                            "missing_prerequisites": [
+                                "Effective object-specific control after deny and inheritance evaluation",
+                                "Active CA publication and certificate authentication trust",
+                                "Concrete issuance or trust-change path to a privileged identity",
+                            ],
                         },
                     })
 

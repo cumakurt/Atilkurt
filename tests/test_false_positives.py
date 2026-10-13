@@ -83,6 +83,13 @@ def test_scoped_extended_right_is_not_all_extended_rights():
     assert dangerous_broad_aces(parsed) == []
 
 
+def test_certificate_enrollment_guid_is_not_all_extended_rights():
+    enroll = '0e10c968-78fb-11d2-90d4-00c04f79dc55'
+    parsed = parse_security_descriptor(descriptor(ace(0x100, sid='S-1-5-11', guid=enroll)))
+    assert set(parsed['dacl'][0]['permissions']) == {'Certificate-Enrollment'}
+    assert 'AllExtendedRights' not in parsed['dacl'][0]['permissions']
+
+
 def test_property_write_requires_the_correct_guid_and_access_bit():
     member = 'bf9679c0-0de6-11d0-a285-00aa003049e2'
     parser = parse_security_descriptor(descriptor(ace(0x20, guid=member)))
@@ -378,3 +385,429 @@ def test_pipeline_keeps_true_dcsync_and_unverified_cve_separate():
     assert risks['nopac_vulnerable']['final_score'] == 0
     assert result['executive_summary']['validation_required_count'] == 1
     assert result['domain_admin_takeover']['summary']['pending_path_count'] == 1
+
+
+def test_helpdesk_in_ou_named_domain_admins_is_not_a_privileged_user():
+    from datetime import datetime, timedelta
+
+    from analysis.kerberoasting_detector import KerberoastingDetector
+    from analysis.user_risks import UserRiskAnalyzer
+    from reporting.report_sections.risk_tab_builder import RiskTabBuilderMixin
+
+    user = {
+        'sAMAccountName': 'helpdesk',
+        'userAccountControl': 512,
+        'adminCount': 0,
+        'memberOf': ['CN=Helpdesk,OU=Domain Admins,DC=example,DC=com'],
+        'servicePrincipalName': ['HTTP/helpdesk.example.com'],
+        'lastLogonTimestamp': datetime.now() - timedelta(days=400),
+        'pwdLastSet': None,
+        'isDisabled': False,
+        'distinguishedName': 'CN=helpdesk,CN=Users,DC=example,DC=com',
+    }
+    types = {risk['type'] for risk in UserRiskAnalyzer().analyze([user])}
+    assert 'inactive_privileged_account' not in types
+    roast = KerberoastingDetector().detect_kerberoasting_targets([user])
+    assert roast[0]['severity'] == 'high'
+    assert roast[0]['is_privileged'] is False
+    assert RiskTabBuilderMixin._user_is_privileged_for_report(user) is False
+
+
+def test_acl_escalation_path_connects_trustee_sid_to_account_name():
+    analyzer = ACLSecurityAnalyzer(LDAP())
+    users = [{'sAMAccountName': 'alice', 'objectSid': SID, 'memberOf': []}]
+    groups = [{
+        'name': 'Domain Admins',
+        'sAMAccountName': 'Domain Admins',
+        'objectSid': 'S-1-5-21-1-2-3-512',
+        'distinguishedName': 'CN=Domain Admins,CN=Users,DC=example,DC=com',
+        'memberOf': [],
+    }]
+    findings = [{
+        'trustee': SID,
+        'trustee_display_name': 'alice',
+        'affected_object': 'Domain Admins',
+        'object_dn': 'CN=Domain Admins,CN=Users,DC=example,DC=com',
+        'permission': 'WriteMember',
+    }]
+    paths = analyzer._analyze_privilege_escalation_paths(users, groups, [], findings)
+    assert len(paths) == 1
+    assert paths[0]['source_user'] == 'alice'
+
+
+def test_constrained_delegation_uses_allowed_to_delegate_to():
+    from analysis.kerberos_delegation import KerberosDelegationAnalyzer
+
+    computers = [
+        {'name': 'APP01', 'userAccountControl': 0x1000000, 'msDS-AllowedToDelegateTo': []},
+        {'name': 'APP02', 'userAccountControl': 4096, 'msDS-AllowedToDelegateTo': ['cifs/files.example.com']},
+    ]
+    risks = KerberosDelegationAnalyzer()._check_constrained_delegation([], computers)
+    assert [risk['affected_object'] for risk in risks] == ['APP02']
+    assert risks[0]['allowed_services'] == ['cifs/files.example.com']
+
+
+def test_rbcd_reports_principals_from_collected_descriptor():
+    from analysis.kerberos_delegation import KerberosDelegationAnalyzer
+
+    computers = [{
+        'name': 'WEB01',
+        'msDS-AllowedToActOnBehalfOfOtherIdentity': descriptor(ace(0x10000000)),
+    }]
+    risks = KerberosDelegationAnalyzer()._check_rbcd([], computers)
+    assert len(risks) == 1
+    assert risks[0]['type'] == 'rbcd_delegation'
+    assert SID in risks[0]['rbcd_principals']
+
+
+def test_unreadable_rbcd_descriptor_is_not_a_confirmed_grant():
+    from analysis.kerberos_delegation import KerberosDelegationAnalyzer
+
+    computers = [{'name': 'WEB01', 'msDS-AllowedToActOnBehalfOfOtherIdentity': b'not-a-descriptor'}]
+    risks = KerberosDelegationAnalyzer()._check_rbcd([], computers)
+    assert len(risks) == 1
+    assert risks[0]['type'] == 'delegation_descriptor_unreadable'
+    assert risks[0]['evidence']['requires_runtime_validation'] is True
+    assert risks[0]['rbcd_principals'] == []
+
+
+def test_disabled_account_is_not_an_active_kerberoast_or_generic_finding():
+    from analysis.kerberoasting_detector import KerberoastingDetector
+    from analysis.user_risks import UserRiskAnalyzer
+
+    disabled = {
+        'sAMAccountName': 'oldsvc',
+        'userAccountControl': 514,
+        'isDisabled': True,
+        'servicePrincipalName': ['HTTP/old.example.com'],
+        'memberOf': [],
+    }
+    assert KerberoastingDetector().detect_kerberoasting_targets([disabled]) == []
+    types = {risk['type'] for risk in UserRiskAnalyzer().analyze([disabled])}
+    assert 'disabled_user_account' not in types
+    assert 'user_with_spn' not in types
+    assert 'disabled_account_sensitive_configuration' in types
+
+
+def test_ordinary_disabled_account_is_not_a_finding():
+    from analysis.user_risks import UserRiskAnalyzer
+
+    user = {
+        'sAMAccountName': 'leaver',
+        'userAccountControl': 514,
+        'isDisabled': True,
+        'memberOf': [],
+        'servicePrincipalName': [],
+    }
+    assert UserRiskAnalyzer().analyze([user]) == []
+
+
+def test_domain_controller_unconstrained_delegation_is_not_a_finding():
+    from analysis.computer_risks import ComputerRiskAnalyzer
+    from analysis.kerberos_delegation import KerberosDelegationAnalyzer
+
+    computers = [
+        {'name': 'DC01', 'userAccountControl': 0x2000 | 0x80000, 'unconstrainedDelegation': True, 'primaryGroupID': 516},
+        {'name': 'APP01', 'userAccountControl': 0x1000 | 0x80000, 'unconstrainedDelegation': True, 'primaryGroupID': 515},
+    ]
+    kerberos = KerberosDelegationAnalyzer()._check_unconstrained_delegation([], computers)
+    computer = []
+    for item in computers:
+        computer.extend(ComputerRiskAnalyzer()._check_unconstrained_delegation(item))
+    assert [risk['affected_object'] for risk in kerberos] == ['APP01']
+    assert [risk['affected_object'] for risk in computer] == ['APP01']
+
+
+def test_privileged_spn_is_reported_and_protocol_transition_alone_is_not():
+    from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+    users = [{
+        'sAMAccountName': 'da_svc',
+        'userAccountControl': 0x1000000,
+        'servicePrincipalName': ['HTTP/da.example.com'],
+        'memberOf': ['CN=Domain Admins,CN=Users,DC=example,DC=com'],
+        'msDS-AllowedToDelegateTo': [],
+    }]
+    groups = [{
+        'name': 'Domain Admins',
+        'sAMAccountName': 'Domain Admins',
+        'objectSid': 'S-1-5-21-1-2-3-512',
+        'memberOf': [],
+    }]
+    types = {risk['type'] for risk in PrivilegeEscalationAnalyzer().analyze(users, groups, [])}
+    assert 'spn_privilege_escalation' in types
+    assert 'delegation_privilege_escalation' not in types
+
+
+def test_nested_path_uses_well_known_parent_name_when_group_object_is_missing():
+    from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+    users = [{
+        'sAMAccountName': 'helper',
+        'memberOf': ['CN=Helpdesk,CN=Users,DC=example,DC=com'],
+    }]
+    groups = [{
+        'name': 'Helpdesk',
+        'memberOf': ['CN=Domain Admins,CN=Users,DC=example,DC=com'],
+    }]
+    risks = PrivilegeEscalationAnalyzer().analyze(users, groups, [])
+    assert any(risk['type'] == 'privilege_escalation_path' for risk in risks)
+
+
+def test_readable_uac_overrides_a_stale_delegation_boolean():
+    from core.ad_identity import computer_has_unexpected_unconstrained_delegation
+
+    computer = {
+        'name': 'APP01',
+        'userAccountControl': 4096,
+        'unconstrainedDelegation': True,
+        'primaryGroupID': 515,
+    }
+    assert computer_has_unexpected_unconstrained_delegation(computer) is False
+
+
+def test_focused_verifier_closes_expected_dc_delegation():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from analysis.focused_verifier import verify_selected_findings
+
+    sid = 'S-1-5-21-1-2-3-1000'
+    previous = {
+        'domain': 'example.com',
+        'computers': [{'name': 'DC01', 'distinguishedName': 'CN=DC01,DC=example,DC=com', 'objectSid': sid}],
+        'risks': [{'finding_id': 'selected', 'type': 'unconstrained_delegation', 'affected_object': 'DC01'}],
+    }
+    ldap = SimpleNamespace(
+        domain='example.com',
+        base_dn='DC=example,DC=com',
+        base_search=Mock(return_value=[{'objectSid': sid, 'userAccountControl': 0x2000 | 0x80000}]),
+    )
+    status = verify_selected_findings(ldap, previous, ['selected'])['findings'][0]['status']
+    assert status == 'configuration_resolved'
+
+
+def test_nested_privileged_path_matches_group_name_case_insensitively():
+    from analysis.privilege_escalation import PrivilegeEscalationAnalyzer
+
+    users = [{
+        'sAMAccountName': 'helper',
+        'memberOf': ['CN=helpdesk,CN=Users,DC=example,DC=com'],
+    }]
+    groups = [
+        {'name': 'Helpdesk', 'memberOf': ['CN=domain admins,CN=Users,DC=example,DC=com']},
+        {'name': 'Domain Admins', 'objectSid': 'S-1-5-21-1-2-3-512', 'memberOf': []},
+    ]
+    risks = PrivilegeEscalationAnalyzer().analyze(users, groups, [])
+    assert any(risk['type'] == 'privilege_escalation_path' for risk in risks)
+
+
+def test_nonprivileged_kerberoast_is_not_da_equivalent():
+    from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
+
+    result = DomainAdminTakeoverAnalyzer().analyze([
+        {
+            'type': 'kerberoasting_target',
+            'severity': 'high',
+            'affected_object': 'svc_sql',
+            'is_privileged': False,
+            'privileged_groups': [],
+        }
+    ])
+    path = result['open_paths'][0]
+    assert path['id'] == 'kerberoasting'
+    assert path['da_equivalent'] is False
+
+
+def test_checklist_does_not_emit_evidence_free_placeholders():
+    from analysis.misconfiguration_checklist import MisconfigurationChecker
+
+    findings = MisconfigurationChecker().check([], [], [], [])
+    assert findings == []
+
+
+def test_service_desk_name_is_not_a_service_account():
+    from analysis.user_risks import UserRiskAnalyzer
+
+    analyzer = UserRiskAnalyzer()
+    user = {'sAMAccountName': 'ServiceDesk', 'servicePrincipalName': [], 'memberOf': []}
+    analyzer._enrich_user_data(user)
+    assert user['isServiceAccount'] is False
+
+
+def test_cis_delegation_ignores_domain_controllers_and_invalid_uac():
+    from types import SimpleNamespace
+
+    from analysis.compliance_analyzer import ComplianceAnalyzer
+
+    analyzer = ComplianceAnalyzer(SimpleNamespace(base_dn="DC=example,DC=com"))
+    users = [{"sAMAccountName": "alice", "userAccountControl": "65536"}]
+    computers = [
+        {"name": "DC01", "userAccountControl": 0x2000 | 0x80000, "primaryGroupID": 516},
+        {"name": "broken", "userAccountControl": "not-a-number"},
+    ]
+    report = analyzer.analyze_cis_benchmark(users, [], computers)
+    controls = {row["control_id"]: row for row in report["controls"]}
+    assert controls["CIS 2.3.1.1"]["status"] == "failed"
+    assert controls["CIS 2.3.1.4"]["status"] == "passed"
+
+
+def test_future_timestamp_is_not_recently_created():
+    from datetime import datetime, timedelta, timezone
+
+    from analysis.user_risks import UserRiskAnalyzer
+
+    analyzer = UserRiskAnalyzer()
+    user = {
+        'sAMAccountName': 'future',
+        'whenCreated': datetime.now(timezone.utc) + timedelta(days=2),
+        'memberOf': ['CN=Domain Admins,CN=Users,DC=example,DC=com'],
+        'adminCount': 1,
+    }
+    analyzer._enrich_user_data(user)
+    assert user['createdInLast30Days'] is False
+    assert analyzer._check_recently_created_account(user) == []
+
+
+def test_token_groups_empty_and_ambiguous_are_not_sid_mismatch():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from core.assessment_identity import collect_token_groups
+
+    account = {
+        "distinguishedName": "CN=alice,DC=example,DC=com",
+        "objectSid": "S-1-5-21-1-2-3-1105",
+    }
+    ldap = SimpleNamespace(base_search=Mock(return_value=[]))
+    assert collect_token_groups(ldap, account)["reason"] == "unreadable"
+    ldap.base_search.return_value = [{}, {}]
+    assert collect_token_groups(ldap, dict(account))["reason"] == "ambiguous"
+
+
+def test_replication_shadow_admin_is_critical_only_for_the_pair():
+    from core.constants import Severity
+
+    analyzer = ACLSecurityAnalyzer(None)
+    single = analyzer._calculate_shadow_admin_risk([
+        {"permission": "DS-Replication-Get-Changes"},
+    ])
+    paired = analyzer._calculate_shadow_admin_risk([
+        {"permission": "DS-Replication-Get-Changes"},
+        {"permission": "DS-Replication-Get-Changes-All"},
+    ])
+    assert single == Severity.HIGH
+    assert paired == Severity.CRITICAL
+
+
+def test_laps_group_keeps_named_accounts():
+    from reporting.report_sections.risk_sections import RiskSectionsMixin
+
+    class Host(RiskSectionsMixin):
+        _NON_ACCOUNT_OBJECT_NAMES = set()
+
+    grouped = Host()._group_risks_by_finding([{
+        "type": "laps_missing",
+        "object_type": "computer",
+        "affected_object": "WS01",
+        "computers_with_laps": ["WS02"],
+        "severity": "high",
+    }])
+    assert grouped[0]["affected_objects"] == ["WS01", "WS02"]
+
+
+def test_asrep_is_not_filed_under_kerberoasting():
+    from reporting.report_sections.risk_tab_builder import RiskTabBuilderMixin
+
+    class Host(RiskTabBuilderMixin):
+        pass
+
+    buckets = Host()._bucket_scored_risks([
+        {"type": "asrep_roasting_target", "object_type": "user"},
+        {"type": "kerberoasting_target", "object_type": "user"},
+    ])
+    assert [row["type"] for row in buckets["kerberoasting"]] == ["kerberoasting_target"]
+    assert [row["type"] for row in buckets["asrep"]] == ["asrep_roasting_target"]
+
+
+def test_ciso_counts_skip_findings_that_are_not_scored():
+    from reporting.ciso_dashboard import CISODashboardGenerator
+
+    generator = CISODashboardGenerator()
+    risks = [
+        {"severity": "critical", "type": "kerberoasting_target"},
+        {"severity": "critical", "type": "certificate_esc1", "requires_validation": True},
+    ]
+    summary = generator._generate_ciso_summary(risks, {})
+    assert "Critical: 1." in summary
+    distribution = generator._calculate_risk_distribution(risks)
+    assert distribution["Critical"] == 1
+
+
+def test_single_replication_right_does_not_open_a_dcsync_path():
+    from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
+
+    single = {
+        "type": "acl_ds_replication_get_changes",
+        "severity": "high",
+        "affected_object": "delegate",
+        "evidence": {"requires_runtime_validation": True, "dcsync_pair_complete": False},
+    }
+    report = DomainAdminTakeoverAnalyzer().analyze([single], domain="example.com")
+    assert report["open_paths"] == []
+    assert all(path["id"] != "dcsync" for path in report["pending_paths"])
+
+
+def test_replication_pair_on_the_domain_is_dcsync():
+    from analysis.domain_admin_takeover_analyzer import DomainAdminTakeoverAnalyzer
+
+    ldap = LDAP([{
+        "nTSecurityDescriptor": descriptor(
+            ace(0x100, guid=CHANGES),
+            ace(0x100, guid=CHANGES_ALL),
+        ),
+        "objectClass": ["domainDNS"],
+        "distinguishedName": LDAP.base_dn,
+    }])
+    risks = ACLSecurityAnalyzer(ldap).analyze([], [], [], LDAP.base_dn)["acl_risks"]
+    assert risks
+    assert all(risk["evidence"]["dcsync_pair_complete"] for risk in risks)
+    report = DomainAdminTakeoverAnalyzer().analyze(risks, domain="example.com")
+    assert any(path["id"] == "dcsync" and path["status"] == "open" for path in report["open_paths"])
+
+
+def test_unreadable_descriptor_is_not_a_clean_dacl():
+    raw = descriptor(ace(0x100))[:-1]
+    ldap = LDAP([{
+        "nTSecurityDescriptor": raw,
+        "objectClass": ["domainDNS"],
+        "distinguishedName": LDAP.base_dn,
+    }])
+    risks = ACLSecurityAnalyzer(ldap).analyze([], [], [], LDAP.base_dn)["acl_risks"]
+    assert [risk["type"] for risk in risks] == ["acl_descriptor_unreadable"]
+
+
+def test_gpo_collection_error_is_not_an_empty_directory():
+    from core.collectors.gpo_collector import GPOCollector
+    from core.exceptions import LDAPSearchError
+
+    class BrokenLDAP:
+        def search(self, **_kwargs):
+            raise LDAPSearchError("GPO container unreadable")
+
+    collector = GPOCollector(BrokenLDAP(), show_progress=False)
+    with pytest.raises(LDAPSearchError):
+        collector.collect()
+
+
+def test_exploitability_difficulty_is_escaped():
+    from reporting.report_sections.risk_sections import RiskSectionsMixin
+
+    class Host(RiskSectionsMixin):
+        pass
+
+    badge = Host()._generate_exploitability_badge({
+        "exploitability": {"exploitability_score": 9.2, "difficulty": 'easy"><script>'},
+    })
+    assert "<script>" not in badge
+    assert "&lt;script&gt;" in badge

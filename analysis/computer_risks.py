@@ -5,6 +5,7 @@ Analyzes computer objects for security risks including EOL OS detection
 
 import logging
 from datetime import datetime
+from core.ad_identity import computer_has_unexpected_unconstrained_delegation
 from core.constants import BROAD_DELEGATION_SERVICE_THRESHOLD, RiskTypes, Severity
 from core.ad_security import as_list
 
@@ -146,7 +147,7 @@ class ComputerRiskAnalyzer:
         """Check for unconstrained delegation on computers."""
         risks = []
 
-        if computer.get('unconstrainedDelegation'):
+        if computer_has_unexpected_unconstrained_delegation(computer):
             risks.append({
                 'type': RiskTypes.COMPUTER_UNCONSTRAINED_DELEGATION,
                 'severity': Severity.CRITICAL,

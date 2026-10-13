@@ -82,6 +82,8 @@ class SecurityDescriptorParser:
         UUID('1131f6ad-9c07-11d1-f79f-00c04fc2dcd2').bytes_le: 'DS-Replication-Get-Changes-All',
         UUID('89e95b76-444d-4c62-991a-0facbeda640c').bytes_le: 'DS-Replication-Get-Changes-In-Filtered-Set',
         UUID('00299570-246d-11d0-a768-00aa006e0529').bytes_le: 'UserForceChangePassword',
+        UUID('0e10c968-78fb-11d2-90d4-00c04f79dc55').bytes_le: 'Certificate-Enrollment',
+        UUID('a05b8cc2-17bc-4802-a210-e9df1b2d80c8').bytes_le: 'Certificate-AutoEnrollment',
     }
     PROPERTY_GUID_MAPPING = {
         UUID('bf9679c0-0de6-11d0-a285-00aa003049e2').bytes_le: 'WriteMember',

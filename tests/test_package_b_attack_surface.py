@@ -57,6 +57,7 @@ def test_gmsa_reader_graph_decodes_broad_password_reader():
     ldap = FakeLDAP({
         "msDS-GroupManagedServiceAccount": [{
             "sAMAccountName": "svcTier0$", "adminCount": "1",
+            "memberOf": ["CN=Domain Admins,CN=Users,DC=contoso,DC=com"],
             "msDS-GroupMSAMembership": _sd(_sid(1, 0), mask=0x10),
         }]
     })
@@ -134,7 +135,7 @@ def test_hybrid_identity_v2_detects_stale_cloud_and_seamless_sso_keys():
     assert "hybrid_seamless_sso_stale_key" in types
 
 
-def test_attack_graph_v2_finds_shortest_tier0_path_and_opengraph_export():
+def test_attack_graph_v2_preserves_existing_nested_privilege_and_opengraph_export():
     users = [{
         "sAMAccountName": "alice",
         "memberOf": ["CN=Helpdesk,CN=Users,DC=contoso,DC=com"],
@@ -150,8 +151,11 @@ def test_attack_graph_v2_finds_shortest_tier0_path_and_opengraph_export():
         },
     ]
     result = AttackGraphV2Analyzer().analyze(users, groups, [], {})
-    assert any(risk["type"] == "attack_graph_tier0_path" for risk in result["risks"])
-    assert result["graph"]["summary"]["open_path_count"] == 1
+    assert not result["risks"]
+    alice = next(node for node in result["graph"]["nodes"] if node["label"] == "alice")
+    assert alice["privileged"] is True
+    assert alice["privilege_basis"] == "existing_nested_membership"
+    assert result["graph"]["summary"]["open_path_count"] == 0
     assert result["graph"]["opengraph"]["graph"]["nodes"]
     assert result["graph"]["opengraph"]["graph"]["edges"]
 

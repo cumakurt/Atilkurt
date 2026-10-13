@@ -10,6 +10,7 @@ from core.ad_identity import (
     is_privileged_group_record,
     is_privileged_principal_reference,
     membership_names,
+    privileged_membership_values,
     sid_rid,
 )
 from analysis.privileged_account_status import privileged_admin_roles
@@ -90,9 +91,18 @@ class TestPrivilegedPrincipalReference(unittest.TestCase):
             is_privileged_principal_reference("CN=Administrator,CN=Users,DC=example,DC=com")
         )
 
+    def test_domain_rid_collision_is_not_a_builtin_group(self):
+        self.assertTrue(is_privileged_principal_reference("S-1-5-32-548"))
+        self.assertTrue(is_privileged_principal_reference("S-1-5-21-1-2-3-512"))
+        self.assertFalse(is_privileged_principal_reference("S-1-5-21-1-2-3-548"))
+        self.assertFalse(is_privileged_principal_reference("S-1-5-21-1-2-3-544"))
+
     def test_admin_count_is_privileged_evidence(self):
         from core.ad_identity import account_has_privileged_evidence
+        from core.ad_identity import account_has_current_privileged_membership
         self.assertTrue(account_has_privileged_evidence({"adminCount": "1", "memberOf": []}))
+        self.assertFalse(account_has_current_privileged_membership({"adminCount": "1", "memberOf": []}))
+        self.assertTrue(account_has_current_privileged_membership({"adminCount": "0", "primaryGroupID": 512}))
         self.assertFalse(
             account_has_privileged_evidence({
                 "adminCount": "0",
@@ -108,6 +118,13 @@ class TestPrivilegedPrincipalReference(unittest.TestCase):
 
 
 class TestMembershipAndAdminRoles(unittest.TestCase):
+    def test_privileged_membership_ignores_ou_named_domain_admins(self):
+        values = privileged_membership_values([
+            "CN=Helpdesk,OU=Domain Admins,DC=example,DC=com",
+            "CN=Domain Admins,CN=Users,DC=example,DC=com",
+        ])
+        self.assertEqual(values, ["CN=Domain Admins,CN=Users,DC=example,DC=com"])
+
     def test_membership_uses_first_rdn_only(self):
         names = membership_names([
             "CN=Helpdesk,OU=Domain Admins,DC=example,DC=com",
@@ -133,6 +150,13 @@ class TestMembershipAndAdminRoles(unittest.TestCase):
 
 
 class TestDomainControllerDetection(unittest.TestCase):
+    def test_dc_trusted_for_delegation_is_expected(self):
+        from core.ad_identity import computer_has_unexpected_unconstrained_delegation
+        dc = {"name": "DC01", "userAccountControl": 0x2000 | 0x80000, "primaryGroupID": 516}
+        member = {"name": "APP01", "userAccountControl": 0x1000 | 0x80000, "primaryGroupID": 515}
+        self.assertFalse(computer_has_unexpected_unconstrained_delegation(dc))
+        self.assertTrue(computer_has_unexpected_unconstrained_delegation(member))
+
     def test_server_trust_account_is_dc(self):
         from core.ad_identity import computer_is_domain_controller
         self.assertTrue(computer_is_domain_controller({

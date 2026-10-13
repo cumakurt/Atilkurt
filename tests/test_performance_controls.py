@@ -154,5 +154,64 @@ class TestACLShadowAdminPerformance(unittest.TestCase):
         self.assertEqual(result[0]["principal_type"], "user")
 
 
+class TestAclLegacySkipAndPaging(unittest.TestCase):
+    def test_full_profile_skips_acl_legacy_when_acl_security_runs(self):
+        keys = [key for key, _, _ in registry._selected_analysis_steps("full", [])]
+        self.assertIn("acl_security", keys)
+        self.assertNotIn("acl_legacy", keys)
+
+    def test_fast_profile_excludes_acl_legacy(self):
+        keys = [key for key, _, _ in registry._selected_analysis_steps("fast", [])]
+        self.assertNotIn("acl_legacy", keys)
+        self.assertNotIn("acl_security", keys)
+
+    def test_paged_search_converts_only_new_accumulated_entries(self):
+        from tests.test_ldap_connection import FakeEntry, build_connection
+
+        class AccumulatingConnection:
+            def __init__(self):
+                self.entries = []
+                self.result = {"result": 0, "description": "success"}
+                self.bound = True
+                self.calls = 0
+
+            def search(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    self.entries = [FakeEntry("CN=One,DC=example,DC=com", "One")]
+                    self.result = {"result": 0, "controls": {
+                        "1.2.840.113556.1.4.319": {"value": {"cookie": b"next"}}
+                    }}
+                else:
+                    self.entries = [
+                        FakeEntry("CN=One,DC=example,DC=com", "One"),
+                        FakeEntry("CN=Two,DC=example,DC=com", "Two"),
+                    ]
+                    self.result = {"result": 0, "controls": {
+                        "1.2.840.113556.1.4.319": {"value": {"cookie": b""}}
+                    }}
+                return True
+
+        ldap = build_connection(page_size=1, enable_cache=False)
+        ldap.connection = AccumulatingConnection()
+        converted = []
+        original = ldap._entry_to_dict
+
+        def counted(entry):
+            converted.append(getattr(entry, "entry_dn", None))
+            return original(entry)
+
+        ldap._entry_to_dict = counted
+        results = ldap._paged_search(
+            search_base=ldap.base_dn,
+            search_filter="(objectClass=computer)",
+            attributes=["name"],
+            size_limit=0,
+            timeout=30,
+        )
+        self.assertEqual([row["name"] for row in results], ["One", "Two"])
+        self.assertEqual(converted, ["CN=One,DC=example,DC=com", "CN=Two,DC=example,DC=com"])
+
+
 if __name__ == "__main__":
     unittest.main()

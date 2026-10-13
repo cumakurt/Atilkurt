@@ -4,7 +4,7 @@ Collects all user objects from Active Directory
 """
 
 import logging
-from datetime import datetime
+from core.ad_security import as_int, filetime_utc
 from core.constants import UACFlags
 from core.progress_tracker import ProgressTracker, create_progress_callback
 
@@ -51,6 +51,7 @@ class UserCollector:
                 'lastLogonTimestamp',
                 'pwdLastSet',
                 'userAccountControl',
+                'msDS-User-Account-Control-Computed',
                 'adminCount',
                 'servicePrincipalName',
                 'msDS-SupportedEncryptionTypes',
@@ -109,7 +110,9 @@ class UserCollector:
                     'msDS-ExternalDirectoryObjectId': entry.get('msDS-ExternalDirectoryObjectId'),
                     'hasKeyCredentialLink': bool(entry.get('msDS-KeyCredentialLink')),
                     'isDisabled': bool(uac & UACFlags.ACCOUNTDISABLE),
-                    'isLocked': bool(uac & UACFlags.LOCKOUT) or self._is_account_locked(entry.get('lockoutTime')),
+                    'isLocked': bool(uac & UACFlags.LOCKOUT) or self._is_account_locked(
+                        entry.get('lockoutTime'), entry.get('msDS-User-Account-Control-Computed'),
+                    ),
                 }
 
                 # Normalize memberOf to list
@@ -144,38 +147,23 @@ class UserCollector:
         Returns:
             datetime or None: Converted datetime object
         """
-        if not timestamp:
-            return None
+        return filetime_utc(timestamp)
 
-        try:
-            # Windows timestamp: number of 100-nanosecond intervals since 1601-01-01
-            if isinstance(timestamp, (int, str)):
-                timestamp = int(timestamp)
-                if timestamp == 0:
-                    return None
-                # Convert to Unix timestamp
-                unix_timestamp = (timestamp / 10000000) - 11644473600
-                return datetime.fromtimestamp(unix_timestamp)
-            return timestamp
-        except (ValueError, TypeError, OSError):
-            return None
-
-    def _is_account_locked(self, lockout_time):
+    def _is_account_locked(self, lockout_time, computed_uac=None):
         """
-        Check if account is locked based on lockoutTime.
+        Use the DC's effective lockout flag, including the applicable PSO.
 
         Args:
             lockout_time: Lockout timestamp
+            computed_uac: msDS-User-Account-Control-Computed flags
 
         Returns:
-            bool: True if account is locked
+            bool or None: Current lockout state, or unknown without computed flags.
         """
-        if lockout_time in (None, "", 0, "0"):
+        flags = as_int(computed_uac)
+        if flags is not None:
+            return bool(flags & UACFlags.LOCKOUT)
+        if lockout_time in (0, "0"):
             return False
-
-        try:
-            if isinstance(lockout_time, datetime):
-                return True
-            return int(lockout_time) != 0
-        except (ValueError, TypeError):
-            return False
+        # A nonzero timestamp can remain after the effective lockout expires.
+        return None

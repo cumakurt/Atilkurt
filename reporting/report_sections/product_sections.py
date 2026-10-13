@@ -225,6 +225,13 @@ class ProductSectionsMixin:
             for row in (health.get("queries") or [])[:100]
         ]
         health_content = f"<p>{_escape(labels['status'])}: <strong>{_escape(status(health.get('status')))}</strong></p>"
+        failed_collections = health.get("failed_collections") or []
+        if failed_collections:
+            names = ", ".join(str(name) for name in failed_collections)
+            health_content += (
+                "<p>Collections not assessed: "
+                f"{_escape(names)}. An empty count is not evidence that those objects are absent.</p>"
+            )
         health_content += table(["query", "scope", "returned", "status", "unobserved"], query_rows)
         health_content += f'<p class="small text-muted">{_escape(labels["shown"])}</p>'
         accuracy += card("health", health_content, "health_note")

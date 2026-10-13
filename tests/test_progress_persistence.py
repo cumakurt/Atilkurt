@@ -71,6 +71,16 @@ class TestProgressPersistence(unittest.TestCase):
         mode = os.stat(self.persistence.checkpoint_dir).st_mode
         self.assertEqual(mode & 0o777, 0o700)
 
+    def test_corrupt_checkpoint_is_not_overwritten(self):
+        """A later collection save must not replace an unreadable checkpoint."""
+        path = self.persistence.save_checkpoint("keep", {"users": [{"sAMAccountName": "alice"}]})
+        with open(path, "w", encoding="utf-8") as file_handle:
+            file_handle.write("{not-json")
+        with self.assertRaises(ValueError):
+            self.persistence.save_collection_state("keep", "users", [{"sAMAccountName": "bob"}])
+        with open(path, encoding="utf-8") as file_handle:
+            self.assertEqual(file_handle.read(), "{not-json")
+
     def test_checkpoint_write_rejects_external_symlink(self):
         """Saving must reject a checkpoint symlink that resolves outside the directory."""
         outside_path = os.path.join(self.temp_dir, "outside.json")

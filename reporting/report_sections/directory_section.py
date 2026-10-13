@@ -219,7 +219,7 @@ class DirectorySectionMixin:
                     </div>
                     <div class="card-body">
                         <div class="input-group mb-3">
-                            <input type="text" class="form-control" id="directorySearch" placeholder="Search users, groups, or computers..." onkeyup="filterDirectoryObjects()">
+                            <input type="text" class="form-control" id="directorySearch" placeholder="Search users, groups, or computers..." aria-label="Search users, groups, or computers..." onkeyup="filterDirectoryObjects()">
                             <button class="btn btn-outline-secondary" type="button" onclick="clearDirectorySearch()">
                                 <i class="fas fa-times"></i> Clear
                             </button>
@@ -1033,7 +1033,7 @@ class DirectorySectionMixin:
                                     ${{enterpriseAdminGroups.length > 0 ? `<tr><td><strong><i class="fas fa-users-cog"></i> Enterprise Admin Groups:</strong></td><td><span class="badge bg-danger">${{enterpriseAdminGroups.length}} group(s)</span></td></tr>` : ''}}
                                     ${{schemaAdminGroups.length > 0 ? `<tr><td><strong><i class="fas fa-users-cog"></i> Schema Admin Groups:</strong></td><td><span class="badge bg-danger">${{schemaAdminGroups.length}} group(s)</span></td></tr>` : ''}}
                                     ${{createdInLast10Days || createdInLast30Days || createdInLast60Days || createdInLast90Days ? `<tr><td><strong><i class="fas fa-calendar-plus"></i> Recently Created:</strong></td><td>${{createdInLast10Days ? '<span class="badge bg-warning">Last 10 days</span>' : createdInLast30Days ? '<span class="badge bg-info">Last 30 days</span>' : createdInLast60Days ? '<span class="badge bg-info">Last 60 days</span>' : '<span class="badge bg-info">Last 90 days</span>'}}</td></tr>` : ''}}
-                                    ${{groupChangedInLast10Days || groupChangedInLast30Days || groupChangedInLast60Days || groupChangedInLast90Days ? `<tr><td><strong><i class="fas fa-exchange-alt"></i> Group Changed:</strong></td><td>${{groupChangedInLast10Days ? '<span class="badge bg-warning">Last 10 days</span>' : groupChangedInLast30Days ? '<span class="badge bg-info">Last 30 days</span>' : groupChangedInLast60Days ? '<span class="badge bg-info">Last 60 days</span>' : '<span class="badge bg-info">Last 90 days</span>'}}</td></tr>` : ''}}
+                                    ${{groupChangedInLast10Days || groupChangedInLast30Days || groupChangedInLast60Days || groupChangedInLast90Days ? `<tr><td><strong><i class="fas fa-exchange-alt"></i> Object changed:</strong></td><td>${{groupChangedInLast10Days ? '<span class="badge bg-warning">Last 10 days</span>' : groupChangedInLast30Days ? '<span class="badge bg-info">Last 30 days</span>' : groupChangedInLast60Days ? '<span class="badge bg-info">Last 60 days</span>' : '<span class="badge bg-info">Last 90 days</span>'}}</td></tr>` : ''}}
                                     <tr>
                                         <td><strong><i class="fas fa-calendar-plus"></i> Account Created:</strong></td>
                                         <td>${{escapeHtml(accountCreated)}}</td>

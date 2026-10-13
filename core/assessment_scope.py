@@ -58,7 +58,7 @@ class AssessmentScope:
             if not isinstance(values, list) or len(values) > 1000 or any(not isinstance(v, str) or not v.strip() for v in values):
                 raise ValidationError(f"Scope {name} must be a bounded list of nonempty strings")
             setattr(self, name, list(dict.fromkeys(values)))
-        if set(self.services) - {'ldap', 'ldaps', 'smb', 'adcs_http'}:
+        if set(self.services) - {'ldap', 'ldaps', 'smb', 'drs', 'adcs_http'}:
             raise ValidationError('Scope contains an unsupported service name')
         if self.domains and self.domain not in {v.casefold().strip(".") for v in self.domains}:
             raise ValidationError("Assessment domain is outside engagement scope")

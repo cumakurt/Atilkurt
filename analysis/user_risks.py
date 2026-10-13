@@ -5,16 +5,40 @@ Analyzes user data for security risks
 
 import logging
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
+from core.ad_identity import first_ldap_rdn, nested_privileged_groups, privileged_membership_values
+from core.ad_security import as_list
 from core.constants import UACFlags, RiskTypes, Severity, MITRETechniques, TimeThresholds
 from core.base_analyzer import BaseAnalyzer
 from core.types import UserDict, RiskDict
 from analysis.privileged_account_status import (
     account_is_disabled,
+    privileged_admin_roles,
     risks_for_disabled_privileged_admin,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _elapsed_days(value: Any) -> int | None:
+    """Return whole UTC days since an LDAP timestamp, or None when unreadable."""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - value.astimezone(timezone.utc)).days
+
+
+def _within_past_days(days: int | None, window: int) -> bool:
+    return days is not None and 0 <= days <= window
 
 
 class UserRiskAnalyzer(BaseAnalyzer):
@@ -24,57 +48,40 @@ class UserRiskAnalyzer(BaseAnalyzer):
         """Initialize user risk analyzer."""
         super().__init__()
 
-    def analyze(self, users: list[UserDict]) -> list[RiskDict]:
+    def analyze(self, users: list[UserDict], groups: list[dict[str, Any]] | None = None) -> list[RiskDict]:
         """
         Analyze users for security risks.
 
         Args:
             users: List of user dictionaries
+            groups: Collected groups, used to expand nested privileged membership
 
         Returns:
             list: List of risk dictionaries
         """
         risks = []
+        self._directory_groups = list(groups or [])
 
         for user in users:
-            # Enrich user data with additional metadata
             self._enrich_user_data(user)
-
-            # Check password never expires
-            risks.extend(self._check_password_never_expires(user))
-
-            # Check password not required
-            risks.extend(self._check_password_not_required(user))
-
-            # Check Kerberos preauth disabled
-            risks.extend(self._check_kerberos_preauth_disabled(user))
-
-            # Check SPN defined users
-            risks.extend(self._check_spn_users(user))
-
-            # Check adminCount users
             risks.extend(self._check_admin_count(user))
+            if account_is_disabled(user):
+                # A disabled account cannot authenticate. Report the disablement
+                # itself only when privilege or a dangerous flag would return
+                # with a re-enable.
+                risks.extend(risks_for_disabled_privileged_admin(user))
+                risks.extend(self._check_disabled_sensitive_configuration(user))
+                continue
 
-            # Check inactive privileged accounts
+            risks.extend(self._check_password_never_expires(user))
+            risks.extend(self._check_password_not_required(user))
+            risks.extend(self._check_kerberos_preauth_disabled(user))
+            risks.extend(self._check_spn_users(user))
             risks.extend(self._check_inactive_privileged(user))
-
-            # Disabled Domain Admin / Enterprise Admin accounts are reported separately
-            risks.extend(risks_for_disabled_privileged_admin(user))
-
-            # Check disabled accounts
-            risks.extend(self._check_disabled_account(user))
-
-            # Check locked accounts
             risks.extend(self._check_locked_account(user))
-
-            # Check service accounts with password never expires
             risks.extend(self._check_service_account_password_never_expires(user))
-
-            # Check recently created accounts
             risks.extend(self._check_recently_created_account(user))
-
-            # Check recently modified group membership
-            risks.extend(self._check_recently_modified_group_membership(user))
+            risks.extend(self._check_recently_changed_privileged_account(user))
 
         logger.info(f"Found {len(risks)} user-related risks")
         return risks
@@ -86,38 +93,29 @@ class UserRiskAnalyzer(BaseAnalyzer):
         Args:
             user: User dictionary to enrich
         """
-        # Calculate account age
-        when_created = user.get('whenCreated')
-        if when_created:
-            try:
-                if isinstance(when_created, str):
-                    when_created = datetime.fromisoformat(when_created.replace('Z', '+00:00'))
-                if isinstance(when_created, datetime):
-                    account_age_days = (datetime.now() - when_created.replace(tzinfo=None)).days
-                    user['accountAgeDays'] = account_age_days
-            except Exception:
-                pass
+        account_age_days = _elapsed_days(user.get('whenCreated'))
+        if account_age_days is not None:
+            user['accountAgeDays'] = account_age_days
 
-        # Extract admin group memberships
-        member_of = user.get('memberOf', []) or []
-        if not isinstance(member_of, list):
-            member_of = [member_of] if member_of else []
-
+        # Extract admin group memberships from the first RDN only.
         domain_admin_groups = []
         enterprise_admin_groups = []
         schema_admin_groups = []
-        admin_groups = []
+        admin_groups = list(privileged_membership_values(user.get('memberOf')))
+        seen_admin_names = {first_ldap_rdn(item).casefold() for item in admin_groups}
+        for name in nested_privileged_groups(user, getattr(self, '_directory_groups', None)):
+            if name.casefold() not in seen_admin_names:
+                seen_admin_names.add(name.casefold())
+                admin_groups.append(name)
 
-        for group_dn in member_of:
-            group_str = str(group_dn).upper()
-            if 'DOMAIN ADMINS' in group_str:
+        for group_dn in admin_groups:
+            folded = first_ldap_rdn(group_dn).casefold()
+            if folded == 'domain admins':
                 domain_admin_groups.append(group_dn)
-            if 'ENTERPRISE ADMINS' in group_str:
+            elif folded == 'enterprise admins':
                 enterprise_admin_groups.append(group_dn)
-            if 'SCHEMA ADMINS' in group_str:
+            elif folded == 'schema admins':
                 schema_admin_groups.append(group_dn)
-            if any(priv in group_str for priv in ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS', 'ADMINISTRATORS']):
-                admin_groups.append(group_dn)
 
         user['domainAdminGroups'] = domain_admin_groups
         user['enterpriseAdminGroups'] = enterprise_admin_groups
@@ -127,80 +125,48 @@ class UserRiskAnalyzer(BaseAnalyzer):
         # Calculate admin privilege age (when adminCount was set or when joined admin group)
         # This is approximate - we use whenChanged as proxy for when admin privileges were granted
         when_changed = user.get('whenChanged')
-        admin_privilege_age_days = None
-        if (user.get('adminCount') == 1 or user.get('adminCount') == '1' or admin_groups) and when_changed:
-            try:
-                if isinstance(when_changed, str):
-                    when_changed = datetime.fromisoformat(when_changed.replace('Z', '+00:00'))
-                if isinstance(when_changed, datetime):
-                    admin_privilege_age_days = (datetime.now() - when_changed.replace(tzinfo=None)).days
-                    user['adminPrivilegeAgeDays'] = admin_privilege_age_days
-            except Exception:
-                pass
+        if user.get('adminCount') in (1, '1') or admin_groups:
+            admin_privilege_age_days = _elapsed_days(when_changed)
+            if admin_privilege_age_days is not None:
+                user['adminPrivilegeAgeDays'] = admin_privilege_age_days
 
         # Check if service account (has SPN or name starts with service account patterns)
         spns = user.get('servicePrincipalName', []) or []
         if not isinstance(spns, list):
             spns = [spns] if spns else []
 
-        username = user.get('sAMAccountName', '') or ''
-        username_upper = username.upper() if username else ''
-        description = user.get('description') or ''
-        description_upper = description.upper() if description else ''
-
-        is_service_account = (
-            len(spns) > 0 or
-            username_upper.startswith('SVC_') or
-            username_upper.startswith('SRV_') or
-            username_upper.startswith('SERVICE_') or
-            'SERVICE' in username_upper or
-            (description_upper and 'SERVICE' in description_upper)
-        )
+        username = str(user.get('sAMAccountName') or '')
+        username_folded = username.casefold()
+        # Name and description substrings such as "ServiceDesk" are not evidence
+        # that the account is a service principal.
+        is_service_account = bool(spns) or username_folded.startswith(('svc_', 'srv_', 'service_'))
         user['isServiceAccount'] = is_service_account
 
-        # Calculate days since last logon
-        last_logon = user.get('lastLogonTimestamp')
-        if last_logon:
-            try:
-                if isinstance(last_logon, str):
-                    last_logon = datetime.fromisoformat(last_logon.replace('Z', '+00:00'))
-                if isinstance(last_logon, datetime):
-                    days_since_logon = (datetime.now() - last_logon.replace(tzinfo=None)).days
-                    user['daysSinceLastLogon'] = days_since_logon
-            except Exception:
-                pass
+        days_since_logon = _elapsed_days(user.get('lastLogonTimestamp'))
+        if days_since_logon is not None:
+            user['daysSinceLastLogon'] = days_since_logon
 
-        # Check if account was created recently (10/30/60/90 days)
-        if when_created:
-            try:
-                if isinstance(when_created, str):
-                    when_created = datetime.fromisoformat(when_created.replace('Z', '+00:00'))
-                if isinstance(when_created, datetime):
-                    days_ago = (datetime.now() - when_created.replace(tzinfo=None)).days
-                    user['createdInLast10Days'] = days_ago <= 10
-                    user['createdInLast30Days'] = days_ago <= 30
-                    user['createdInLast60Days'] = days_ago <= 60
-                    user['createdInLast90Days'] = days_ago <= 90
-            except Exception:
-                pass
+        user['createdInLast10Days'] = _within_past_days(account_age_days, 10)
+        user['createdInLast30Days'] = _within_past_days(account_age_days, 30)
+        user['createdInLast60Days'] = _within_past_days(account_age_days, 60)
+        user['createdInLast90Days'] = _within_past_days(account_age_days, 90)
 
-        # Check if group membership was changed recently
-        if when_changed:
-            try:
-                if isinstance(when_changed, str):
-                    when_changed = datetime.fromisoformat(when_changed.replace('Z', '+00:00'))
-                if isinstance(when_changed, datetime):
-                    days_ago = (datetime.now() - when_changed.replace(tzinfo=None)).days
-                    user['groupChangedInLast10Days'] = days_ago <= 10
-                    user['groupChangedInLast30Days'] = days_ago <= 30
-                    user['groupChangedInLast60Days'] = days_ago <= 60
-                    user['groupChangedInLast90Days'] = days_ago <= 90
-            except Exception:
-                pass
+        # whenChanged updates for any attribute write, not only group membership.
+        changed_days = _elapsed_days(when_changed)
+        user['groupChangedInLast10Days'] = _within_past_days(changed_days, 10)
+        user['groupChangedInLast30Days'] = _within_past_days(changed_days, 30)
+        user['groupChangedInLast60Days'] = _within_past_days(changed_days, 60)
+        user['groupChangedInLast90Days'] = _within_past_days(changed_days, 90)
 
     def _check_password_never_expires(self, user: dict[str, Any]) -> list[dict[str, Any]]:
-        """Check if user has password never expires flag."""
+        """Check if user has password never expires flag.
+
+        Service accounts are reported by the service-account check so the same
+        flag is not scored twice.
+        """
         risks = []
+        if user.get('isServiceAccount'):
+            return risks
         uac = user.get('userAccountControl', 0)
 
         if isinstance(uac, str):
@@ -264,13 +230,20 @@ class UserRiskAnalyzer(BaseAnalyzer):
                 return risks
 
         if uac & UACFlags.DONT_REQUIRE_PREAUTH:
+            privileged_groups = [
+                first_ldap_rdn(group_dn)
+                for group_dn in privileged_membership_values(user.get('memberOf'))
+            ]
+            is_privileged = bool(privileged_groups)
             risks.append({
                 'type': RiskTypes.KERBEROS_PREAUTH_DISABLED,
-                'severity': Severity.CRITICAL,
+                'severity': Severity.CRITICAL if is_privileged else Severity.HIGH,
                 'title': 'Kerberos Preauthentication Disabled',
                 'description': f"User '{user.get('sAMAccountName')}' has Kerberos preauthentication disabled",
                 'affected_object': user.get('sAMAccountName'),
                 'object_type': 'user',
+                'is_privileged': is_privileged,
+                'privileged_groups': privileged_groups,
                 'impact': 'Disabling preauthentication allows attackers to request Kerberos tickets without knowing the password, enabling offline brute-force attacks',
                 'attack_scenario': 'An attacker can perform AS-REP roasting attacks, attempting to crack passwords offline without triggering account lockout policies',
                 'mitigation': 'Enable Kerberos preauthentication for all user accounts. This is a critical security setting that should never be disabled',
@@ -306,48 +279,54 @@ class UserRiskAnalyzer(BaseAnalyzer):
         return risks
 
     def _check_admin_count(self, user: dict[str, Any]) -> list[dict[str, Any]]:
-        """Check if user has adminCount flag set."""
-        risks = []
-        admin_count = user.get('adminCount')
+        """Report adminCount only when it no longer matches a privileged group.
 
-        if admin_count == 1 or admin_count == '1':
-            groups = user.get('memberOf') or []
-            if not isinstance(groups, list):
-                groups = [groups] if groups else []
-            privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in
-                ['Domain Admins', 'Enterprise Admins', 'Administrators', 'Account Operators'])]
-
-            risks.append({
-                'type': RiskTypes.ADMIN_COUNT_SET,
-                'severity': Severity.HIGH,
-                'title': 'AdminCount Flag Set',
-                'description': f"User '{user.get('sAMAccountName')}' has adminCount=1, indicating administrative privileges",
-                'affected_object': user.get('sAMAccountName'),
-                'object_type': 'user',
-                'member_of': groups,
-                'privileged_groups': privileged_groups,
-                'impact': 'Users with adminCount=1 are protected by AdminSDHolder, indicating they have or had administrative privileges. This should be reviewed regularly',
-                'attack_scenario': 'If an attacker compromises an account with adminCount=1, they gain administrative privileges with potential domain-wide impact',
-                'mitigation': 'Regularly review accounts with adminCount=1. Ensure these accounts are necessary and properly secured with strong passwords and MFA. Remove adminCount if the account no longer requires administrative privileges',
-                'cis_reference': 'CIS Benchmark recommends regular review of administrative accounts',
-                'mitre_attack': 'T1078 - Valid Accounts'
-            })
-
-        return risks
+        adminCount stays set after an account leaves a protected group, and
+        AdminSDHolder keeps rewriting the ACL. Current privileged members are
+        already covered by membership findings.
+        """
+        if user.get('adminCount') not in (1, '1'):
+            return []
+        groups = as_list(user.get('memberOf'))
+        privileged_groups = privileged_membership_values(groups)
+        if privileged_groups or privileged_admin_roles(user):
+            return []
+        username = user.get('sAMAccountName')
+        return [{
+            'type': RiskTypes.ADMIN_COUNT_SET,
+            'severity': Severity.MEDIUM,
+            'title': 'Stale adminCount without privileged membership',
+            'description': (
+                f"User '{username}' still has adminCount=1 but is not a member of a "
+                "well-known privileged group"
+            ),
+            'affected_object': username,
+            'object_type': 'user',
+            'member_of': groups,
+            'privileged_groups': [],
+            'impact': (
+                'AdminSDHolder continues to protect this account as if it were privileged. '
+                'The flag is not evidence that the account currently holds Domain Admin rights.'
+            ),
+            'attack_scenario': (
+                'A previously privileged account can keep a protected ACL after removal from '
+                'admin groups, hiding later permission changes and preserving an unexpected security descriptor.'
+            ),
+            'mitigation': (
+                'Confirm the account should not be privileged, move it out of any protected container, '
+                'and clear adminCount so AdminSDHolder stops owning the ACL.'
+            ),
+            'cis_reference': 'CIS Benchmark recommends regular review of administrative accounts',
+            'mitre_attack': 'T1078 - Valid Accounts'
+        }]
 
     def _check_inactive_privileged(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check for inactive privileged accounts."""
         risks = []
 
-        # Check if user has privileged group membership
-        groups = user.get('memberOf') or []
-        if not isinstance(groups, list):
-            groups = [groups] if groups else []
-        privileged_groups = [g for g in groups if g and any(priv in str(g) for priv in
-            ['Domain Admins', 'Enterprise Admins', 'Administrators', 'Account Operators',
-             'Backup Operators', 'Server Operators'])]
-
-        if not privileged_groups:
+        privileged_groups = list(user.get('adminGroups') or [])
+        roles = privileged_admin_roles(user)
+        if not privileged_groups and not roles:
             return risks
 
         # Check last logon
@@ -362,9 +341,9 @@ class UserRiskAnalyzer(BaseAnalyzer):
             except Exception:
                 return risks
 
-        if isinstance(last_logon, datetime):
-            days_inactive = (datetime.now() - last_logon.replace(tzinfo=None)).days
-            if days_inactive > TimeThresholds.INACTIVE_ACCOUNT_THRESHOLD:
+        if isinstance(last_logon, datetime) or isinstance(last_logon, str):
+            days_inactive = _elapsed_days(last_logon)
+            if days_inactive is not None and days_inactive > TimeThresholds.INACTIVE_ACCOUNT_THRESHOLD:
                 risks.append({
                     'type': RiskTypes.INACTIVE_PRIVILEGED_ACCOUNT,
                     'severity': Severity.MEDIUM,
@@ -373,7 +352,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
                     'affected_object': user.get('sAMAccountName'),
                     'object_type': 'user',
                     'days_inactive': days_inactive,
-                    'privileged_groups': privileged_groups,
+                    'privileged_groups': privileged_groups or roles,
                     'impact': 'Inactive privileged accounts pose a security risk as they may be forgotten and not properly secured, or may have been compromised without detection',
                     'attack_scenario': 'An attacker who compromises an inactive privileged account may go undetected for extended periods, as the account owner is not actively monitoring it',
                     'mitigation': 'Review inactive privileged accounts regularly. Disable or remove accounts that are no longer needed. Ensure all active privileged accounts have strong passwords and MFA enabled',
@@ -383,26 +362,47 @@ class UserRiskAnalyzer(BaseAnalyzer):
 
         return risks
 
-    def _check_disabled_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
-        """Check if user account is disabled."""
-        risks = []
-
-        if account_is_disabled(user) and not risks_for_disabled_privileged_admin(user):
-            risks.append({
-                'type': RiskTypes.DISABLED_USER_ACCOUNT,
-                'severity': Severity.LOW,
-                'title': 'Disabled User Account',
-                'description': f"User account '{user.get('sAMAccountName')}' is disabled",
-                'affected_object': user.get('sAMAccountName'),
-                'object_type': 'user',
-                'impact': 'Disabled accounts should be reviewed to ensure they are not needed or should be removed',
-                'attack_scenario': 'Disabled accounts that are re-enabled without proper review could pose security risks',
-                'mitigation': 'Review disabled accounts regularly. Remove accounts that are no longer needed. Ensure proper approval process before re-enabling accounts',
-                'cis_reference': 'CIS Benchmark recommends removing unused accounts',
-                'mitre_attack': 'T1078 - Valid Accounts'
-            })
-
-        return risks
+    def _check_disabled_sensitive_configuration(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        """Report a disabled account that would become dangerous if re-enabled."""
+        uac = user.get('userAccountControl', 0)
+        if isinstance(uac, (list, tuple)):
+            uac = uac[0] if uac else 0
+        try:
+            uac = int(uac or 0)
+        except (TypeError, ValueError):
+            uac = 0
+        spns = user.get('servicePrincipalName') or []
+        if not isinstance(spns, list):
+            spns = [spns] if spns else []
+        reasons = []
+        if spns:
+            reasons.append("service principal names")
+        if uac & UACFlags.DONT_REQUIRE_PREAUTH:
+            reasons.append("Kerberos preauthentication disabled")
+        if uac & UACFlags.PASSWD_NOTREQD:
+            reasons.append("password not required")
+        if uac & UACFlags.TRUSTED_FOR_DELEGATION:
+            reasons.append("unconstrained delegation")
+        if as_list(user.get('msDS-AllowedToDelegateTo')):
+            reasons.append("constrained delegation targets")
+        if not reasons:
+            return []
+        username = user.get('sAMAccountName')
+        joined = ", ".join(reasons)
+        return [{
+            'type': RiskTypes.DISABLED_ACCOUNT_SENSITIVE_CONFIGURATION,
+            'severity': Severity.MEDIUM,
+            'title': 'Disabled account retains sensitive configuration',
+            'description': f"Disabled user '{username}' still has {joined}",
+            'affected_object': username,
+            'object_type': 'user',
+            'sensitive_configuration': reasons,
+            'impact': 'The account cannot authenticate while disabled, but re-enabling it restores the listed attack surface.',
+            'attack_scenario': 'An operator re-enables the account without clearing the old flags, and the account becomes Kerberoastable, delegatable, or passwordless.',
+            'mitigation': 'Remove the sensitive flags before any re-enable, or delete the account if it is no longer required.',
+            'cis_reference': 'CIS Benchmark recommends removing unused accounts',
+            'mitre_attack': 'T1078 - Valid Accounts',
+        }]
 
     def _check_locked_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Check if user account is locked."""
@@ -463,7 +463,7 @@ class UserRiskAnalyzer(BaseAnalyzer):
         risks = []
 
         # Only flag if account was created in last threshold days and has admin privileges
-        if user.get('createdInLast30Days') and (user.get('adminCount') == 1 or user.get('adminCount') == '1' or user.get('adminGroups')):
+        if user.get('createdInLast30Days') and (user.get('adminGroups') or privileged_admin_roles(user)):
             risks.append({
                 'type': RiskTypes.RECENTLY_CREATED_ACCOUNT,
                 'severity': Severity.MEDIUM,
@@ -482,36 +482,35 @@ class UserRiskAnalyzer(BaseAnalyzer):
 
         return risks
 
-    def _check_recently_modified_group_membership(self, user: dict[str, Any]) -> list[dict[str, Any]]:
-        """Check if group membership was modified recently (potential security concern)."""
-        risks = []
+    def _check_recently_changed_privileged_account(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        """Report a recent whenChanged write on a currently privileged account.
 
-        # Only flag if group membership was changed in last 30 days and user has admin privileges
-        if user.get('groupChangedInLast30Days') and (user.get('adminCount') == 1 or user.get('adminCount') == '1' or user.get('adminGroups')):
-            days_ago = None
-            if user.get('groupChangedInLast10Days'):
-                days_ago = 'last 10 days'
-            elif user.get('groupChangedInLast30Days'):
-                days_ago = 'last 30 days'
-            elif user.get('groupChangedInLast60Days'):
-                days_ago = 'last 60 days'
-            elif user.get('groupChangedInLast90Days'):
-                days_ago = 'last 90 days'
-
-            if days_ago:
-                risks.append({
-                    'type': RiskTypes.RECENTLY_MODIFIED_GROUP_MEMBERSHIP,
-                    'severity': Severity.MEDIUM,
-                    'title': 'Recently Modified Group Membership',
-                    'description': f"Privileged account '{user.get('sAMAccountName')}' had group membership modified in the {days_ago}",
-                    'affected_object': user.get('sAMAccountName'),
-                    'object_type': 'user',
-                    'adminGroups': user.get('adminGroups', []),
-                    'impact': 'Recent group membership changes on privileged accounts should be reviewed to ensure they are legitimate and authorized',
-                    'attack_scenario': 'An attacker who gains access to a privileged account might modify group memberships to maintain persistence or escalate privileges',
-                    'mitigation': 'Review recent group membership changes on privileged accounts. Verify they are legitimate and authorized. Monitor for unauthorized group membership modifications',
-                    'cis_reference': 'CIS Benchmark recommends monitoring group membership changes',
-                    'mitre_attack': 'T1078 - Valid Accounts'
-                })
-
-        return risks
+        whenChanged is not a group-membership timestamp. The finding says the
+        object changed, which is the only fact LDAP exposes here.
+        """
+        if not user.get('groupChangedInLast30Days'):
+            return []
+        if not (user.get('adminGroups') or privileged_admin_roles(user)):
+            return []
+        if user.get('groupChangedInLast10Days'):
+            days_ago = 'last 10 days'
+        else:
+            days_ago = 'last 30 days'
+        username = user.get('sAMAccountName')
+        return [{
+            'type': RiskTypes.RECENTLY_MODIFIED_GROUP_MEMBERSHIP,
+            'severity': Severity.MEDIUM,
+            'title': 'Privileged account recently changed',
+            'description': (
+                f"Privileged account '{username}' was modified in the {days_ago}. "
+                "whenChanged does not prove that group membership changed."
+            ),
+            'affected_object': username,
+            'object_type': 'user',
+            'adminGroups': user.get('adminGroups', []),
+            'impact': 'A recent write to a privileged account can be a legitimate change or an unexpected persistence edit.',
+            'attack_scenario': 'An attacker with write access changes a privileged account attribute. Review the directory change, rather than assuming the group list changed.',
+            'mitigation': 'Review the recent attribute changes on this account and confirm they were authorized.',
+            'cis_reference': 'CIS Benchmark recommends monitoring privileged account changes',
+            'mitre_attack': 'T1098 - Account Manipulation',
+        }]

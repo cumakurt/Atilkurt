@@ -5,6 +5,7 @@ Collects ACL information for critical AD objects
 
 import logging
 from core.ad_identity import computer_is_domain_controller
+from core.exceptions import AnalysisError, LDAPSearchError
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +87,10 @@ class ACLCollector:
             logger.info(f"Found {len(acl_risks)} ACL-based risks")
             return acl_risks
 
+        except LDAPSearchError:
+            raise
         except Exception as e:
-            logger.error(f"Error collecting ACL risks: {str(e)}")
-            return []
+            raise AnalysisError(f"Error collecting ACL risks: {e}") from e
 
     def _analyze_object_acl(self, obj):
         """
@@ -126,6 +128,8 @@ class ACLCollector:
             # This is a placeholder - full ACL parsing requires binary SD parsing
             # For demonstration, we'll create risks based on object type and known issues
 
+        except LDAPSearchError:
+            raise
         except Exception as e:
             logger.debug(f"Error analyzing ACL for {obj['dn']}: {str(e)}")
 

@@ -4,7 +4,6 @@ Single source of truth for analysis steps and risk keys.
 Enables adding new analyzers without editing the main entry point.
 """
 
-import json
 import time
 from typing import Any, Callable, Optional
 
@@ -178,14 +177,54 @@ def get_consolidated_risk_lists(analysis: dict[str, Any]) -> list[Any]:
     return [analysis.get(k, []) for k in CONSOLIDATION_RISK_KEYS]
 
 
+def _risk_fingerprint(risk: dict[str, Any]) -> tuple[str, str, str]:
+    """Stable identity for a finding without serializing the full evidence blob."""
+    return (
+        str(risk.get("type") or ""),
+        str(risk.get("affected_object") or ""),
+        str(risk.get("trustee") or risk.get("object_dn") or ""),
+    )
+
+
 def deduplicate_risks(risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove exact duplicates and duplicate EOL findings for the same object."""
+    """Remove duplicate findings, duplicate EOL rows, and overlapping SPN reports."""
     unique_risks: list[dict[str, Any]] = []
-    exact_fingerprints: set[str] = set()
+    exact_fingerprints: set[tuple[str, str, str]] = set()
     eol_objects: set[tuple[Any, Any]] = set()
+    kerberoast_objects = {
+        (risk.get("object_type"), risk.get("affected_object"))
+        for risk in risks
+        if risk.get("type") == "kerberoasting_target"
+    }
+    asrep_objects = {
+        risk.get("affected_object")
+        for risk in risks
+        if risk.get("type") == "asrep_roasting_target"
+    }
+    unconstrained_computers = {
+        risk.get("affected_object")
+        for risk in risks
+        if risk.get("type") == "unconstrained_delegation"
+    }
+    dcsync_names: set[str] = set()
+    dcsync_sids: set[str] = set()
+    for risk in risks:
+        if risk.get("type") != "dcsync_rights":
+            continue
+        name = str(risk.get("affected_object") or "").casefold()
+        if name:
+            dcsync_names.add(name)
+        sid = str((risk.get("evidence") or {}).get("trustee_sid") or "").casefold()
+        if sid:
+            dcsync_sids.add(sid)
+    broad_constrained = {
+        (str(item.get("object_type") or "").casefold(), str(item.get("affected_object") or "").casefold())
+        for item in risks
+        if item.get("type") == "computer_broad_constrained_delegation"
+    }
 
     for risk in risks:
-        fingerprint = json.dumps(risk, sort_keys=True, default=str, separators=(",", ":"))
+        fingerprint = _risk_fingerprint(risk)
         if fingerprint in exact_fingerprints:
             continue
 
@@ -194,6 +233,39 @@ def deduplicate_risks(risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if eol_key in eol_objects:
                 continue
             eol_objects.add(eol_key)
+
+        if (
+            risk.get("type") == "user_with_spn"
+            and (risk.get("object_type"), risk.get("affected_object")) in kerberoast_objects
+        ):
+            continue
+        if (
+            risk.get("type") == "spn_privilege_escalation"
+            and (risk.get("object_type"), risk.get("affected_object")) in kerberoast_objects
+        ):
+            continue
+        if risk.get("type") == "kerberos_preauth_disabled" and risk.get("affected_object") in asrep_objects:
+            continue
+        if (
+            risk.get("type") == "computer_unconstrained_delegation"
+            and risk.get("affected_object") in unconstrained_computers
+        ):
+            continue
+        if risk.get("type") == "constrained_delegation":
+            constrained_key = (
+                str(risk.get("object_type") or "").casefold(),
+                str(risk.get("affected_object") or "").casefold(),
+            )
+            if constrained_key in broad_constrained:
+                continue
+        if risk.get("type") in {
+            "acl_ds_replication_get_changes",
+            "acl_ds_replication_get_changes_all",
+        } and (risk.get("evidence") or {}).get("dcsync_pair_complete"):
+            trustee = str(risk.get("trustee") or "").casefold()
+            display = str(risk.get("trustee_display_name") or "").casefold()
+            if trustee in dcsync_sids or display in dcsync_names:
+                continue
 
         exact_fingerprints.add(fingerprint)
         unique_risks.append(risk)
@@ -225,7 +297,7 @@ def _run_user_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.user_risks import UserRiskAnalyzer
     users = data["users"]
     analyzer = UserRiskAnalyzer()
-    return {"user_risks": analyzer.analyze(users)}
+    return {"user_risks": analyzer.analyze(users, data.get("groups") or [])}
 
 
 def _run_computer_risks(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
@@ -351,7 +423,7 @@ def _run_trust(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
 
 def _run_certificate(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.certificate_analyzer import CertificateAnalyzer
-    analyzer = CertificateAnalyzer(ldap_conn)
+    analyzer = CertificateAnalyzer(ldap_conn, data.get("users") or [], data.get("groups") or [])
     return {"certificate_risks": analyzer.analyze_certificate_services()}
 
 
@@ -426,7 +498,7 @@ def _run_stale_objects(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
 def _run_adcs_extended(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
     from analysis.ad_cs_extended_analyzer import ADCSExtendedAnalyzer
     analyzer = ADCSExtendedAnalyzer(ldap_conn)
-    return {"adcs_extended_risks": analyzer.analyze()}
+    return {"adcs_extended_risks": analyzer.analyze(data.get("users") or [], data.get("groups") or [])}
 
 
 def _run_audit_policy(ldap_conn: Any, data: dict[str, Any]) -> dict[str, Any]:
@@ -755,6 +827,7 @@ ANALYSIS_STEP_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 FAST_PROFILE_EXCLUDED: set[str] = {
+    "acl_legacy",
     "acl_security",
     "extended_ldap",
     "adcs_extended",
@@ -780,11 +853,15 @@ def _selected_analysis_steps(
     skip_set = set(skip_keys or [])
     if profile == "fast":
         skip_set.update(FAST_PROFILE_EXCLUDED)
-    return [
+    selected = [
         (key, description, runner)
         for key, description, runner in ANALYSIS_STEP_REGISTRY
         if key not in skip_set
     ]
+    selected_keys = {key for key, _, _ in selected}
+    if "acl_security" in selected_keys:
+        selected = [step for step in selected if step[0] != "acl_legacy"]
+    return selected
 
 
 def _defaults_for_skipped_steps(
@@ -814,10 +891,22 @@ def run_all_analyses(
     selected_steps = _selected_analysis_steps(profile, skip_keys)
     selected_keys = {key for key, _, _ in selected_steps}
     results: dict[str, Any] = _defaults_for_skipped_steps(selected_keys)
+    explicit_skip = set(skip_keys or [])
+    skipped_steps: dict[str, str] = {}
+    for key, _, _ in ANALYSIS_STEP_REGISTRY:
+        if key in selected_keys:
+            continue
+        if key in explicit_skip:
+            skipped_steps[key] = "explicit_skip"
+        elif profile == "fast" and key in FAST_PROFILE_EXCLUDED:
+            skipped_steps[key] = "fast_profile"
+        elif key == "acl_legacy" and "acl_security" in selected_keys:
+            skipped_steps[key] = "superseded_by_acl_security"
+        else:
+            skipped_steps[key] = "skipped"
     results['analysis_execution'] = {
         'profile': profile, 'completed_steps': [], 'partial_steps': {},
-        'skipped_steps': {key: 'explicit_skip' if key in set(skip_keys or []) else 'fast_profile'
-                          for key, _, _ in ANALYSIS_STEP_REGISTRY if key not in selected_keys},
+        'skipped_steps': skipped_steps,
     }
 
     for key, description, runner in selected_steps:

@@ -100,7 +100,10 @@ def evaluate_family(rule, inputs, descriptor):
             def search(self, **kwargs):
                 if kwargs.get('search_base') == '':
                     return [{'configurationNamingContext': CONFIG}]
-                if str(kwargs.get('search_base')).startswith('CN=NTAuthCertificates,'):
+                if str(kwargs.get('search_base')).startswith('CN=NTAuthCertificates,') or (
+                    kwargs.get('search_base') == CONFIG
+                    and str(kwargs.get('search_filter')).startswith('(distinguishedName=CN=NTAuthCertificates,')
+                ):
                     return [{'cn': 'NTAuthCertificates', 'distinguishedName': 'CN=NTAuthCertificates,CN=Public Key Services,CN=Services,' + CONFIG,
                              'nTSecurityDescriptor': sd}]
                 return []

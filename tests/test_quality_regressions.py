@@ -263,9 +263,12 @@ def test_focused_broad_delegation_uses_the_original_threshold(count, expected):
     assert result['findings'][0]['status'] == expected
 
 
-@pytest.mark.parametrize('uac,targets,expected', [(0x1000200, [], 'still_present'),
-    (512, ['cifs/server'], 'configuration_resolved')])
-def test_focused_protocol_transition_rechecks_the_original_uac_rule(uac, targets, expected):
+@pytest.mark.parametrize('uac,targets,expected', [
+    (0x1000200, [], 'configuration_resolved'),
+    (512, ['cifs/server'], 'still_present'),
+    (0x1000200, ['cifs/server'], 'still_present'),
+])
+def test_focused_constrained_delegation_rechecks_allowed_targets(uac, targets, expected):
     sid = 'S-1-5-21-1-2-3-1000'
     previous = {'domain': DOMAIN, 'computers': [{'name': 'host', 'distinguishedName': TARGET, 'objectSid': sid}],
                 'risks': [{'finding_id': 'selected', 'type': 'constrained_delegation', 'affected_object': 'host'}]}

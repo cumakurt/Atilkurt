@@ -6,7 +6,8 @@ Analyzes theoretical privilege escalation paths without providing exploit code
 import logging
 from collections import deque
 
-from core.ad_identity import first_ldap_rdn, is_privileged_group_name, is_privileged_group_record
+from core.ad_identity import first_ldap_rdn, is_privileged_group_name, is_privileged_group_record, nested_privileged_groups
+from core.ad_security import as_list
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,17 @@ class PrivilegeEscalationAnalyzer:
         self.group_map: dict[str, dict] = {}
         self.user_group_map: dict[str, list[str]] = {}
         self.privileged_groups: set = set()
+        self.privileged_groups_folded: set[str] = set()
         self.group_hierarchy: dict[str, set] = {}  # Group -> set of parent groups
-        self.users_list: list[dict] = []  # Store users list for admin checking
+        self.hierarchy_by_fold: dict[str, set[str]] = {}
+        self.label_by_fold: dict[str, str] = {}
+        self.users_by_name: dict[str, dict] = {}
 
     def analyze(self, users, groups, computers):
         """
         Analyze privilege escalation paths with optimized graph-based approach.
-        Skips users who are already Domain Admin or Enterprise Admin.
+        Nested paths skip users who already hold a privileged group. SPN and
+        delegation findings are reported only for those privileged users.
 
         Args:
             users: List of user dictionaries
@@ -39,23 +44,22 @@ class PrivilegeEscalationAnalyzer:
         """
         risks = []
 
-        # Build optimized graph structures (O(n) instead of O(n²))
+        self.__init__()
+        self.current_privileged_users = {
+            user.get("sAMAccountName") for user in users if nested_privileged_groups(user, groups)
+        }
         self._build_optimized_maps(users, groups)
-
-        # Store users list for admin checking
-        self.users_list = users
 
         # Analyze paths to privileged groups (optimized)
         risks.extend(self._analyze_group_escalation_paths_optimized(users))
 
-        # Analyze delegation-based escalation
-        risks.extend(self._analyze_delegation_escalation(users, computers))
+        # Delegation on privileged users. Computer unconstrained delegation is
+        # reported by the Kerberos analyzer, including the DC exclusion.
+        del computers
+        risks.extend(self._analyze_delegation_escalation(users))
 
         # Analyze SPN-based escalation
         risks.extend(self._analyze_spn_escalation(users))
-
-        # Analyze computer-to-privilege paths
-        risks.extend(self._analyze_computer_privilege_paths(users, computers))
 
         logger.info(f"Found {len(risks)} privilege escalation paths (excluding users who are already admins)")
         return risks
@@ -72,19 +76,21 @@ class PrivilegeEscalationAnalyzer:
                 continue
 
             # Check if privileged
+            group_key = self._remember_group(group_name)
             if is_privileged_group_record(group):
                 self.privileged_groups.add(group_name)
+                self.privileged_groups_folded.add(group_key)
 
-            # Build group hierarchy
-            member_of = group.get('memberOf', []) or []
-            if not isinstance(member_of, list):
-                member_of = [member_of] if member_of else []
+            member_of = as_list(group.get('memberOf'))
 
             self.group_hierarchy[group_name] = set()
+            parent_keys: set[str] = set()
             for parent_dn in member_of:
                 parent_name = self._extract_group_name(parent_dn)
                 if parent_name:
                     self.group_hierarchy[group_name].add(parent_name)
+                    parent_keys.add(self._remember_group(parent_name))
+            self.hierarchy_by_fold[group_key] = parent_keys
 
             self.group_map[group_name] = {
                 'members': group.get('member', []),
@@ -92,40 +98,27 @@ class PrivilegeEscalationAnalyzer:
                 'dn': group.get('distinguishedName')
             }
 
-        # Build user-group map (normalized to group names, not DNs)
         for user in users:
             username = user.get('sAMAccountName')
             if not username:
                 continue
-
-            member_of = user.get('memberOf') or []
-            if not isinstance(member_of, list):
-                member_of = [member_of] if member_of else []
-
-            # Convert DNs to group names for faster lookups
+            self.users_by_name[username] = user
             user_groups = []
-            for group_dn in member_of:
+            for group_dn in as_list(user.get('memberOf')):
                 group_name = self._extract_group_name(group_dn)
                 if group_name:
-                    user_groups.append(group_name)
-
+                    user_groups.append(self.label_by_fold.get(group_name.casefold(), group_name))
             self.user_group_map[username] = user_groups
 
     def _is_privileged_group(self, group_name):
         """Return True when a group name exactly matches a well-known privileged group."""
         return is_privileged_group_name(first_ldap_rdn(group_name))
 
-    def _is_user_already_privileged(self, user, user_group_map):
-        """Check if user is already in a privileged group (legacy method, kept for compatibility)."""
-        username = user.get('sAMAccountName')
+    def _is_user_already_privileged(self, user, user_group_map=None):
+        """Return True when the user currently holds a well-known privileged group."""
+        username = user.get('sAMAccountName') if isinstance(user, dict) else None
         if not username:
             return False
-
-        # Check adminCount flag
-        if user.get('adminCount') == 1 or user.get('adminCount') == '1':
-            return True
-
-        # Check group memberships (optimized)
         return self._is_user_already_privileged_optimized(username)
 
     def _analyze_group_escalation_paths_optimized(self, users):
@@ -140,8 +133,7 @@ class PrivilegeEscalationAnalyzer:
             if not username:
                 continue
 
-            # Skip users who are already privileged (check both groups and adminCount)
-            if self._is_user_already_privileged_optimized(username, users):
+            if self._is_user_already_privileged_optimized(username):
                 logger.debug(f"Skipping user '{username}' - already has admin privileges")
                 continue
 
@@ -189,79 +181,51 @@ class PrivilegeEscalationAnalyzer:
             List of path dictionaries
         """
         paths = []
-        visited = set()
-
-        # BFS from each user group
         for start_group in user_groups:
-            if start_group in visited:
-                continue
-
-            queue = deque([(start_group, [start_group], 0)])
-            visited.add(start_group)
+            start_key = start_group.casefold()
+            visited = {start_key}
+            queue = deque([(start_key, [self.label_by_fold.get(start_key, start_group)], 0)])
 
             while queue:
-                current_group, path, depth = queue.popleft()
-
+                current_key, path, depth = queue.popleft()
                 if depth > max_depth:
                     continue
-
-                # Check if we reached a privileged group
-                if current_group in self.privileged_groups and current_group != start_group:
+                label = path[-1]
+                # A well-known parent name still counts when that group object
+                # was not present in the collected group list.
+                reached_privileged = (
+                    current_key in self.privileged_groups_folded or is_privileged_group_name(label)
+                )
+                if reached_privileged and current_key != start_key:
                     paths.append({
                         'path': ' -> '.join(path),
-                        'target_group': current_group,
+                        'target_group': path[-1],
                         'depth': depth
                     })
                     continue
-
-                # Explore parent groups
-                parent_groups = self.group_hierarchy.get(current_group, set())
-                for parent in parent_groups:
-                    if parent not in visited:
-                        visited.add(parent)
-                        queue.append((parent, path + [parent], depth + 1))
+                for parent_key in self.hierarchy_by_fold.get(current_key, set()):
+                    if parent_key not in visited:
+                        visited.add(parent_key)
+                        parent_label = self.label_by_fold.get(parent_key, parent_key)
+                        queue.append((parent_key, path + [parent_label], depth + 1))
 
         return paths
 
     def _is_user_already_privileged_optimized(self, username: str, users: list[dict] = None) -> bool:
-        """
-        Check if user is already in a privileged group (optimized version).
-        Also checks adminCount flag.
+        """Return True when current membership is a well-known privileged group.
 
-        Args:
-            username: Username to check
-            users: Optional list of users to check adminCount flag
-
-        Returns:
-            True if user is privileged
+        adminCount alone is not treated as current Domain Admin membership.
         """
-        # Check group memberships
+        if username in getattr(self, "current_privileged_users", set()):
+            return True
         user_groups = self.user_group_map.get(username, [])
-        # Check for Domain Admin, Enterprise Admin, Schema Admin specifically
-        privileged_group_names_lower = {g.lower() for g in self.privileged_groups}
-        user_groups_lower = {g.lower() for g in user_groups}
-
-        # Check if user is in Domain Admins or Enterprise Admins
-        if any('domain admin' in g or 'enterprise admin' in g or 'schema admin' in g
-               for g in user_groups_lower):
+        if any(is_privileged_group_name(group) for group in user_groups):
             return True
-
-        # Check if any user group matches privileged groups
-        if any(g in privileged_group_names_lower for g in user_groups_lower):
+        if any(group.casefold() in self.privileged_groups_folded for group in user_groups):
             return True
-
-        # Check adminCount flag if users list provided
-        users_to_check = users if users else (self.users_list if hasattr(self, 'users_list') else [])
-        if users_to_check:
-            for user in users_to_check:
-                if user.get('sAMAccountName') == username:
-                    if user.get('adminCount') == 1 or user.get('adminCount') == '1':
-                        return True
-                    break
-
         return False
 
-    def _analyze_delegation_escalation(self, users, computers):
+    def _analyze_delegation_escalation(self, users):
         """Analyze delegation-based privilege escalation (optimized)."""
         risks = []
 
@@ -271,9 +235,7 @@ class PrivilegeEscalationAnalyzer:
             if not username:
                 continue
 
-            # Skip users who are already privileged (optimized check)
-            if self._is_user_already_privileged_optimized(username, users):
-                logger.debug(f"Skipping user '{username}' - already has admin privileges")
+            if not self._is_user_already_privileged_optimized(username):
                 continue
 
             uac = user.get('userAccountControl', 0)
@@ -283,15 +245,19 @@ class PrivilegeEscalationAnalyzer:
                 except ValueError:
                     continue
 
-            # Check for delegation flags
-            has_delegation = bool(uac & 524288) or bool(uac & 16777216)
-
-            if has_delegation:
-                user_groups = self.user_group_map.get(username, [])
-                privileged_groups = [g for g in user_groups if g in self.privileged_groups]
-
-                if privileged_groups:
-                    risks.append({
+            # Protocol transition alone is not delegation. Constrained
+            # delegation requires an explicit allowed-target list.
+            unconstrained = bool(uac & 524288)
+            allowed_targets = [item for item in as_list(user.get('msDS-AllowedToDelegateTo')) if item]
+            if not unconstrained and not allowed_targets:
+                continue
+            user_groups = self.user_group_map.get(username, [])
+            privileged_groups = [
+                group for group in user_groups
+                if group.casefold() in self.privileged_groups_folded or is_privileged_group_name(group)
+            ]
+            if privileged_groups:
+                risks.append({
                         'type': 'delegation_privilege_escalation',
                         'severity': 'critical',
                         'title': 'Delegation with Privileged Access',
@@ -321,9 +287,7 @@ class PrivilegeEscalationAnalyzer:
             if not username:
                 continue
 
-            # Skip users who are already privileged (optimized check)
-            if self._is_user_already_privileged_optimized(username, users):
-                logger.debug(f"Skipping user '{username}' - already has admin privileges")
+            if not self._is_user_already_privileged_optimized(username):
                 continue
 
             spns = user.get('servicePrincipalName') or []
@@ -333,7 +297,10 @@ class PrivilegeEscalationAnalyzer:
                 continue
 
             user_groups = self.user_group_map.get(username, [])
-            privileged_groups = [g for g in user_groups if g in self.privileged_groups]
+            privileged_groups = [
+                group for group in user_groups
+                if group.casefold() in self.privileged_groups_folded or is_privileged_group_name(group)
+            ]
 
             if privileged_groups:
                 risks.append({
@@ -357,6 +324,12 @@ class PrivilegeEscalationAnalyzer:
 
         return risks
 
+    def _remember_group(self, group_name: str) -> str:
+        """Store one display label per case-insensitive group name."""
+        key = str(group_name).casefold()
+        self.label_by_fold.setdefault(key, group_name)
+        return key
+
     def _extract_group_name(self, group_dn):
         """Extract the first RDN from a group DN or return the bare name."""
         name = first_ldap_rdn(group_dn)
@@ -376,55 +349,3 @@ class PrivilegeEscalationAnalyzer:
                 })
 
         return paths
-
-    def _analyze_computer_privilege_paths(self, users, computers):
-        """Analyze computer-based privilege escalation paths (optimized)."""
-        risks = []
-
-        # Pre-filter computers with unconstrained delegation
-        delegation_computers = [
-            (c.get('name'), c)
-            for c in computers
-            if c.get('unconstrainedDelegation')
-        ]
-
-        if not delegation_computers:
-            return risks
-
-        # Pre-filter privileged users (optimized)
-        # Note: This method checks for privileged users accessing delegation computers,
-        # which is a different risk than privilege escalation, so we keep privileged users here
-        privileged_users = {
-            username: self.user_group_map.get(username, [])
-            for username in self.user_group_map.keys()
-            if self._is_user_already_privileged_optimized(username, users)
-        }
-
-        # Check each delegation computer against privileged users
-        for computer_name, _computer in delegation_computers:
-            for username, user_groups in privileged_users.items():
-                privileged_group_names = [g for g in user_groups if g in self.privileged_groups]
-
-                if privileged_group_names:
-                    risks.append({
-                        'type': 'computer_delegation_privilege_path',
-                        'severity': 'critical',
-                        'title': 'Computer Delegation Privilege Escalation Path',
-                        'description': f"Privileged user '{username}' could authenticate to computer '{computer_name}' with unconstrained delegation, creating a critical escalation path",
-                        'affected_object': username,
-                        'object_type': 'user',
-                        'escalation_path': {
-                            'user': username,
-                            'privileged_groups': privileged_group_names,
-                            'target_computer': computer_name,
-                            'delegation_type': 'unconstrained',
-                            'path_description': f"User '{username}' (member of {len(privileged_group_names)} privileged group(s)) → Computer '{computer_name}' (unconstrained delegation) → Potential domain-wide access"
-                        },
-                        'impact': 'If a privileged user authenticates to a computer with unconstrained delegation, an attacker compromising that computer can steal their Kerberos tickets and gain domain-wide access',
-                        'attack_scenario': 'An attacker who compromises a computer with unconstrained delegation can capture Kerberos tickets from any user who authenticates to it. If a privileged user authenticates, the attacker gains their privileges',
-                        'mitigation': 'Disable unconstrained delegation on all computers. If delegation is necessary, use constrained or resource-based constrained delegation. Ensure privileged users do not authenticate to computers with delegation enabled',
-                        'cis_reference': 'CIS Benchmark prohibits unconstrained delegation',
-                        'mitre_attack': 'T1558.001 - Steal or Forge Kerberos Tickets: Golden Ticket'
-                    })
-
-        return risks

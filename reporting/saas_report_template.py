@@ -724,10 +724,16 @@ def build_saas_report(
             var pane = document.getElementById(paneId);
             if (!pane) return;
             document.querySelectorAll('.tab-pane').forEach(function(p) {{ p.classList.remove('show', 'active'); }});
-            document.querySelectorAll('#sidebar .nav-link').forEach(function(b) {{ b.classList.remove('active'); }});
+            document.querySelectorAll('#sidebar .nav-link').forEach(function(b) {{
+                b.classList.remove('active');
+                b.setAttribute('aria-selected', 'false');
+            }});
             pane.classList.add('show', 'active');
             var sidebarBtn = document.querySelector('#sidebar [data-tab-target="#' + paneId + '"]');
-            if (sidebarBtn) sidebarBtn.classList.add('active');
+            if (sidebarBtn) {{
+                sidebarBtn.classList.add('active');
+                sidebarBtn.setAttribute('aria-selected', 'true');
+            }}
             var cardsEl = document.getElementById('overview-cards');
             if (cardsEl) cardsEl.style.display = (paneId === 'dashboard') ? '' : 'none';
             document.getElementById('main-content').scrollIntoView({{ behavior: 'smooth', block: 'start' }});
@@ -1008,6 +1014,7 @@ def _build_nav_items(stats):
         ('privileged-accounts-tab', 'privileged-accounts', 'Privileged Accounts', 'user-cog', None, None),
         ('delegation-risks-tab', 'delegation-risks', 'Delegation Risks', 'network', None, None),
         ('password-issues-tab', 'password-issues', 'Password Issues', 'key', None, None),
+        ('password-hashes-tab', 'password-hashes', 'Password Hashes', 'key-round', None, None),
         ('users-tab', 'users', 'Users', 'users', None, None),
         ('computers-tab', 'computers', 'Computers', 'server', None, None),
         ('groups-tab', 'groups', 'Groups', 'users-round', None, None),

@@ -8,9 +8,29 @@ from typing import Any, Optional
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
-from core.ad_identity import group_is_role, ROLE_DOMAIN_ADMINS
+from core.ad_identity import (
+    ROLE_DOMAIN_ADMINS,
+    computer_has_unexpected_unconstrained_delegation,
+    group_is_role,
+)
 from core.ad_security import as_int, as_list
 from analysis.password_policy_analyzer import PasswordPolicyAnalyzer
+from analysis.privileged_account_status import account_is_disabled
+
+
+def _has_uac_flag(row: dict[str, Any], flag: int) -> bool:
+    """Return True when a directory object has a UAC bit. Invalid values do not match."""
+    bits = as_int(row.get("userAccountControl"))
+    return bool(bits is not None and bits & flag)
+
+
+def _enabled_has_uac_flag(row: dict[str, Any], flag: int) -> bool:
+    """Return True when an enabled account has a UAC bit.
+
+    Disabled accounts cannot authenticate, so they do not fail an active
+    authentication-control check.
+    """
+    return not account_is_disabled(row) and _has_uac_flag(row, flag)
 
 logger = logging.getLogger(__name__)
 
@@ -72,59 +92,65 @@ class ComplianceAnalyzer:
         controls = []
 
         # CIS 2.3.1.1 - Ensure 'Password never expires' is set to 'False' for all users
-        password_never_expires_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x10000)
+        password_never_expires_users = [u for u in users if _enabled_has_uac_flag(u, 0x10000)]
+        password_never_expires_count = len(password_never_expires_users)
         controls.append({
             'control_id': 'CIS 2.3.1.1',
             'control_name': 'Password never expires',
             'status': 'passed' if password_never_expires_count == 0 else 'failed',
             'details': {
                 'count': password_never_expires_count,
-                'affected_users': [u.get('sAMAccountName') for u in users if u.get('userAccountControl', 0) & 0x10000][:10]
+                'affected_users': [u.get('sAMAccountName') for u in password_never_expires_users][:10]
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=65536))',
             'recommendation': 'Set password expiration for all user accounts'
         })
 
         # CIS 2.3.1.2 - Ensure 'Password not required' is set to 'False' for all users
-        password_not_required_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
+        password_not_required_users = [u for u in users if _enabled_has_uac_flag(u, 0x20)]
+        password_not_required_count = len(password_not_required_users)
         controls.append({
             'control_id': 'CIS 2.3.1.2',
             'control_name': 'Password not required',
             'status': 'passed' if password_not_required_count == 0 else 'failed',
             'details': {
                 'count': password_not_required_count,
-                'affected_users': [u.get('sAMAccountName') for u in users if u.get('userAccountControl', 0) & 0x20][:10]
+                'affected_users': [u.get('sAMAccountName') for u in password_not_required_users][:10]
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))',
             'recommendation': 'Require passwords for all user accounts'
         })
 
         # CIS 2.3.1.3 - Ensure 'Kerberos preauthentication' is enabled for all users
-        preauth_disabled_count = sum(1 for u in users if u.get('userAccountControl', 0) & 0x400000)
+        preauth_disabled_users = [u for u in users if _enabled_has_uac_flag(u, 0x400000)]
+        preauth_disabled_count = len(preauth_disabled_users)
         controls.append({
             'control_id': 'CIS 2.3.1.3',
             'control_name': 'Kerberos preauthentication',
             'status': 'passed' if preauth_disabled_count == 0 else 'failed',
             'details': {
                 'count': preauth_disabled_count,
-                'affected_users': [u.get('sAMAccountName') for u in users if u.get('userAccountControl', 0) & 0x400000][:10]
+                'affected_users': [u.get('sAMAccountName') for u in preauth_disabled_users][:10]
             },
             'ldap_query': '(&(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))',
             'recommendation': 'Enable Kerberos preauthentication for all user accounts'
         })
 
         # CIS 2.3.1.4 - Ensure unconstrained delegation is disabled
-        unconstrained_delegation_count = sum(1 for c in computers if c.get('userAccountControl', 0) & 0x80000)
+        unexpected_delegation = [
+            c for c in computers if computer_has_unexpected_unconstrained_delegation(c)
+        ]
+        unconstrained_delegation_count = len(unexpected_delegation)
         controls.append({
             'control_id': 'CIS 2.3.1.4',
             'control_name': 'Unconstrained delegation',
             'status': 'passed' if unconstrained_delegation_count == 0 else 'failed',
             'details': {
                 'count': unconstrained_delegation_count,
-                'affected_computers': [c.get('name') for c in computers if c.get('userAccountControl', 0) & 0x80000][:10]
+                'affected_computers': [c.get('name') for c in unexpected_delegation][:10]
             },
             'ldap_query': '(&(objectClass=computer)(userAccountControl:1.2.840.113556.1.4.803:=524288))',
-            'recommendation': 'Disable unconstrained delegation on all computer accounts'
+            'recommendation': 'Disable unconstrained delegation on member servers. Domain controllers keep this flag by default and are not counted.'
         })
 
         # CIS 2.3.1.5 - Ensure Domain Admins group has minimal members
@@ -398,7 +424,7 @@ class ComplianceAnalyzer:
             'warning_controls': sum(1 for c in controls if c.get('status') == 'warning'),
             'compliance_score': compliance_score,
             'controls': controls,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
     def analyze_nist_csf(self, users: list[dict[str, Any]],
@@ -427,7 +453,7 @@ class ComplianceAnalyzer:
 
         # PR.AC-1: Identity and access management
         # Check for accounts with password never expires
-        password_never_expires = sum(1 for u in users if u.get('userAccountControl', 0) & 0x10000)
+        password_never_expires = sum(1 for u in users if _enabled_has_uac_flag(u, 0x10000))
         functions['PR']['controls'].append({
             'control_id': 'PR.AC-1',
             'control_name': 'Identity and access management',
@@ -440,7 +466,7 @@ class ComplianceAnalyzer:
         })
 
         # PR.AC-1: Check for accounts without passwords
-        password_not_required = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
+        password_not_required = sum(1 for u in users if _enabled_has_uac_flag(u, 0x20))
         functions['PR']['controls'].append({
             'control_id': 'PR.AC-1',
             'control_name': 'Password requirements',
@@ -504,7 +530,7 @@ class ComplianceAnalyzer:
                         logon_dt = logon_dt.replace(tzinfo=timezone.utc)
                     # Compare datetime objects
                     try:
-                        if logon_dt < inactive_threshold and not (u.get('userAccountControl', 0) & 0x2):
+                        if logon_dt < inactive_threshold and not account_is_disabled(u):
                             inactive_count += 1
                     except (TypeError, ValueError):
                         # Skip if comparison fails
@@ -537,7 +563,7 @@ class ComplianceAnalyzer:
             'framework': 'NIST Cybersecurity Framework',
             'compliance_score': compliance_score,
             'functions': functions,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
     def analyze_iso_27001(self, users: list[dict[str, Any]],
@@ -560,7 +586,7 @@ class ComplianceAnalyzer:
 
         # A.9.2.1: User registration and de-registration
         # Check for disabled accounts that should be removed
-        disabled_accounts = [u for u in users if u.get('userAccountControl', 0) & 0x2]
+        disabled_accounts = [u for u in users if account_is_disabled(u)]
         domains['A.9.2'].append({
             'control_id': 'A.9.2.1',
             'control_name': 'User registration and de-registration',
@@ -573,7 +599,7 @@ class ComplianceAnalyzer:
         })
 
         # A.9.4.2: Secure log-on procedures
-        preauth_disabled = sum(1 for u in users if u.get('userAccountControl', 0) & 0x400000)
+        preauth_disabled = sum(1 for u in users if _enabled_has_uac_flag(u, 0x400000))
         domains['A.9.4'].append({
             'control_id': 'A.9.4.2',
             'control_name': 'Secure log-on procedures',
@@ -635,7 +661,7 @@ class ComplianceAnalyzer:
             'compliance_score': overall_score,
             'domains': dict(domains),
             'domain_scores': domain_scores,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
     def analyze_gdpr(self, users: list[dict[str, Any]],
@@ -689,7 +715,7 @@ class ComplianceAnalyzer:
             })
 
         # Article 32: Check for accounts without passwords
-        password_not_required = sum(1 for u in users if u.get('userAccountControl', 0) & 0x20)
+        password_not_required = sum(1 for u in users if _enabled_has_uac_flag(u, 0x20))
         articles['Article 32'].append({
             'control_id': 'Article 32',
             'control_name': 'Security of processing - Access control',
@@ -731,7 +757,7 @@ class ComplianceAnalyzer:
             'compliance_score': overall_score,
             'articles': dict(articles),
             'article_scores': article_scores,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
     def generate_comprehensive_compliance_report(self, users: list[dict[str, Any]],
@@ -771,7 +797,7 @@ class ComplianceAnalyzer:
             'gdpr': gdpr_result,
             'cis_controls_v8': cis_v8_result,
             'overall_compliance_score': overall_score,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
 
     def _analyze_cis_controls_v8_from_data(
@@ -786,10 +812,10 @@ class ComplianceAnalyzer:
         computer_flags_known = bool(computers) and all(isinstance(c.get('userAccountControl'), int) for c in computers)
         admin = next((g for g in groups if group_is_role(g, ROLE_DOMAIN_ADMINS)), None)
         checks = {
-            '4.3': 'failed' if any(u.get('userAccountControl', 0) & 0x10000 for u in users)
+            '4.3': 'failed' if any(_enabled_has_uac_flag(u, 0x10000) for u in users)
                    else 'passed' if user_flags_known else 'unknown',
-            '5.2': 'failed' if any(u.get('userAccountControl', 0) & (0x20 | 0x400000) for u in users)
-                   or any(c.get('userAccountControl', 0) & 0x80000 for c in computers)
+            '5.2': 'failed' if any(_enabled_has_uac_flag(u, 0x20) or _enabled_has_uac_flag(u, 0x400000) for u in users)
+                   or any(computer_has_unexpected_unconstrained_delegation(c) for c in computers)
                    else 'passed' if user_flags_known and computer_flags_known else 'unknown',
             '5.1': 'unknown' if admin is None else 'failed' if len(as_list(admin.get('member'))) > 5 else 'passed',
         }

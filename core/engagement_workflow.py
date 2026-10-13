@@ -94,7 +94,12 @@ def apply_engagement(args, data, analysis):
     documents = getattr(args, '_engagement_documents', {})
     ldap = getattr(args, '_active_ldap', None)
     engagement = deepcopy(analysis.get('engagement') or {})
-    if documents.get('security_evidence') or analysis.get('security_control_observations') or analysis.get('security_control_targets') or (data.get('computers') and not engagement.get('security_controls')):
+    has_security_evidence = bool(
+        documents.get('security_evidence')
+        or analysis.get('security_control_observations')
+        or analysis.get('security_control_targets')
+    )
+    if has_security_evidence:
         from analysis.security_controls_analyzer import analyze_security_controls, reconcile_hybrid_findings
         from analysis.tier_analyzer import TierAnalyzer
         from core.ad_identity import computer_is_domain_controller
@@ -129,7 +134,7 @@ def apply_engagement(args, data, analysis):
     shared = []
     if getattr(args, 'sysvol_dir', []):
         from analysis.sysvol_analyzer import inspect_local_shared_files
-        shared.append(inspect_local_shared_files(args.sysvol_dir))
+        shared.append(inspect_local_shared_files(args.sysvol_dir, redact_secrets=getattr(args, 'redact_secrets', True)))
     if getattr(args, 'sysvol_host', []):
         from analysis.sysvol_analyzer import inspect_remote_shared_files
         if ldap is None:
@@ -138,7 +143,7 @@ def apply_engagement(args, data, analysis):
             raise ValidationError('Kerberos LDAP credentials cannot be reused for password-based SYSVOL inspection; use offline shared files')
         for host in args.sysvol_host:
             shared.append(inspect_remote_shared_files(host, ldap.username, ldap.password, args.domain, scope,
-                                                      timeout=min(args.timeout, 30)))
+                                                      timeout=min(args.timeout, 30), redact_secrets=getattr(args, 'redact_secrets', True)))
     if shared:
         engagement['shared_files'] = shared
         analysis['shared_file_risks'] = [risk for result in shared for risk in result['risks']]
@@ -205,5 +210,6 @@ def export_engagement(args, workspace, data, risks):
         if path:
             from reporting.client_report import client_document, export_client_report
             export_client_report(path, client_document(args.domain, data, risks, workspace,
-                                                       masked=getattr(args, 'mask_client_report', False)), language=args.language)
+                                                       masked=getattr(args, 'mask_client_report', False),
+                                                       redact_secrets=getattr(args, 'redact_secrets', True)), language=args.language)
             print(f'[+] Client report saved: {Path(path)}')

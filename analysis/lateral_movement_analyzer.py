@@ -10,7 +10,7 @@ Evaluates lateral movement potential by analyzing:
 import logging
 from typing import Any
 from core.ad_identity import (
-    account_has_privileged_evidence,
+    account_has_current_privileged_membership,
     first_ldap_rdn,
     membership_names,
 )
@@ -244,7 +244,7 @@ class LateralMovementAnalyzer:
 
     @staticmethod
     def _is_privileged(user: dict[str, Any]) -> bool:
-        return account_has_privileged_evidence(user)
+        return account_has_current_privileged_membership(user)
 
     @staticmethod
     def _extract_cn(dn: str) -> str:

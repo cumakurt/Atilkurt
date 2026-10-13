@@ -84,9 +84,18 @@ def verify_selected_findings(ldap, previous, selected_ids):
                     result['evidence'].append({'target': ldap.base_dn, 'attribute': 'nTSecurityDescriptor',
                                                'sha256': hashlib.sha256(descriptor).hexdigest()})
                 elif 'unconstrained' in kind:
-                    present = bool(uac & UACFlags.TRUSTED_FOR_DELEGATION)
+                    # Domain controllers and disabled accounts keep or cannot use
+                    # this flag. Match the analyzer: only an enabled non-DC is open.
+                    present = not (
+                        uac & UACFlags.SERVER_TRUST_ACCOUNT or uac & UACFlags.ACCOUNTDISABLE
+                    ) and bool(uac & UACFlags.TRUSTED_FOR_DELEGATION)
                 elif kind == 'constrained_delegation':
-                    present = bool(uac & UACFlags.TRUSTED_TO_AUTH_FOR_DELEGATION)
+                    if 'msDS-AllowedToDelegateTo' not in row:
+                        raise ValidationError('Delegation target attribute was not observed')
+                    targets = as_list(row.get('msDS-AllowedToDelegateTo'))
+                    if any(not isinstance(target, str) or not target for target in targets):
+                        raise ValidationError('Delegation targets are malformed')
+                    present = bool(targets)
                 else:
                     if 'msDS-AllowedToDelegateTo' not in row:
                         raise ValidationError('Delegation target attribute was not observed')

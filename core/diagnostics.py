@@ -27,13 +27,27 @@ def collection_health(ldap=None, data: dict[str, Any] | None = None) -> dict[str
     records = list(getattr(ldap, "query_audit", []) or [])
     overflow = bool(getattr(ldap, "query_audit_overflow", False))
     failures = sum(record["status"] == "failed" for record in records)
+    incomplete = any(record.get("status") == "incomplete" for record in records)
     total_failures = getattr(ldap, 'query_failure_count', None)
     if isinstance(total_failures, int):
         failures = max(failures, total_failures)
+    failed_collections = []
+    seen_collections = set()
+    for name in list(getattr(ldap, "failed_collections", []) or []):
+        if name and name not in seen_collections:
+            seen_collections.add(name)
+            failed_collections.append(name)
+    for record in records:
+        name = record.get("collection")
+        if record.get("status") == "failed" and name and name not in seen_collections:
+            seen_collections.add(name)
+            failed_collections.append(name)
+    unhealthy = bool(failures or overflow or incomplete or failed_collections)
     return {
-        "status": "unknown" if not records else "partial" if failures or overflow else "completed",
+        "status": "unknown" if not records and not failed_collections else "partial" if unhealthy else "completed",
         "query_count": len(records),
         "failed_queries": failures,
+        "failed_collections": failed_collections,
         "record_limit_exceeded": overflow,
         "queries": records,
         "collections": {name: len((data or {}).get(name) or []) for name in ("users", "computers", "groups", "gpos")},

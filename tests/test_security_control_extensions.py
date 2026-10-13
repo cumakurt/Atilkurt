@@ -212,9 +212,13 @@ def test_session_evidence_is_conditional_and_unresolved_identity_is_excluded():
     assert attach_endpoint_graph(graph, {}, rows)['edges'] == []
 
 
-def test_ldaps_default_and_explicit_insecure_cli():
+def test_insecure_ldap_default_and_explicit_tls_cli():
     parser = build_parser()
-    assert parser.parse_args(['-d', DOMAIN, '-u', 'auditor']).ssl is True
+    assert parser.parse_args(['-d', DOMAIN, '-u', 'auditor']).ssl is False
+    assert parser.parse_args(['-d', DOMAIN, '-u', 'auditor', '--ssl']).ssl is True
+    starttls = parser.parse_args(['-d', DOMAIN, '-u', 'auditor', '--starttls'])
+    validate_cli_arguments(parser, starttls)
+    assert starttls.starttls is True and starttls.ssl is False
     assert parser.parse_args(['-d', DOMAIN, '-u', 'auditor', '--insecure-ldap']).ssl is False
     args = parser.parse_args(['-d', DOMAIN, '-u', 'auditor', '--insecure-ldap', '--auth-method', 'simple'])
     with pytest.raises(SystemExit):

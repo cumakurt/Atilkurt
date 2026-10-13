@@ -87,8 +87,10 @@ class GPOCollector:
                     'nTSecurityDescriptor': entry.get('nTSecurityDescriptor')
                 }
 
-                # Get linked OUs
-                gpo['linkedOUs'] = self._get_linked_ous(gpo['distinguishedName'])
+                # Get linked OUs. None means the lookup failed; an empty list was read.
+                linked_ous = self._get_linked_ous(gpo['distinguishedName'])
+                gpo['linkedOUsAssessed'] = linked_ous is not None
+                gpo['linkedOUs'] = linked_ous or []
 
                 gpos.append(gpo)
 
@@ -96,10 +98,8 @@ class GPOCollector:
             logger.info(f"Collected {len(gpos)} GPOs")
             return gpos
 
-        except LDAPSearchError as e:
-            logger.error(f"Error collecting GPOs: {str(e)}")
-            # Return empty list if GPO collection fails (may not have permissions)
-            return []
+        except LDAPSearchError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error collecting GPOs: {str(e)}")
             raise
@@ -112,7 +112,8 @@ class GPOCollector:
             gpo_dn: Distinguished name of the GPO
 
         Returns:
-            list: List of linked OU DNs
+            list: Linked OU DNs when the search finished, or None when it failed.
+            An empty list means the search completed and found no links.
         """
         linked_ous = []
 
@@ -135,5 +136,22 @@ class GPOCollector:
                             linked_ous.append(ou_dn)
         except Exception as e:
             logger.debug(f"Error getting linked OUs for {gpo_dn}: {str(e)}")
+            self._note_unassessed_links(gpo_dn)
+            return None
 
         return linked_ous
+
+    def _note_unassessed_links(self, gpo_dn: str) -> None:
+        """Record a failed link lookup so an empty list is not treated as finished."""
+        merge = getattr(self.ldap, "merge_query_audit", None)
+        if not callable(merge):
+            return
+        merge([{
+            "status": "failed",
+            "reason": "gpo_link_lookup_failed",
+            "scope": "engagement",
+            "collection": "gpos",
+            "base": gpo_dn,
+            "attributes": ["gPLink"],
+            "unobserved_attributes": ["gPLink"],
+        }])

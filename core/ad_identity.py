@@ -7,7 +7,7 @@ Well-known RIDs remain valid when a group has been renamed.
 from __future__ import annotations
 
 from typing import Any
-from core.ad_security import sid_text
+from core.ad_security import as_list, sid_text
 
 DOMAIN_ADMINS_RID = 512
 DOMAIN_CONTROLLERS_RID = 516
@@ -49,6 +49,8 @@ ROLE_RIDS: dict[str, int] = {
 }
 
 PRIVILEGED_GROUP_RIDS = frozenset(ROLE_RIDS.values())
+_DOMAIN_PRIVILEGED_RIDS = frozenset(rid for rid in PRIVILEGED_GROUP_RIDS if rid < 544)
+_BUILTIN_PRIVILEGED_RIDS = frozenset(rid for rid in PRIVILEGED_GROUP_RIDS if rid >= 544)
 
 _PRIVILEGED_GROUP_NAMES = frozenset({
     "domain admins",
@@ -149,10 +151,31 @@ def group_is_role(group: dict[str, Any], role_name: str) -> bool:
     return bool(rdn) and rdn.casefold() == target
 
 
+def sid_is_domain_well_known(value: Any, rids: frozenset[int]) -> bool:
+    """Return True for a domain SID whose RID is in the given well-known set.
+
+    Built-in RIDs such as 544 live in S-1-5-32. A domain principal that happens
+    to end in the same number is not that group.
+    """
+    text = str(value or "").strip()
+    rid = sid_rid(text)
+    return (
+        rid in rids
+        and text.upper().startswith("S-1-5-21-")
+        and len(text.split("-")) == 8
+    )
+
+
+def sid_is_builtin_privileged(value: Any) -> bool:
+    """Return True only for an exact BUILTIN privileged group SID."""
+    text = str(value or "").strip()
+    rid = sid_rid(text)
+    return rid in _BUILTIN_PRIVILEGED_RIDS and text.upper() == f"S-1-5-32-{rid}"
+
+
 def is_privileged_principal_reference(value: Any) -> bool:
     """Return True when a DN, name, or SID refers to a privileged group or krbtgt."""
-    rid = sid_rid(value)
-    if rid in PRIVILEGED_GROUP_RIDS:
+    if sid_is_domain_well_known(value, _DOMAIN_PRIVILEGED_RIDS) or sid_is_builtin_privileged(value):
         return True
     name = first_ldap_rdn(value)
     if not name:
@@ -161,32 +184,123 @@ def is_privileged_principal_reference(value: Any) -> bool:
 
 
 def account_has_privileged_evidence(account: dict[str, Any] | None) -> bool:
-    """Return True when adminCount or exact privileged-group membership is present."""
+    """Return True when adminCount or exact privileged-group membership is present.
+
+    adminCount alone means AdminSDHolder still treats the account as protected.
+    It does not prove the account is currently in a privileged group. Callers
+    that need current privilege should use ``account_has_current_privileged_membership``.
+    """
     if not account:
         return False
     if str(account.get("adminCount") or "").strip().lower() in {"1", "true"}:
         return True
-    return any(
-        is_privileged_group_name(name) for name in membership_names(account.get("memberOf"))
-    )
+    return account_has_current_privileged_membership(account)
+
+
+def account_has_current_privileged_membership(account: dict[str, Any] | None) -> bool:
+    """Return True only for a current well-known privileged group.
+
+    primaryGroupID is the RID of the account's primary group. Active Directory
+    omits that group from memberOf, so the RID is checked separately. A stale
+    adminCount flag is not current membership.
+    """
+    if not account:
+        return False
+    if any(is_privileged_group_name(name) for name in membership_names(account.get("memberOf"))):
+        return True
+    raw = account.get("primaryGroupID")
+    try:
+        rid = int(raw)
+    except (TypeError, ValueError):
+        return False
+    return rid in {DOMAIN_ADMINS_RID, ENTERPRISE_ADMINS_RID, SCHEMA_ADMINS_RID}
+
+
+def nested_privileged_groups(
+    account: dict[str, Any] | None,
+    groups: list[dict[str, Any]] | None = None,
+    *,
+    max_hops: int = 8,
+) -> list[str]:
+    """Return well-known privileged groups reachable through nested memberOf.
+
+    The walk uses collected group records only. Direct membership is included.
+    Cycles and very deep nesting stop at ``max_hops``.
+    """
+    if not account:
+        return []
+    from collections import deque
+
+    records = [group for group in groups or [] if isinstance(group, dict)]
+    by_dn = {
+        str(group.get("distinguishedName") or group.get("dn") or "").casefold(): group
+        for group in records if group.get("distinguishedName") or group.get("dn")
+    }
+    by_name: dict[str, list[dict]] = {}
+    for group in records:
+        for name in {str(group.get(key) or "").casefold() for key in ("name", "sAMAccountName", "cn")} - {""}:
+            by_name.setdefault(name, []).append(group)
+    queue = deque((item, 0) for item in as_list(account.get("memberOf")))
+    account_dn = str(account.get("distinguishedName") or account.get("dn") or "").casefold()
+    account_sid = sid_text(account.get("objectSid"))
+    primary = str(account.get("primaryGroupID") or "")
+    for group in records:
+        members = {str(item).casefold() for item in as_list(group.get("member"))}
+        group_sid = sid_text(group.get("objectSid"))
+        if (account_dn and account_dn in members) or (
+            account_sid and primary and group_sid == account_sid.rsplit("-", 1)[0] + "-" + primary
+        ):
+            queue.append((group.get("distinguishedName") or group.get("name"), 0))
+    found: list[str] = []
+    visited: set[str] = set()
+    while queue:
+        item, depth = queue.popleft()
+        token = str(item or "").strip()
+        folded = token.casefold()
+        if not token or folded in visited:
+            continue
+        visited.add(folded)
+        # A DN never falls back to a same-CN object in another OU.
+        candidates = [by_dn[folded]] if folded in by_dn else (
+            by_name.get(folded, []) if "=" not in token else []
+        )
+        group = candidates[0] if len(candidates) == 1 else None
+        if group and not is_security_group(group):
+            continue
+        name = first_ldap_rdn(token) or token
+        privileged = is_privileged_group_record(group) if group else (
+            not candidates and is_privileged_group_name(name)
+        )
+        if privileged:
+            label = str((group or {}).get("name") or name)
+            if label not in found:
+                found.append(label)
+        if group and depth < max_hops:
+            queue.extend((parent, depth + 1) for parent in as_list(group.get("memberOf")))
+    return found
 
 
 def membership_names(value: Any) -> set[str]:
     """Normalize memberOf / member values to casefolded first-RDN names."""
-    if value in (None, ""):
-        return set()
-    if isinstance(value, str):
-        values = [value]
-    elif isinstance(value, (list, tuple)):
-        values = list(value)
-    else:
-        values = [value]
     names: set[str] = set()
-    for item in values:
+    for item in as_list(value):
         name = first_ldap_rdn(item)
         if name:
             names.add(name.casefold())
     return names
+
+
+def privileged_membership_values(value: Any) -> list[Any]:
+    """Return memberOf values whose first RDN is a well-known privileged group.
+
+    Matching uses the first RDN only. A group stored under OU=Domain Admins is
+    not treated as Domain Admins.
+    """
+    matches: list[Any] = []
+    for item in as_list(value):
+        if is_privileged_group_name(first_ldap_rdn(item)):
+            matches.append(item)
+    return matches
 
 
 def ldap_scalar_text(value: Any) -> str:
@@ -300,3 +414,43 @@ def computer_is_domain_controller(computer: dict[str, Any] | None) -> bool:
         ldap_scalar_text(computer.get("distinguishedName") or computer.get("dn")).upper().split()
     )
     return ",OU=DOMAINCONTROLLERS," in f",{compact_dn},"
+
+
+def computer_has_unexpected_unconstrained_delegation(computer: dict[str, Any] | None) -> bool:
+    """Return True when unconstrained delegation is not the DC default.
+
+    Domain controllers are trusted for delegation by design. A disabled
+    computer cannot accept delegated authentication, so that flag is not an
+    active finding either.
+    """
+    if not computer or computer_is_domain_controller(computer):
+        return False
+    if computer.get("isDisabled") is True:
+        return False
+    uac = _uac_value(computer.get("userAccountControl"))
+    if uac is not None and uac & 0x2:  # ACCOUNTDISABLE
+        return False
+    # A readable UAC value is authoritative. The boolean is only a fallback
+    # when the flag itself was not collected.
+    if uac is not None:
+        return bool(uac & 0x80000)  # TRUSTED_FOR_DELEGATION
+    return bool(computer.get("unconstrainedDelegation"))
+
+
+def is_security_group(group: dict[str, Any]) -> bool:
+    """Distribution groups cannot grant token rights; old snapshots may omit type."""
+    raw = group.get("groupType")
+    if raw is None:
+        return True
+    try:
+        return bool(int(raw) & 0x80000000)
+    except (TypeError, ValueError):
+        return False
+
+
+TIER0_ROLES = frozenset({ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS, ROLE_SCHEMA_ADMINS, ROLE_ADMINISTRATORS, ROLE_DOMAIN_CONTROLLERS})
+
+
+def is_tier0_group_record(group: dict[str, Any]) -> bool:
+    """DNS/operator administration is sensitive, but is not itself Domain Admin."""
+    return is_security_group(group) and any(group_is_role(group, role) for role in TIER0_ROLES)

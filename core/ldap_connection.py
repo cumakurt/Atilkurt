@@ -19,6 +19,23 @@ from core.config import get_config
 
 logger = logging.getLogger(__name__)
 
+# DACL + owner + group. Do not request SACL (0x08); that needs extra privilege
+# and is unused by the analyzers.
+_NTSECURITYDESCRIPTOR = "ntsecuritydescriptor"
+_SD_FLAGS_OWNER_GROUP_DACL = 0x07
+
+
+def _security_descriptor_controls(attributes: Optional[list[str]]):
+    """Return the Microsoft SD Flags control when a security descriptor is requested."""
+    names = [attributes] if isinstance(attributes, str) else list(attributes or [])
+    if not any(str(name).casefold() == _NTSECURITYDESCRIPTOR for name in names):
+        return None
+    try:
+        from ldap3.protocol.microsoft import security_descriptor_control
+    except ImportError:
+        return None
+    return security_descriptor_control(sdflags=_SD_FLAGS_OWNER_GROUP_DACL)
+
 
 class LDAPConnection:
     """
@@ -262,7 +279,7 @@ class LDAPConnection:
                 continue
 
         # All connection attempts failed
-        transport = "LDAPS" if self.use_ssl else "LDAP with NTLM authentication"
+        transport = "LDAPS" if self.use_ssl else ("StartTLS" if self.start_tls else f"LDAP with {self.auth_method.upper()} authentication")
         error_msg = f"Failed to establish {transport} connection to {self.dc_ip}"
         if last_error:
             raise LDAPConnectionError(f"{error_msg}: {str(last_error)}") from last_error
@@ -317,8 +334,16 @@ class LDAPConnection:
             if self.pre_search_hook:
                 self.pre_search_hook()
             self._consume_request()
-            succeeded = self.connection.search(search_base=dn, search_filter='(objectClass=*)',
-                                               search_scope=BASE, attributes=attributes)
+            search_kwargs = {
+                "search_base": dn,
+                "search_filter": "(objectClass=*)",
+                "search_scope": BASE,
+                "attributes": attributes,
+            }
+            controls = _security_descriptor_controls(attributes)
+            if controls:
+                search_kwargs["controls"] = controls
+            succeeded = self.connection.search(**search_kwargs)
             self._validate_search_result(succeeded)
             return [self._entry_to_dict(entry) for entry in self.connection.entries]
         return self._audited_query(query, dn, '(objectClass=*)', attributes, 0, 'BASE')
@@ -333,6 +358,7 @@ class LDAPConnection:
         record = {'base': base, 'query_id': hashlib.sha256(
             repr((base, ldap_filter, attributes, limit, scope)).encode()).hexdigest()[:24],
             'attributes': list(attributes or []), 'scope': scope, 'size_limit': limit}
+        self._search_incomplete = False
         try:
             results = query()
             missing = {name: len(results) for name in attributes or []}
@@ -342,9 +368,12 @@ class LDAPConnection:
                 for name in missing:
                     if name.casefold() in observed:
                         missing[name] -= 1
-            record.update(status='completed', returned_objects=len(results),
-                          unobserved_attributes=[name for name, count in missing.items() if count == len(results)],
-                          unobserved_attribute_counts=missing)
+            record.update(
+                status='incomplete' if self._search_incomplete else 'completed',
+                returned_objects=len(results),
+                unobserved_attributes=[name for name, count in missing.items() if count == len(results)],
+                unobserved_attribute_counts=missing,
+            )
             return results
         except Exception:
             record.update(status='failed', returned_objects=0,
@@ -424,14 +453,24 @@ class LDAPConnection:
                 # But skip paging for single object searches (size_limit=1) to avoid retry issues
                 if self.enable_paging and (size_limit == 0 or size_limit > self.page_size) and size_limit != 1:
                     start_time = time.time()
-                    results = self._paged_search(
-                        search_base=search_base,
-                        search_filter=search_filter,
-                        attributes=attributes,
-                        size_limit=size_limit,
-                        progress_callback=progress_callback,
-                        timeout=timeout
-                    )
+                    try:
+                        results = self._paged_search(
+                            search_base=search_base,
+                            search_filter=search_filter,
+                            attributes=attributes,
+                            size_limit=size_limit,
+                            progress_callback=progress_callback,
+                            timeout=timeout
+                        )
+                    except LDAPSearchError as exc:
+                        # A deadline keeps the pages already read. Protocol failures
+                        # still raise so a broken page is not treated as the inventory.
+                        if not exc.partial_results:
+                            raise
+                        self._search_incomplete = True
+                        self.last_query_duration = time.time() - start_time
+                        logger.warning("%s", exc)
+                        return list(exc.partial_results)
                     self.last_query_duration = time.time() - start_time
 
                     # Cache result if enabled
@@ -453,12 +492,16 @@ class LDAPConnection:
                         self.pre_search_hook()
                     self._consume_request()
                     start_time = time.time()
-                    search_succeeded = self.connection.search(
-                        search_base=search_base,
-                        search_filter=search_filter,
-                        attributes=attributes,
-                        size_limit=size_limit
-                    )
+                    search_kwargs = {
+                        "search_base": search_base,
+                        "search_filter": search_filter,
+                        "attributes": attributes,
+                        "size_limit": size_limit,
+                    }
+                    controls = _security_descriptor_controls(attributes)
+                    if controls:
+                        search_kwargs["controls"] = controls
+                    search_succeeded = self.connection.search(**search_kwargs)
                     self._validate_search_result(
                         search_succeeded,
                         allow_size_limit=bool(size_limit),
@@ -593,23 +636,15 @@ class LDAPConnection:
         if not self.adaptive_timeout:
             return self.base_timeout
 
-        # Base timeout
-        timeout = self.base_timeout
+        # An unlimited inventory read cannot share the short connection timeout.
+        # A 30 second cap drops a domain-sized paged result before the last page.
+        if size_limit <= 0:
+            return max(self.base_timeout, 300)
 
-        # Increase timeout based on expected result size
-        if size_limit > 0:
-            # Estimate: ~0.1 seconds per 1000 results
-            estimated_time = (size_limit / 1000) * 0.1
-            timeout = max(self.base_timeout, int(estimated_time) + 10)
-        elif self.estimated_result_size > 0:
-            # Use previous estimate
-            estimated_time = (self.estimated_result_size / 1000) * 0.1
-            timeout = max(self.base_timeout, int(estimated_time) + 10)
-
-        # Cap at reasonable maximum (5 minutes)
-        timeout = min(timeout, 300)
-
-        return timeout
+        # Estimate: ~0.1 seconds per 1000 results, with a five-minute cap.
+        estimated_time = (size_limit / 1000) * 0.1
+        timeout = max(self.base_timeout, int(estimated_time) + 10)
+        return min(timeout, 300)
 
     def _is_retryable_error(self, error_msg: str) -> bool:
         """
@@ -655,6 +690,7 @@ class LDAPConnection:
         results: list[dict[str, Any]] = []
         seen_entries = set()
         seen_cookies = set()
+        processed_entry_count = 0
         cookie = None
         total_count = 0
         start_time = time.monotonic()
@@ -672,20 +708,24 @@ class LDAPConnection:
                 elapsed = time.monotonic() - start_time
                 if elapsed > timeout:
                     raise LDAPSearchError(
-                        f"LDAP paged search timed out after {elapsed:.1f} seconds; partial results discarded"
+                        f"LDAP paged search timed out after {elapsed:.1f} seconds; "
+                        f"{len(results)} partial entries retained",
+                        partial_results=results,
                     )
 
                 # Perform paged search
-                search_succeeded = self.connection.search(
-                    search_base=search_base,
-                    search_filter=search_filter,
-                    attributes=attributes,
-                    paged_size=self.page_size,
-                    paged_cookie=cookie
-                )
+                search_kwargs = {
+                    "search_base": search_base,
+                    "search_filter": search_filter,
+                    "attributes": attributes,
+                    "paged_size": self.page_size,
+                    "paged_cookie": cookie,
+                }
+                controls = _security_descriptor_controls(attributes)
+                if controls:
+                    search_kwargs["controls"] = controls
+                search_succeeded = self.connection.search(**search_kwargs)
                 self._validate_search_result(search_succeeded)
-                if time.monotonic() - start_time > timeout:
-                    raise LDAPSearchError('LDAP paged search timed out; partial results discarded')
 
                 # Process entries in current page
                 # ldap3 accumulates entries, so we only process new ones
@@ -693,7 +733,12 @@ class LDAPConnection:
                 # Some ldap3 strategies replace entries per page while others
                 # expose accumulated entries. Deduplicate by DN to support both.
                 all_entries = list(self.connection.entries) if hasattr(self.connection, 'entries') else []
-                for entry in all_entries:
+                if len(all_entries) > processed_entry_count:
+                    page_entries = all_entries[processed_entry_count:]
+                    processed_entry_count = len(all_entries)
+                else:
+                    page_entries = all_entries
+                for entry in page_entries:
                     entry_dict = self._entry_to_dict(entry)
                     entry_identity = entry_dict.get("dn") or repr(entry_dict)
                     if entry_identity in seen_entries:
@@ -706,6 +751,12 @@ class LDAPConnection:
                     # Check size limit
                     if size_limit > 0 and total_count >= size_limit:
                         break
+
+                if time.monotonic() - start_time > timeout:
+                    raise LDAPSearchError(
+                        f"LDAP paged search timed out; {len(results)} partial entries retained",
+                        partial_results=results,
+                    )
 
                 # Get cookie for next page - try multiple methods
                 next_cookie = self._get_paged_cookie()
@@ -817,10 +868,16 @@ class LDAPConnection:
         return entry_dict
 
     def disconnect(self) -> None:
-        """Close LDAP connection."""
-        if self.connection:
+        """Close LDAP connection and drop the bind secret from this object."""
+        connection = self.connection
+        self.password = ''
+        if connection is not None:
             try:
-                self.connection.unbind()
+                connection.password = None
+            except Exception:
+                logger.debug('Could not clear the LDAP client password', exc_info=True)
+            try:
+                connection.unbind()
             except Exception as e:
                 logger.warning(f"Error during disconnect: {str(e)}")
             finally:

@@ -13,6 +13,12 @@ class TestGPPPasswordExtractor(unittest.TestCase):
     def setUp(self):
         self.extractor = GPPPasswordExtractor()
 
+    def test_gpp_flag_without_ciphertext_is_not_reported(self):
+        self.assertEqual(self.extractor.analyze_gpp_passwords([{
+            "name": "Flag Only",
+            "has_gpp_password": True,
+        }]), [])
+
     def test_gpos_without_cpassword_are_not_reported(self):
         gpos = [
             {

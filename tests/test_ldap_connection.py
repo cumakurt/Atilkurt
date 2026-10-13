@@ -37,8 +37,10 @@ class FakeSearchConnection:
         self.result = result if result is not None else {"result": 0, "description": "success"}
         self.entries = entries or []
         self.bound = True
+        self.last_kwargs = None
 
     def search(self, **kwargs):
+        self.last_kwargs = kwargs
         return self.succeeded
 
 
@@ -57,6 +59,18 @@ def build_connection(**kwargs):
 
 
 class TestLDAPTransportSecurity(unittest.TestCase):
+    def test_disconnect_clears_bind_password(self):
+        connection = build_connection()
+        client = Mock()
+        client.password = "ValidPass123!"
+        connection.connection = client
+        connection.disconnect()
+        self.assertEqual(connection.password, "")
+        self.assertIsNone(client.password)
+        client.unbind.assert_called_once()
+        self.assertIsNone(connection.connection)
+
+
     """TLS requests and plaintext authentication must fail closed."""
 
     @patch("core.ldap_connection.Connection")
@@ -117,6 +131,14 @@ class TestLDAPSearchCorrectness(unittest.TestCase):
 
         self.assertEqual(ldap.search(search_filter="(objectClass=user)"), [])
 
+    def test_security_descriptor_attribute_sends_sd_flags_control(self):
+        ldap = build_connection(enable_paging=False)
+        ldap.connection = FakeSearchConnection()
+        ldap.search(search_filter="(objectClass=pKICertificateTemplate)", attributes=["nTSecurityDescriptor"])
+        self.assertIn("controls", ldap.connection.last_kwargs)
+        ldap.search(search_filter="(objectClass=user)", attributes=["sAMAccountName"])
+        self.assertNotIn("controls", ldap.connection.last_kwargs)
+
     def test_paged_size_limit_does_not_duplicate_final_page(self):
         """Stopping at a caller size limit must append each entry exactly once."""
         ldap = build_connection(page_size=2)
@@ -138,21 +160,24 @@ class TestLDAPSearchCorrectness(unittest.TestCase):
 
         self.assertEqual([result["name"] for result in results], ["One", "Two"])
 
-    def test_paged_timeout_discards_partial_results(self):
-        """A timed-out search must fail instead of returning and caching incomplete data."""
+    def test_paged_timeout_keeps_partial_results_on_the_error(self):
+        """A timed-out page raises, and the pages already read stay on the error."""
         ldap = build_connection()
         ldap.connection = FakeSearchConnection(
             entries=[FakeEntry("CN=One,DC=example,DC=com", "One")]
         )
+        ticks = iter((0, 0, 5))
 
-        with self.assertRaisesRegex(LDAPSearchError, "partial results discarded"):
-            ldap._paged_search(
-                search_base=ldap.base_dn,
-                search_filter="(objectClass=computer)",
-                attributes=["name"],
-                size_limit=0,
-                timeout=0,
-            )
+        with patch("core.ldap_connection.time.monotonic", side_effect=lambda: next(ticks)):
+            with self.assertRaisesRegex(LDAPSearchError, "partial entries retained") as raised:
+                ldap._paged_search(
+                    search_base=ldap.base_dn,
+                    search_filter="(objectClass=computer)",
+                    attributes=["name"],
+                    size_limit=0,
+                    timeout=1,
+                )
+        self.assertEqual(raised.exception.partial_results[0]["name"], "One")
 
 
 if __name__ == "__main__":

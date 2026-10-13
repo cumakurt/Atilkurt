@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence
+from core.ad_identity import account_has_current_privileged_membership
 from core.ad_security import as_int, as_list, as_text
 from core.constants import MITRETechniques, RiskTypes, Severity, UACFlags
 
@@ -36,7 +36,7 @@ class KerberosRC4ReadinessAnalyzer:
                 if uac & UACFlags.ACCOUNTDISABLE:
                     continue
                 spns = as_list(account.get("servicePrincipalName"))
-                privileged = account_has_privileged_evidence(account)
+                privileged = account_has_current_privileged_membership(account)
                 name = as_text(
                     account.get("sAMAccountName") or account.get("name")
                     or account.get("distinguishedName")
@@ -45,13 +45,13 @@ class KerberosRC4ReadinessAnalyzer:
                 relevant = bool(spns) or privileged or name.casefold().rstrip("$") == "krbtgt"
                 if not relevant:
                     continue
-                if encryption is None:
-                    if spns and object_type == "user":
+                if encryption is None or encryption == 0:
+                    if (spns and object_type == "user") or privileged or name.casefold().rstrip("$") == "krbtgt":
                         unknown_service_accounts.append(name)
                     continue
                 if encryption & self.AES_MASK:
                     continue
-                if encryption & (self.RC4_MASK | self.DES_MASK) or encryption == 0:
+                if encryption & (self.RC4_MASK | self.DES_MASK):
                     risks.append({
                         "type": RiskTypes.KERBEROS_RC4_ONLY,
                         "severity": Severity.CRITICAL if privileged else Severity.HIGH,
@@ -109,7 +109,7 @@ class KerberosRC4ReadinessAnalyzer:
         risks: list[dict[str, Any]] = []
         for trust in rows:
             encryption = as_int(trust.get("msDS-SupportedEncryptionTypes"))
-            if encryption is None or encryption & self.AES_MASK:
+            if encryption is None or encryption == 0 or encryption & self.AES_MASK:
                 continue
             name = as_text(trust.get("trustPartner") or trust.get("flatName") or trust.get("cn")) or "trusted domain"
             risks.append({

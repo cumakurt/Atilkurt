@@ -70,8 +70,9 @@ class DashboardSectionMixin:
                 <div class="card text-center h-100 border-{color_class}" style="border-width: 1px !important; {cursor_style} {hover_style}" {click_handler_attr} onmouseover="if(this.style.cursor=='pointer'){{this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.15)';}}" onmouseout="if(this.style.cursor=='pointer'){{this.style.transform=''; this.style.boxShadow='';}}">
                     <div class="card-body" style="pointer-events: none;">
                         <h6 class="card-title text-muted mb-2" style="font-size: 0.8125rem;">{kpi_data['label']}</h6>
-                        <h2 class="mb-0 text-{color_class}" style="font-size: 1.75rem;">{f"{kpi_data['value']:.1f}" if kpi_key == 'overall_score' and isinstance(kpi_data['value'], (int, float)) else kpi_data['value']}</h2>
-                        {"<small class='text-muted' style='font-size: 0.75rem;'>/100</small>" if kpi_key == 'overall_score' else ""}
+                        <h2 class="mb-0 text-{color_class}" style="font-size: 1.75rem;">{f"{kpi_data['value']:.1f}" if kpi_key == 'overall_score' and isinstance(kpi_data['value'], (int, float)) else ('Not assessed' if kpi_key == 'overall_score' and kpi_data['value'] is None else kpi_data['value'])}</h2>
+                        {"<small class='text-muted' style='font-size: 0.75rem;'>/100</small>" if kpi_key == 'overall_score' and isinstance(kpi_data.get('value'), (int, float)) else ""}
+                        {f"<div class='small text-muted mt-1'>{html_stdlib.escape({'improving': 'improving vs previous scan', 'worsening': 'worsening vs previous scan', 'stable': 'stable vs previous scan'}.get(str(kpi_data.get('trend') or ''), 'no prior scan'))}</div>" if kpi_data.get('trend') else ""}
                     </div>
                 </div>
             </div>
@@ -388,7 +389,7 @@ class DashboardSectionMixin:
             <div class="card-body">
                 <div class="input-group mb-3">
                     <span class="input-group-text"><i class="fas fa-search"></i></span>
-                    <input type="text" class="form-control" id="passwordIssuesFullSearch" placeholder="Search by username or issue..." onkeyup="filterPasswordIssuesFull()">
+                    <input type="text" class="form-control" id="passwordIssuesFullSearch" placeholder="Search by username or issue..." aria-label="Search by username or issue..." onkeyup="filterPasswordIssuesFull()">
                     <button class="btn btn-outline-secondary" type="button" onclick="clearPasswordIssuesFullSearch()">
                         <i class="fas fa-times"></i> Clear
                     </button>
@@ -677,13 +678,20 @@ class DashboardSectionMixin:
         low = risk_dist.get('Low', 0)
         total_risks = critical + high + medium + low
         domain_score = kpis.get('overall_score', {}).get('value', 0)
+        if isinstance(domain_score, (int, float)):
+            score_badge = (
+                f"<span class=\"badge bg-{'danger' if domain_score < 40 else 'warning' if domain_score < 70 else 'success'}\">"
+                f"{domain_score:.1f}/100</span>"
+            )
+        else:
+            score_badge = "<span class=\"badge bg-secondary\">Not assessed</span>"
 
         esc_summary = html_stdlib.escape(ciso_summary) if ciso_summary else "No summary available."
 
         # Key metrics bar
         key_metrics_html = f"""
         <div class="d-flex flex-wrap gap-3 align-items-center mb-3" style="font-size: 0.9rem;">
-            <span><strong>Domain score:</strong> <span class="badge bg-{'danger' if domain_score < 40 else 'warning' if domain_score < 70 else 'success'}">{domain_score:.1f}/100</span></span>
+            <span><strong>Domain score:</strong> {score_badge}</span>
             <span><strong>Total risks:</strong> {total_risks}</span>
             <span><strong>Critical:</strong> <span class="badge bg-danger">{critical}</span></span>
             <span><strong>High:</strong> <span class="badge bg-warning text-dark">{high}</span></span>
@@ -874,7 +882,7 @@ class DashboardSectionMixin:
                             </div>
                             <div class="input-group mb-3">
                                 <span class="input-group-text"><i class="fas fa-search"></i></span>
-                                <input type="text" class="form-control" id="passwordIssuesPreviewSearch" placeholder="Search by username or issue..." onkeyup="filterPasswordIssuesPreview()">
+                                <input type="text" class="form-control" id="passwordIssuesPreviewSearch" placeholder="Search by username or issue..." aria-label="Search by username or issue..." onkeyup="filterPasswordIssuesPreview()">
                                 <button class="btn btn-outline-secondary" type="button" onclick="clearPasswordIssuesPreviewSearch()">
                                     <i class="fas fa-times"></i> Clear
                                 </button>
@@ -1069,7 +1077,7 @@ class DashboardSectionMixin:
                 </div>
                 """
         else:
-            group_changed_details_html = '<p class="text-muted">No recently modified group memberships found.</p>'
+            group_changed_details_html = '<p class="text-muted">No recently changed accounts found.</p>'
 
         return f"""
         <div class="row mb-4">
@@ -1116,8 +1124,8 @@ class DashboardSectionMixin:
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
-                        <span><i class="fas fa-exchange-alt"></i> Recently Modified Group Memberships</span>
-                        <button class="btn btn-sm btn-dark" onclick="exportTableToExcel('recentlyGroupChangedTable', 'Recently_Modified_Group_Memberships')">
+                        <span><i class="fas fa-exchange-alt"></i> Recently Changed Accounts</span>
+                        <button class="btn btn-sm btn-dark" onclick="exportTableToExcel('recentlyGroupChangedTable', 'Recently_Changed_Accounts')">
                             <i class="fas fa-file-excel"></i> Export
                         </button>
                     </div>
@@ -1319,7 +1327,7 @@ class DashboardSectionMixin:
 
         if da_members:
             preview_da = da_members[:da_page_size]
-            da_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="domainAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'domainAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
+            da_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="domainAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'domainAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'domainAdminTable\', 3)">Object changed <i class="fas fa-sort"></i></th></thead><tbody>'
             for member in preview_da:
                 groups_str = ', '.join(member.get('groups', []))
                 account_created = member.get('accountCreated', 'N/A')
@@ -1369,7 +1377,7 @@ class DashboardSectionMixin:
 
         if ea_members:
             preview_ea = ea_members[:ea_page_size]
-            ea_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="enterpriseAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
+            ea_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="enterpriseAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'enterpriseAdminTable\', 3)">Object changed <i class="fas fa-sort"></i></th></thead><tbody>'
             for member in preview_ea:
                 groups_str = ', '.join(member.get('groups', []))
                 account_created = member.get('accountCreated', 'N/A')
@@ -1419,7 +1427,7 @@ class DashboardSectionMixin:
 
         if sa_members:
             preview_sa = sa_members[:sa_page_size]
-            sa_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="schemaAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 3)">Group Added <i class="fas fa-sort"></i></th></thead><tbody>'
+            sa_members_html = '<div class="table-responsive"><table class="table table-sm table-hover sortable-table" id="schemaAdminTable" style="font-size: 0.85rem;"><thead><tr><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 0)">Username <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 1)">Groups <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 2)">Account Created <i class="fas fa-sort"></i></th><th class="sortable" onclick="sortTable(\'schemaAdminTable\', 3)">Object changed <i class="fas fa-sort"></i></th></thead><tbody>'
             for member in preview_sa:
                 groups_str = ', '.join(member.get('groups', []))
                 account_created = member.get('accountCreated', 'N/A')
@@ -1490,7 +1498,7 @@ class DashboardSectionMixin:
                             </div>
                         </div>
                         <div class="alert alert-info mb-3">
-                            <i class="fas fa-info-circle"></i> <strong>Note:</strong> "Group Added" time is approximate (based on account's last modification time).
+                            <i class="fas fa-info-circle"></i> <strong>Note:</strong> "Object changed" is the account whenChanged time. It is not the time the account was added to the group.
                         </div>
                         {disabled_admin_html}
                         <div class="row">

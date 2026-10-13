@@ -136,12 +136,15 @@ class ProgressPersistence:
         try:
             checkpoint_data = read_json(str(checkpoint_file))
             if checkpoint_data.get('checkpoint_id') != checkpoint_id or not isinstance(checkpoint_data.get('data'), dict):
-                raise ValueError("Checkpoint metadata or payload is invalid")
+                raise CheckpointCorruptError("Checkpoint metadata or payload is invalid")
             logger.info(f"Checkpoint loaded: {checkpoint_file}")
             return checkpoint_data.get('data')
+        except CheckpointCorruptError:
+            logger.error("Checkpoint %s is corrupt and will not be replaced", checkpoint_file)
+            raise
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {str(e)}")
-            return None
+            raise CheckpointCorruptError(f"Checkpoint {checkpoint_id} is unreadable") from e
 
     def list_checkpoints(self, domain: Optional[str] = None) -> list[dict[str, Any]]:
         """
@@ -268,6 +271,10 @@ class ProgressPersistence:
         collection_state = collections.get(collection_type)
 
         return collection_state.get('completed', False) if collection_state else False
+
+
+class CheckpointCorruptError(ValueError):
+    """A checkpoint file exists but its contents cannot be trusted."""
 
 
 class IncrementalScanner:

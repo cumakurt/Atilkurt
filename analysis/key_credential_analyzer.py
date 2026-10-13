@@ -9,7 +9,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from core.ad_identity import account_has_privileged_evidence
+from core.ad_identity import account_has_current_privileged_membership
 from core.ad_security import as_list, as_text
 from core.constants import MITRETechniques, RiskTypes, Severity
 
@@ -195,7 +195,7 @@ class KeyCredentialAnalyzer:
 
         duplicated = {device for device, owners in device_owners.items() if len(owners) > 1}
         for name, row, records in parsed_by_object:
-            privileged = account_has_privileged_evidence(row)
+            privileged = account_has_current_privileged_membership(row)
             for index, record in enumerate(records, 1):
                 evidence = record.evidence()
                 evidence["credential_index"] = index

@@ -33,6 +33,11 @@ def add_engagement_arguments(parser):
         ('gpo-target', 'DN of an explicit live GPO applicability target'),
     ):
         section.add_argument('--' + flag, action='append', default=[], help=help_text + '; repeatable')
+    section.add_argument(
+        '--sysvol',
+        action='store_true',
+        help='Opt-in SYSVOL/NETLOGON inspection of the domain controller (--dc-ip); same as --sysvol-host DC',
+    )
     section.add_argument('--protocol-evidence', help='Fresh local signing/channel-binding/EPA policy evidence JSON')
     section.add_argument('--security-evidence', action='append', default=[],
                          help='Target-bound endpoint, CA, Entra, recovery and management evidence JSON; repeatable')
@@ -50,6 +55,14 @@ def add_engagement_arguments(parser):
 
 
 def validate_engagement_arguments(parser, args):
+    if getattr(args, 'sysvol', False):
+        host = getattr(args, 'dc_ip', None) or getattr(args, 'domain', None)
+        if not host:
+            parser.error('--sysvol requires --dc-ip or --domain')
+        hosts = list(getattr(args, 'sysvol_host', None) or [])
+        if host not in hosts:
+            hosts.append(host)
+        args.sysvol_host = hosts
     if getattr(args, 'gpo_target', []) and getattr(args, 'gpo_context', None):
         parser.error('--gpo-target and --gpo-context are alternative GPO sources; choose one')
     if getattr(args, 'gpo_policy_file', []) and not getattr(args, 'gpo_context', None):

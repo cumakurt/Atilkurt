@@ -39,6 +39,7 @@ VALIDATION_REQUIRED_TYPES = frozenset({
     'fine_grained_password_policy', 'foreign_security_principal', 'dns_zone_found',
     'exchange_objects_found', 'ad_recycle_bin_enabled', 'builtin_admin_renamed',
     'honeypot_candidate', 'honeypot_recommendation', 'trust_stale_configuration',
+    'alt_security_identities_unverified',
 })
 
 
@@ -83,3 +84,8 @@ def annotate_validation(risk: dict[str, Any]) -> None:
         risk['score_excluded'] = True
         risk['severity'] = 'low'
         risk['severity_level'] = 'Low'
+
+
+def requires_takeover_validation(risk: dict[str, Any]) -> bool:
+    """An observed risky permission need not prove a complete takeover chain."""
+    return requires_validation(risk) or risk.get("takeover_requires_validation") is True

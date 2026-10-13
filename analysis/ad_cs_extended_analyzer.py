@@ -14,6 +14,7 @@ Extends the existing certificate_analyzer.py with additional ESC vectors:
 
 import logging
 from typing import Any, Optional
+from analysis.adcs_enrollment import bind_esc_enrollment_evidence, index_enrollment_principals
 from core.ad_identity import forest_configuration_dn
 from core.constants import RiskTypes, Severity, MITRETechniques
 
@@ -53,7 +54,8 @@ class ADCSExtendedAnalyzer:
         except (TypeError, ValueError):
             return None
 
-    def analyze(self) -> list[dict[str, Any]]:
+    def analyze(self, users: Optional[list[dict[str, Any]]] = None,
+                groups: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
         risks: list[dict[str, Any]] = []
         try:
             config_dn = self._get_config_dn()
@@ -62,9 +64,10 @@ class ADCSExtendedAnalyzer:
                 return risks
 
             pki_dn = f"CN=Public Key Services,CN=Services,{config_dn}"
+            principals = index_enrollment_principals(users, groups)
 
             # ── Enrollment Services (CAs) ──
-            cas = self._get_enrollment_services(pki_dn)
+            cas, cas_observed = self._get_enrollment_services(pki_dn)
             if cas:
                 risks.extend(self._check_esc5(cas))
                 risks.extend(self._check_esc7(cas))
@@ -73,9 +76,9 @@ class ADCSExtendedAnalyzer:
             # ── Certificate Templates ──
             templates = self._get_certificate_templates(pki_dn)
             if templates:
-                risks.extend(self._check_esc9(templates))
+                risks.extend(self._check_esc9(templates, cas, cas_observed, principals))
                 risks.extend(self._check_esc13(templates))
-                risks.extend(self._check_esc15(templates))
+                risks.extend(self._check_esc15(templates, cas, cas_observed, principals))
 
             # ── Certifried (CVE-2022-26923) ──
             risks.extend(self._check_certifried())
@@ -95,7 +98,7 @@ class ADCSExtendedAnalyzer:
     def _get_config_dn(self) -> Optional[str]:
         return forest_configuration_dn(self.ldap)
 
-    def _get_enrollment_services(self, pki_dn: str) -> list[dict[str, Any]]:
+    def _get_enrollment_services(self, pki_dn: str) -> tuple[list[dict[str, Any]], bool]:
         try:
             results = self.ldap.search(
                 search_base=f"CN=Enrollment Services,{pki_dn}",
@@ -106,10 +109,10 @@ class ADCSExtendedAnalyzer:
                     'msPKI-Enrollment-Flag',
                 ],
             )
-            return results if results else []
+            return (results if results else []), True
         except Exception as e:
             logger.debug(f"Could not get enrollment services: {e}")
-            return []
+            return [], False
 
     def _get_certificate_templates(self, pki_dn: str) -> list[dict[str, Any]]:
         try:
@@ -183,7 +186,10 @@ class ADCSExtendedAnalyzer:
 
     # ── ESC9 — CT_FLAG_NO_SECURITY_EXTENSION ────────────────────────────────
 
-    def _check_esc9(self, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _check_esc9(self, templates: list[dict[str, Any]],
+                    cas: Optional[list[dict[str, Any]]] = None,
+                    cas_observed: bool = False,
+                    principals: Optional[dict[str, dict[str, Any]]] = None) -> list[dict[str, Any]]:
         risks: list[dict[str, Any]] = []
         for tmpl in templates:
             name = tmpl.get('cn') or tmpl.get('displayName', '?')
@@ -191,7 +197,7 @@ class ADCSExtendedAnalyzer:
             if enroll_flag is None:
                 continue
             if enroll_flag & CT_FLAG_NO_SECURITY_EXTENSION:
-                risks.append({
+                risk = {
                     'type': RiskTypes.CERTIFICATE_ESC9,
                     'severity': Severity.HIGH,
                     'title': f'Template "{name}" has NO_SECURITY_EXTENSION (ESC9)',
@@ -210,7 +216,13 @@ class ADCSExtendedAnalyzer:
                         'mapping (KB5014754).'
                     ),
                     'mitre_attack': MITRETechniques.PRIVILEGE_ESCALATION,
-                })
+                }
+                bound = bind_esc_enrollment_evidence(
+                    risk, tmpl, cas=cas or [], cas_observed=cas_observed,
+                    principals=principals or {},
+                )
+                if bound:
+                    risks.append(bound)
         return risks
 
     # ── ESC11 — ICertPassage RPC relay ──────────────────────────────────────
@@ -313,6 +325,12 @@ class ADCSExtendedAnalyzer:
                         ),
                         'affected_object': 'Domain',
                         'object_type': 'configuration',
+                        'evidence': {
+                            'requires_runtime_validation': True,
+                            'observed': 'ms-DS-MachineAccountQuota',
+                            'machine_account_quota': quota_int,
+                            'machine_template_observed': False,
+                        },
                         'mitigation': (
                             '1. Install KB5014754 (strong certificate mapping)\n'
                             '2. Set ms-DS-MachineAccountQuota to 0\n'
@@ -343,21 +361,25 @@ class ADCSExtendedAnalyzer:
                 ]
                 if len(accounts_with_alt) > 0:
                     risks.append({
-                        'type': RiskTypes.CERTIFICATE_ESC14,
-                        'severity': Severity.MEDIUM,
+                        'type': 'alt_security_identities_unverified',
+                        'severity': Severity.LOW,
                         'title': f'{len(accounts_with_alt)} accounts have altSecurityIdentities',
                         'description': (
                             f'{len(accounts_with_alt)} account(s) have explicit '
-                            'altSecurityIdentities set. If writable by non-admins, '
-                            'an attacker can map their own certificate to a '
-                            'privileged account (ESC14).'
+                            'altSecurityIdentities set. Write permission was not '
+                            'collected, so this is not a confirmed ESC14 path.'
                         ),
                         'affected_object': ', '.join(accounts_with_alt[:10]),
                         'object_type': 'user',
+                        'evidence': {
+                            'requires_runtime_validation': True,
+                            'writability_observed': False,
+                            'account_count': len(accounts_with_alt),
+                        },
                         'mitigation': (
-                            'Audit altSecurityIdentities ACLs. Ensure only '
-                            'admins can write this attribute. Enable strong '
-                            'certificate mapping (KB5014754).'
+                            'Review who can write altSecurityIdentities. ESC14 requires '
+                            'that write for a non-admin, not merely a populated attribute. '
+                            'Enable strong certificate mapping (KB5014754).'
                         ),
                         'mitre_attack': MITRETechniques.PRIVILEGE_ESCALATION,
                         'accounts': accounts_with_alt,
@@ -366,7 +388,10 @@ class ADCSExtendedAnalyzer:
             logger.debug(f"ESC10/ESC14 check failed: {e}")
         return risks
 
-    def _check_esc15(self, templates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _check_esc15(self, templates: list[dict[str, Any]],
+                     cas: Optional[list[dict[str, Any]]] = None,
+                     cas_observed: bool = False,
+                     principals: Optional[dict[str, dict[str, Any]]] = None) -> list[dict[str, Any]]:
         """Schema v1 templates treat Application Policy as EKU (ESC15 / EKUwu)."""
         risks: list[dict[str, Any]] = []
         for tmpl in templates:
@@ -377,7 +402,7 @@ class ADCSExtendedAnalyzer:
             app_policy = tmpl.get('msPKI-Certificate-Application-Policy') or tmpl.get('pKIExtendedKeyUsage')
             if not app_policy:
                 continue
-            risks.append({
+            risk = {
                 'type': RiskTypes.CERTIFICATE_ESC15,
                 'severity': Severity.HIGH,
                 'title': f'Certificate template "{name}" is schema v1 (ESC15)',
@@ -392,5 +417,11 @@ class ADCSExtendedAnalyzer:
                 'attack_scenario': 'Enroll with an altered application policy OID and authenticate as a privileged user.',
                 'mitigation': 'Upgrade templates to schema v2+, disable unused v1 templates, and require manager approval.',
                 'mitre_attack': MITRETechniques.VALID_ACCOUNTS_DOMAIN,
-            })
+            }
+            bound = bind_esc_enrollment_evidence(
+                risk, tmpl, cas=cas or [], cas_observed=cas_observed,
+                principals=principals or {},
+            )
+            if bound:
+                risks.append(bound)
         return risks

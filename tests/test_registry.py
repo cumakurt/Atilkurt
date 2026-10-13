@@ -103,6 +103,14 @@ class TestRiskDeduplication(unittest.TestCase):
 
         self.assertEqual(result, [risks[0]])
 
+    def test_user_with_spn_is_dropped_when_kerberoasting_covers_the_same_account(self):
+        risks = [
+            {"type": "user_with_spn", "affected_object": "svc", "object_type": "user"},
+            {"type": "kerberoasting_target", "affected_object": "svc", "object_type": "user"},
+        ]
+        result = deduplicate_risks(risks)
+        self.assertEqual(result, [risks[1]])
+
     def test_distinct_findings_for_one_object_are_preserved(self):
         risks = [
             {"type": "acl_generic_all", "affected_object": "user1", "trustee": "group1"},
@@ -110,3 +118,64 @@ class TestRiskDeduplication(unittest.TestCase):
         ]
 
         self.assertEqual(deduplicate_risks(risks), risks)
+
+    def test_overlapping_attack_findings_collapse_to_one_row(self):
+        risks = [
+            {"type": "kerberos_preauth_disabled", "affected_object": "nopreauth", "object_type": "user"},
+            {"type": "asrep_roasting_target", "affected_object": "nopreauth", "object_type": "user"},
+            {"type": "computer_unconstrained_delegation", "affected_object": "APP01", "object_type": "computer"},
+            {"type": "unconstrained_delegation", "affected_object": "APP01", "object_type": "computer"},
+        ]
+        result = deduplicate_risks(risks)
+        self.assertEqual(
+            [risk["type"] for risk in result],
+            ["asrep_roasting_target", "unconstrained_delegation"],
+        )
+
+    def test_complete_dcsync_acl_rows_collapse_into_the_dcsync_finding(self):
+        risks = [
+            {
+                "type": "dcsync_rights",
+                "affected_object": "syncer",
+                "evidence": {"trustee_sid": "S-1-5-21-1-2-3-1105"},
+            },
+            {
+                "type": "acl_ds_replication_get_changes",
+                "affected_object": "example.com",
+                "trustee": "S-1-5-21-1-2-3-1105",
+                "trustee_display_name": "syncer",
+                "evidence": {"dcsync_pair_complete": True},
+            },
+            {
+                "type": "acl_ds_replication_get_changes_all",
+                "affected_object": "example.com",
+                "trustee": "S-1-5-21-1-2-3-1105",
+                "evidence": {"dcsync_pair_complete": True},
+            },
+            {
+                "type": "acl_ds_replication_get_changes",
+                "affected_object": "example.com",
+                "trustee": "S-1-5-21-1-2-3-1106",
+                "evidence": {"dcsync_pair_complete": False},
+            },
+        ]
+        result = deduplicate_risks(risks)
+        self.assertEqual(
+            [risk["type"] for risk in result],
+            ["dcsync_rights", "acl_ds_replication_get_changes"],
+        )
+
+    def test_broad_constrained_delegation_replaces_the_generic_row(self):
+        risks = [
+            {"type": "constrained_delegation", "affected_object": "APP01", "object_type": "computer"},
+            {"type": "computer_broad_constrained_delegation", "affected_object": "APP01", "object_type": "computer"},
+            {"type": "constrained_delegation", "affected_object": "svc_sql", "object_type": "user"},
+        ]
+        result = deduplicate_risks(risks)
+        self.assertEqual(
+            [(risk["type"], risk["affected_object"]) for risk in result],
+            [
+                ("computer_broad_constrained_delegation", "APP01"),
+                ("constrained_delegation", "svc_sql"),
+            ],
+        )

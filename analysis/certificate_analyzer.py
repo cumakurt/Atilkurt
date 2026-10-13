@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from analysis.adcs_enrollment import bind_esc_enrollment_evidence, index_enrollment_principals
 from core.ad_identity import forest_configuration_dn, ldap_scalar_text
 from core.constants import MITRETechniques, RiskTypes, Severity
 from core.exceptions import LDAPSearchError
@@ -27,15 +28,28 @@ TEMPLATE_ATTRIBUTES = [
     "msPKI-Enrollment-Flag",
     "pKIExtendedKeyUsage",
     "msPKI-RA-Signature",
+    "nTSecurityDescriptor",
+    "distinguishedName",
+]
+CA_ATTRIBUTES = [
+    "cn",
+    "displayName",
+    "dNSHostName",
+    "certificateTemplates",
+    "nTSecurityDescriptor",
+    "distinguishedName",
 ]
 
 
 class CertificateAnalyzer:
     """Analyzes Active Directory Certificate Services for vulnerabilities."""
 
-    def __init__(self, ldap_connection):
+    def __init__(self, ldap_connection, users: list[dict[str, Any]] | None = None,
+                 groups: list[dict[str, Any]] | None = None):
         """Initialize certificate analyzer."""
         self.ldap = ldap_connection
+        self.users = users or []
+        self.groups = groups or []
 
     def analyze_certificate_services(self) -> list[dict[str, Any]]:
         """Analyze AD Certificate Services templates using the forest config NC."""
@@ -44,9 +58,10 @@ class CertificateAnalyzer:
             logger.warning("Could not determine forest configuration naming context")
             return []
 
+        pki_base = f"CN=Public Key Services,CN=Services,{config_dn}"
         try:
             templates = self.ldap.search(
-                search_base=f"CN=Certificate Templates,CN=Public Key Services,CN=Services,{config_dn}",
+                search_base=f"CN=Certificate Templates,{pki_base}",
                 search_filter="(objectClass=pKICertificateTemplate)",
                 attributes=TEMPLATE_ATTRIBUTES,
             ) or []
@@ -54,6 +69,8 @@ class CertificateAnalyzer:
             logger.debug("Certificate template search failed: %s", exc)
             return []
 
+        cas, cas_observed = self._enrollment_services(pki_base)
+        principals = index_enrollment_principals(self.users, self.groups)
         risks: list[dict[str, Any]] = []
         for template in templates:
             template_name = (
@@ -62,10 +79,32 @@ class CertificateAnalyzer:
                 or ldap_scalar_text(template.get("cn"))
                 or "Unknown"
             )
-            risks.extend(self._analyze_template_vulnerabilities(template, str(template_name)))
+            for risk in self._analyze_template_vulnerabilities(template, str(template_name)):
+                bound = bind_esc_enrollment_evidence(
+                    risk,
+                    template,
+                    cas=cas,
+                    cas_observed=cas_observed,
+                    principals=principals,
+                )
+                if bound:
+                    risks.append(bound)
 
         logger.info("Found %d certificate service risks", len(risks))
         return risks
+
+    def _enrollment_services(self, pki_base: str) -> tuple[list[dict[str, Any]], bool]:
+        """Return CA objects and whether the enrollment-service search completed."""
+        try:
+            rows = self.ldap.search(
+                search_base=f"CN=Enrollment Services,{pki_base}",
+                search_filter="(objectClass=pKIEnrollmentService)",
+                attributes=CA_ATTRIBUTES,
+            ) or []
+            return rows, True
+        except LDAPSearchError as exc:
+            logger.debug("Enrollment service search failed: %s", exc)
+            return [], False
 
     def _analyze_template_vulnerabilities(self, template: dict, template_name: str) -> list[dict[str, Any]]:
         """Analyze a certificate template for ESC1- and ESC2-like attribute exposure."""
@@ -84,7 +123,6 @@ class CertificateAnalyzer:
 
         if (
             name_flags & ENROLLEE_SUPPLIES_SUBJECT
-            and enrollment_flags is not None
             and not manager_approval
             and (has_client_auth or has_any_purpose)
         ):
@@ -145,13 +183,17 @@ class CertificateAnalyzer:
             })
 
         for risk in risks:
+            missing = ['template enrollment ACL', 'CA publication', 'CA enrollment policy']
+            if risk.get('type') == RiskTypes.CERTIFICATE_ESC1 and enrollment_flags is None:
+                missing.insert(0, 'msPKI-Enrollment-Flag')
             risk['evidence'] = {
                 'requires_runtime_validation': True,
                 'name_flags': name_flags,
                 'enrollment_flags': enrollment_flags,
+                'enrollment_flag_observed': enrollment_flags is not None,
                 'authorized_signatures': signatures,
                 'ekus': sorted(eku_set),
-                'missing_prerequisites': ['template enrollment ACL', 'CA publication', 'CA enrollment policy'],
+                'missing_prerequisites': missing,
             }
         return risks
 

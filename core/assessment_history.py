@@ -285,6 +285,14 @@ class AssessmentHistory:
                 "supported": sum(_state(risk) == "supported" for risk in risks),
                 "pending": sum(requires_validation(risk) for risk in risks),
                 "alerts": len(alerts),
+                "critical": sum(
+                    _state(risk) == "supported" and str(risk.get("severity") or "").lower() == "critical"
+                    for risk in risks
+                ),
+                "high": sum(
+                    _state(risk) == "supported" and str(risk.get("severity") or "").lower() == "high"
+                    for risk in risks
+                ),
             }
             self.connection.execute(
                 "INSERT INTO runs VALUES(?,?,?,?,?,?,?)",
@@ -433,6 +441,27 @@ class AssessmentHistory:
                 "SELECT details FROM tasks WHERE domain=? ORDER BY finding_id", (domain.casefold().strip("."),)
             )
         ]
+
+    def finding_kpi_snapshot(self, domain: str) -> dict[str, Any] | None:
+        """Return immutable KPI totals recorded by the last fresh scan."""
+        domain = domain.casefold().strip(".")
+        run = self.connection.execute(
+            "SELECT run_id, score, summary FROM runs WHERE domain=? AND fresh=1 "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (domain,),
+        ).fetchone()
+        if not run:
+            return None
+        # Offline reviews can update findings without changing the last live
+        # run. Counts must come from the same run as its score and timestamp.
+        summary = json.loads(run['summary'])
+        return {
+            "run_id": run["run_id"],
+            "score": run["score"],
+            "critical": summary.get('critical'),
+            "high": summary.get('high'),
+            "supported": summary.get('supported'),
+        }
 
     def audit_document(self) -> dict[str, Any]:
         rows = list(self.connection.execute("SELECT * FROM audit ORDER BY seq LIMIT ?", (MAX_AUDIT_ROWS + 1,)))

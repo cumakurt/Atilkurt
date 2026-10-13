@@ -5,6 +5,37 @@
 
 AtilKurt is a read-only Active Directory security assessment tool. It collects directory data through LDAP, runs a broad set of security analyzers, scores the findings, and generates a self-contained HTML report for offline review. Reports are generated in English by default and can be fully localized to Turkish with `--lan tr`.
 
+## Contents
+
+- [Automatic Installation](#automatic-installation)
+- [Simplest Manual Usage](#simplest-manual-usage)
+- [Overview](#overview)
+- [Screenshots](#screenshots)
+- [Key Capabilities](#key-capabilities)
+- [How a Scan Works](#how-a-scan-works)
+- [Complete Analysis Catalog](#complete-analysis-catalog)
+- [Risk Scoring and Prioritization](#risk-scoring-and-prioritization)
+- [Finding Validation, Coverage, Exceptions, and Simulation](#finding-validation-coverage-exceptions-and-simulation)
+- [Accuracy, Verification, and Operations](#accuracy-verification-and-operations)
+- [Compliance Coverage](#compliance-coverage)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Domain Admin Takeover Map](#domain-admin-takeover-map)
+- [CLI Reference](#cli-reference)
+- [Report Output](#report-output)
+- [Checkpoints, Incremental State, and Caching](#checkpoints-incremental-state-and-caching)
+- [Performance and Scalability](#performance-and-scalability)
+- [Docker Usage](#docker-usage)
+- [Make Targets](#make-targets)
+- [Security Notes](#security-notes)
+- [Scope and Limitations](#scope-and-limitations)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [License](#license)
+- [Author](#author)
+
 ## Automatic Installation
 
 From the application checkout, run:
@@ -29,7 +60,7 @@ ATILKURT_PASS='your-password' \
 .venv/bin/atilkurt --domain example.com --username auditor
 ```
 
-Replace the example values with the assessment account details. The password is passed through the environment instead of a command-line argument, so it is not exposed in the process argument list. If the domain name does not resolve to a reachable domain controller, add `--dc-ip 192.168.1.10`. LDAPS with certificate verification is the default. Use a DC hostname matching its certificate, and `--ca-certs-file company-ca.pem` for an enterprise CA. See [evidence-based security controls](docs/SECURITY_CONTROLS.md).
+Replace the example values with the assessment account details. The password is passed through the environment instead of a command-line argument, so it is not exposed in the process argument list. If the domain name does not resolve to a reachable domain controller, add `--dc-ip 192.168.1.10`. LDAP on port 389 without TLS is the scan default, equivalent to `--insecure-ldap`. Select `--ssl` for certificate-verified LDAPS, using a DC hostname matching its certificate and `--ca-certs-file company-ca.pem` for an enterprise CA. See [evidence-based security controls](docs/SECURITY_CONTROLS.md).
 
 To generate the same assessment with a Turkish report, add `--lan tr`:
 
@@ -46,6 +77,7 @@ Core goals:
 
 - Collect identity, group, computer, GPO, and ACL data from Active Directory
 - Detect misconfigurations, weak controls, and known attack paths
+- Map every evidenced Domain Admin / Tier-0 path: the bind account, named non-admin footholds, and the pentest technique catalog
 - Correlate optional offline Windows events and exported DC/GPO posture evidence with LDAP findings
 - Consolidate findings into a severity-based risk model
 - Produce offline-capable English or Turkish HTML reports, JSON/OpenGraph exports, and optional checkpoints
@@ -65,7 +97,7 @@ python3 scripts/generate_demo_screenshots.py
 
 ![English dashboard](img/screenshots/en-dashboard.png)
 
-**Domain Admin Map** — open takeover paths with PoC roadmap and usable commands:
+**Domain Admin Map** — assessment-account routes, non-admin footholds with evidence, and catalog techniques:
 
 ![English Domain Admin Map](img/screenshots/en-domain-admin-map.png)
 
@@ -79,7 +111,7 @@ python3 scripts/generate_demo_screenshots.py
 
 ![Turkish dashboard](img/screenshots/tr-dashboard.png)
 
-**Etki Alanı Yöneticisi Haritası** — PoC yol haritası and command labels in Turkish (command bodies stay paste-ready in English):
+**Etki Alanı Yöneticisi Haritası** — same map in Turkish (PoC labels localized; command bodies stay paste-ready in English):
 
 ![Turkish Domain Admin Map](img/screenshots/tr-domain-admin-map.png)
 
@@ -104,6 +136,7 @@ python3 scripts/generate_demo_screenshots.py
 - Authentication Policy/Silo, KeyCredentialLink forensics, strong certificate mapping, Windows LAPS v2, RC4 retirement, and AdminSDHolder drift checks
 - gMSA-reader, AD CS control-plane, trust, AD-integrated DNS, and hybrid-identity relationship graphs
 - Evidence-based Tier-0 shortest paths, chokepoints, and blast-radius analysis
+- Domain Admin takeover map: bind-account reachability, named non-admin footholds with reasons and finding evidence, and a pentest technique catalog
 - Extended LDAP checks for common privileged-object and configuration weaknesses
 - Domain security, audit policy, stale object, gMSA, KRBTGT, machine quota, and replication metadata analysis
 
@@ -119,9 +152,11 @@ python3 scripts/generate_demo_screenshots.py
 
 - Single-file HTML report with embedded assets
 - English reporting by default and complete Turkish report localization with `--lan tr`
-- Domain Admin takeover map for pentest-oriented path review
+- Domain Admin takeover map: bind-account routes, named non-admin footholds with reasons and evidence, object-level options, PoC roadmaps, and the unobserved technique catalog
+- CISO dashboard with score and critical/high trends when `--history-db` has a previous fresh scan
 - Optional BloodHound OpenGraph-shaped Tier-0 graph export
 - JSON export for downstream processing
+- Optional real DOCX/PDF client deliverables (`--docx-export`, `--pdf-export`) with optional identity masking
 - Compliance reporting for CIS, NIST CSF, ISO 27001, and GDPR
 - Executive summary and analysis summary tables
 - Offline use without a separate `vendor/` directory
@@ -137,18 +172,22 @@ LDAP or LDAPS bind
         ↓
 Paged collection of users, computers, groups, and GPOs
         ↓
+Resolve the bind account (whoami / tokenGroups)
+        ↓
 Registered security analysis modules
         ↓
-Optional event, DC/GPO posture, and baseline-snapshot correlation
+Optional event, DC/GPO posture, SYSVOL, and baseline-snapshot correlation
         ↓
 Risk deduplication, exploitability assessment, and scoring
+        ↓
+Domain Admin takeover map (bind account, non-admin footholds, catalog)
         ↓
 Compliance mapping and remediation prioritization
         ↓
 Localized HTML report, optional JSON/export files, and optional checkpoint
 ```
 
-The LDAP layer exposes search operations only. AtilKurt does not create, modify, or delete directory objects. Analysis modules consume normalized directory records and return findings; the scoring layer then applies object context and prevalence before sorting the findings. An unexpected analysis failure is surfaced and prevents the run from being reported as successful.
+The LDAP layer exposes search operations only. AtilKurt does not create, modify, or delete directory objects. Analysis modules consume normalized directory records and return findings; the scoring layer then applies object context and prevalence before sorting the findings. An unexpected analysis failure is surfaced and prevents the run from being reported as successful. A finished report whose directory collection or analysis step is incomplete exits with code 2. In that case an empty finding list is not scored as 100/100 and is not described as a clean result. Password-like assignments in directory description fields are retained by default; --redact-secrets removes their values before checkpoints and reports are written. An ESC1 template whose enrollment flag was not collected stays a finding that needs validation; it is not marked confirmed. Current privilege follows group membership, including nested membership for user-risk checks. A leftover `adminCount` value alone does not count as current privilege.
 
 ## Complete Analysis Catalog
 
@@ -179,7 +218,7 @@ The following tables describe every analysis step registered by the application.
 | `fine_grained_password_policy` | Password Settings Objects (PSOs) that weaken the domain default for minimum length, history, complexity, lockout threshold, duration, or observation window, as well as any PSO that enables reversible encryption. The finding includes precedence and target principals for remediation context. |
 | `password_spray` | Lockout threshold, duration and observation window, privileged accounts without smart-card requirements, password-age patterns, and an overall spray-readiness score. |
 | `laps` | Presence of legacy and Windows LAPS expiry attributes, whether Windows LAPS is deployed, and whether the assessment account can *see* readable `msLAPS-Password` values. Password secrets themselves are not retrieved into the report. |
-| `gpp_passwords` | Recoverable Group Policy Preference `cpassword` material when that evidence is present on collected GPO records. LDAP GPO inventory without `cpassword` is not reported as a GPP password finding; SYSVOL is not read over SMB. |
+| `gpp_passwords` | Recoverable Group Policy Preference `cpassword` material when that evidence is present on collected GPO records or an opt-in `--sysvol` / `--sysvol-host` / `--sysvol-dir` inspection. LDAP GPO inventory without `cpassword` is not reported as a GPP password finding. SYSVOL is not read unless one of those flags is supplied. |
 | `gmsa` | gMSA configuration, principals allowed to retrieve managed passwords, and traditional service accounts that are candidates for migration to gMSA. |
 | `golden_gmsa` | KDS root-key exposure and excessive gMSA password-reader conditions associated with Golden gMSA attack paths. KDS objects are located from RootDSE `configurationNamingContext`, not from `CN=Configuration,<domain DN>`. |
 | `krbtgt` | KRBTGT password age and encryption configuration indicators that affect Golden Ticket resilience. |
@@ -204,14 +243,14 @@ The following tables describe every analysis step registered by the application.
 | `replication_metadata` | Recent sensitive-object changes and tombstone-lifetime settings relevant to change monitoring and recovery. Forest configuration objects (tombstone lifetime) are resolved from RootDSE. |
 | `adminsdholder_drift` | AdminSDHolder/SDProp protection drift, protected-object descriptor divergence, stale `adminCount`, missing protection, and dangerous broad ACEs identified from parsed security descriptors. |
 | `gmsa_reader_graph` | Effective gMSA managed-password reader relationships, broad reader principals, privileged readers, and graph edges that expose a managed identity to lower-trust principals. |
-| `attack_graph_v2` | Deterministic evidence graph combining memberships, parsed ACL findings, and Package B control-plane relationships. It computes shortest paths to Tier-0, shared chokepoints, and reachable Tier-0 blast radius with bounded graph traversal. |
+| `attack_graph_v2` | Deterministic evidence graph combining memberships, parsed ACL findings, and Package B control-plane relationships. It computes shortest paths to Tier-0, shared chokepoints, and reachable Tier-0 blast radius with bounded graph traversal. The Domain Admin takeover map uses this graph for bind-account routes and named non-admin footholds. |
 
 ### Domain, Trust, PKI, and Control-Plane Security
 
 | Analysis key | What it evaluates |
 | --- | --- |
 | `trusts` | Domain trust direction, transitivity, SID-filtering-related indicators, and conditions that expand cross-domain attack scope. |
-| `certificate_services` | Forest configuration naming context from RootDSE (so child domains search the forest PKI container). ESC1-like flags use `msPKI-Certificate-Name-Flag` enrollee-supplies-subject plus client-auth/Any Purpose EKU without manager approval. Missing EKU attributes are not treated as ESC2. Enrollment ACLs are not inferred. |
+| `certificate_services` | Forest configuration naming context from RootDSE (so child domains search the forest PKI container). ESC1-like flags use `msPKI-Certificate-Name-Flag` enrollee-supplies-subject plus client-auth/Any Purpose EKU without manager approval. Missing EKU attributes are not treated as ESC2. Template and CA `nTSecurityDescriptor` values are parsed for Certificate-Enrollment / AutoEnroll / GenericAll / AllExtendedRights. A finding is scored only when a low-privilege trustee (Everyone, Authenticated Users, Domain Users/Computers, or a collected non-admin principal) can enroll and the template is published on a CA. Privileged-only enrollment or an unpublished template is not reported. Unreadable ACLs remain `needs_validation`. |
 | `adcs_extended` | Extended AD CS indicators for ESC5, ESC7, ESC9, ESC10/14, ESC11, ESC13, ESC15, and Certifried-related conditions. Several CA-wide items are explicit review prompts and require manual confirmation. Configuration objects are resolved from RootDSE, not from `CN=Configuration,<domain DN>`. |
 | `vulnerability_scan` | Directory-data heuristics for ZeroLogon, PrintNightmare, PetitPotam, Shadow Credentials, and NoPac. Domain Controllers are identified by `SERVER_TRUST_ACCOUNT`, primary group RID 516, or the Domain Controllers OU — not by the letters `DC` in a hostname. Shadow Credentials findings require `msDS-KeyCredentialLink` on a privileged account. The module does not send exploits or verify patch state. |
 | `domain_security` | LDAP signing/channel-binding indicators, NTLM minimum-security settings, and SMB-signing policy evidence found in GPO metadata. |
@@ -246,6 +285,7 @@ Package C is optional-input aware. A normal LDAP scan still runs without extra f
 
 `--analysis-profile full` runs every registered analysis and is the default. `--analysis-profile fast` keeps the broad inventory and common risk checks but skips these query-heavy modules:
 
+- `acl_legacy`
 - `acl_security`
 - `extended_ldap`
 - `adcs_extended`
@@ -275,7 +315,7 @@ The domain security score summarizes the scored findings. The risk-management se
 
 Findings that still need host, CA, policy, or ownership verification carry `finding_status: needs_validation` and `score_excluded: true`. They remain visible in HTML and JSON with their original `potential_severity`, a Low presentation severity, and a zero `final_score`. They do not increase prevalence/combination bonuses, the domain-risk penalty, remediation-cost priorities, risk-based compliance failures, or open Domain Admin path counts. The takeover map lists them under **Paths requiring validation**. An assessment with only unverified findings is not proof of a secure environment; the domain score describes the findings supported by the collected evidence.
 
-This applies to OS-only CVE estimates, coercion/service-presence heuristics, template flags without enrollment/publication evidence, legitimate component-presence checks, KeyCredential ownership reviews, and LAPS absence observations. LDAP cannot establish patch status, a running service, effective endpoint policy, or the absence of a confidential attribute. Confidence scores are rule-based evidence ratings, not statistically calibrated probabilities of compromise.
+This applies to OS-only CVE estimates, coercion/service-presence heuristics, template flags without enrollment/publication evidence, legitimate component-presence checks, KeyCredential ownership reviews, and LAPS absence observations. ESC1/ESC2 (and template ESC9/ESC15) findings with a parsed low-privilege Enroll grant and CA publication are scored; they are not left in `needs_validation` solely because they are certificate findings. LDAP cannot establish patch status, a running service, effective endpoint policy, or the absence of a confidential attribute. Confidence scores are rule-based evidence ratings, not statistically calibrated probabilities of compromise.
 
 ACL analysis distinguishes scoped extended/property rights from unrestricted grants, preserves deny ACEs and DACL order, ignores inherit-only ACEs on the current object, and rejects truncated descriptors. DCSync requires both Get-Changes and Get-Changes-All rights on the domain root, including collected nested-group membership; one replication right is insufficient. Expected administrative grants are excluded from escalation findings. Missing or malformed password/lockout/posture values remain unknown rather than becoming zero/disabled settings.
 
@@ -336,7 +376,7 @@ Atilkurt quality --output quality.json
 
 Every normal LDAP search records its scope, base, hashed query ID, completion, returned-object count, elapsed time, and missing-value counts. The ledger excludes attribute values, filters, and credentials, and is bounded to 10,000 queries. A completed ledger means recorded searches completed, not that the account can see every directory object. Read errors and ledger overflow prevent absence-based remediation closure. HTML shows the first 100 queries; JSON retains the bounded ledger.
 
-The bundled quality dataset runs 16 labelled scenarios against four rule families: replication rights, password policy, legacy-DC vulnerability candidates, and broad ACL grants. It reports precision, recall, false positives, missed positives, and unknown results; an unknown prediction for an expected positive counts as a missed positive. These measurements describe the supplied scenarios and cannot establish a production false-positive rate. Families without labelled cases are not measured.
+The bundled quality dataset runs 49 labelled scenarios against nine rule families: replication rights, password policy, legacy-DC vulnerability candidates, broad ACL grants, AD CS ACL control, delegation flags, GPO applicability, trust protections, and LAPS. It reports precision, recall, false positives, missed positives, and unknown results; an unknown prediction for an expected positive counts as a missed positive. These measurements describe the supplied fixtures and cannot establish a production false-positive rate. Families without labelled cases are not measured.
 
 Supply additional labelled cases with `Atilkurt quality --dataset labelled-cases.json`, or attach them to a report with `--quality-dataset labelled-cases.json --quality-export quality.json`. Example:
 
@@ -388,7 +428,7 @@ Repeat `--retest-finding FINDING_ID` to select exact findings; omit it to retest
 
 Protocol and SYSVOL findings require independent retesting. A fresh directory scan alone cannot close a prior SMB/signing/EPA or shared-file exposure finding when the corresponding check was not repeated.
 
-The SQLite history isolates domains and distinguishes fresh scans from rebuilt reports; only fresh scans are plotted. Missing findings without verified closure become `unassessed`. New supported critical findings, reopened supported findings, and expired exceptions create deduplicated local notification records. Repeating an unchanged assessment does not repeat them. History, notification, ticket, or audit options enable history storage; the latter options default to `.atilkurt_history.sqlite3` when no database is specified.
+The SQLite history isolates domains and distinguishes fresh scans from rebuilt reports; only fresh scans are plotted. Missing findings without verified closure become `unassessed`. New supported critical findings, reopened supported findings, and expired exceptions create deduplicated local notification records. Repeating an unchanged assessment does not repeat them. History, notification, ticket, or audit options enable history storage; the latter options default to `.atilkurt_history.sqlite3` when no database is specified. When `--history-db` is used, the CISO dashboard compares the current domain score and critical/high counts with the previous fresh scan and labels the trend `improving`, `worsening`, `stable`, or `no prior scan`.
 
 Scan changes, task imports, audit entries and alert deduplication are committed together after all requested reports and exports succeed. A publication or import failure rolls back the database changes, so a retry can still deliver the original notifications. Each output file is replaced atomically, but the complete set of files is not a single filesystem transaction: a failed run may leave some new artifacts and must not be treated as a completed assessment.
 
@@ -535,7 +575,7 @@ Explicit CLI options take precedence over equivalent `.env` values. Existing pro
 
 A username may be supplied as `username`, `DOMAIN\username`, or `username@example.com`; the connection layer normalizes it for LDAP authentication.
 
-- LDAPS on port 636 is the default. `--starttls` requires TLS before binding on port 389. `--insecure-ldap` explicitly permits NTLM-only plaintext compatibility; SIMPLE never runs without TLS.
+- LDAP on port 389 without TLS is the scan default (`--insecure-ldap`). `--ssl` selects certificate-verified LDAPS on port 636; `--starttls` requires TLS before binding on port 389. SIMPLE never runs without TLS.
 - Authentication defaults to NTLM without fallback. Select `--auth-method simple` explicitly over TLS, or `--auth-method kerberos` to use an existing ticket cache.
 - TLS certificate validation is enabled by default. A failed explicit LDAPS connection is reported and never downgraded to plaintext LDAP.
 - `--no-validate-cert` is intended only for controlled labs with a certificate chain that cannot be validated.
@@ -615,7 +655,7 @@ ATILKURT_PASS='read-from-your-secret-manager' \
   --ssl
 ```
 
-LDAPS on port 636 is the default; `--ssl` remains supported. Use `--starttls` for mandatory TLS on port 389, or `--insecure-ldap` for explicit NTLM-only plaintext compatibility. If `--output` is omitted, a timestamped HTML filename is generated for the target domain.
+LDAP on port 389 without TLS is the default, equivalent to `--insecure-ldap`. Use `--ssl` for LDAPS on port 636 or `--starttls` for mandatory TLS on port 389. If `--output` is omitted, a timestamped HTML filename is generated for the target domain.
 
 ### Report Language
 
@@ -778,7 +818,38 @@ The file contains the graph schema version, summary, nodes, edges, shortest path
 ./run.sh --check-user auditor
 ```
 
-After the normal scan, this prints whether the named user has a computed path to Domain Admin, the shortest path depth, the path, and its estimated probability when a path exists.
+After the normal scan, `--check-user` prints whether that SAM has a computed membership/escalation path to Domain Admin via the privilege-escalation calculator: whether it can escalate, the shortest path depth, the path, and an estimated probability when a path exists. It is a focused console check for one account. The HTML and JSON Domain Admin takeover map is broader and is always built: bind-account reachability, named non-admin footholds, and the technique catalog. See [Domain Admin Takeover Map](#domain-admin-takeover-map).
+
+### Opt-in SYSVOL Inspection
+
+LDAP GPO inventory does not read SYSVOL. Add one of these flags when the engagement authorizes an authenticated, read-only look at Group Policy files (including GPP `cpassword`):
+
+```bash
+./run.sh --sysvol
+./run.sh --sysvol-host dc01.example.com
+./run.sh --sysvol-dir ./sysvol-copy
+```
+
+`--sysvol` inspects SYSVOL and NETLOGON on the domain controller (`--dc-ip`, or the domain name when `--dc-ip` is omitted). `--sysvol-host` targets an explicit host and may be repeated. `--sysvol-dir` inspects an existing offline copy. Detected values are retained by default; use `--redact-secrets` for a redacted copy. Ciphertext is not decrypted. See [Pentest workflow usage](docs/PENTEST_WORKFLOWS.md) for bounds.
+
+### Password hashes and report visibility
+
+Scan reports and checkpoints now retain collected secret values by default, including directory descriptions and detected shared-file assignments. `--redact-secrets` restores redaction for HTML/JSON, checkpoints and DOCX/PDF. Previously redacted snapshots cannot recover their original values; recollect them. `--mask-client-report` anonymizes identities in DOCX/PDF independently of secret redaction.
+
+To request current domain account key material in an authorized assessment:
+
+```bash
+.venv/bin/python AtilKurt.py -d example.com -u replication-auditor \
+  --dc-ip dc.example.com --collect-password-hashes \
+  --hash-collection-timeout 300 --output assessment.html \
+  --json-export assessment.json --docx-export assessment.docx --pdf-export assessment.pdf
+```
+
+The password is prompted interactively. The collector uses the supplied account over SMB/SAMR and DRSUAPI RPC, independently of LDAP/LDAPS transport. Before any account is requested, the scan reads the domain DACL and the assessment account's token groups. Collection starts only when that account has both DS-Replication-Get-Changes and DS-Replication-Get-Changes-All; otherwise the Password Hashes tab records `not_authorized` and does not open DRS. It requests only users and computers from the scoped LDAP inventory, retaining current LM/NTLM values, NT password-history digests and available Kerberos long-term keys. This is distinct from Kerberoasting target export or ticket-response hashes. Local SAM/LSA, deleted objects and trust secrets are outside this collector's scope; absent Kerberos keys and empty-hash placeholders do not prove a weak or empty password.
+
+The **Password Hashes** tab and `password_hashes` JSON section include account SID, collection time, attempted/collected/failed/unattempted counts, individual errors and partial results. A requested collection that fails or times out produces exit code **2**, even if LDAP inventory succeeds. Success means completion for inventoried accounts, not proof that restricted or unreadable directory objects do not exist. Live collection requires a fresh password-authenticated scan; Kerberos-cache authentication, offline mode and checkpoint resume cannot start it. Offline and resumed reports reuse recorded results and timestamps.
+
+There is no VSS, RemoteRegistry, service execution, automatic privilege escalation or credential change. Files use the existing private, atomic writers (0600 on POSIX). Hashes and bind passwords are not printed to logs. Findings-only CSV/NDJSON/CEF exports remain findings feeds; raw account keys are in HTML/JSON/DOCX/PDF and checkpoints. Explicit service allowlists must include `smb` and `drs` as well as the chosen LDAP transport. The DRS budget counts one SMB setup and one logical collection per account; protocol-internal exchanges are covered by the overall timeout, not counted individually.
 
 ### Diagnostic Logging
 
@@ -788,6 +859,57 @@ After the normal scan, this prints whether the named user has a computed path to
 
 Use `--verbose` for informational diagnostics or `--debug` for detailed troubleshooting. Console status output remains available independently of the Python logging level. Treat log files as sensitive assessment artifacts. Fatal errors (`[-] ...`) are written to stderr so that stdout can be piped without mixing failure text into captured reports.
 
+## Domain Admin Takeover Map
+
+After scoring, AtilKurt synthesizes a pentest-oriented Domain Admin map from the collected findings and the Tier-0 evidence graph. The map is not a `--skip-analysis` module; it is always built from the scored result set. It answers three questions:
+
+1. What can the **bind account used for this scan** already reach?
+2. Which **named non-admin accounts** (users, computers, or non-privileged groups) have an evidenced foothold toward Domain Admin or a DA equivalent?
+3. Which **techniques** are open, pending validation, or unobserved in this domain?
+
+### Bind account
+
+The scan resolves the LDAP bind identity with `whoami` when available, matches it in the collected inventory, and reads `tokenGroups` for that account. The HTML **Assessment account** block then lists:
+
+- Graph routes from that token into Tier-0 (membership, ACL, and control-plane edges, grouped by privileged object)
+- Confirmed ESC templates the token can enroll on
+- Findings that name the account or one of its token SIDs
+- Authenticated-session techniques this bind can start when those findings are open (for example Kerberoasting, GPP, or machine quota)
+
+If the bind account is already a privileged / Tier-0 identity, that is reported as a zero-hop option. Unresolved bind identities are disclosed instead of being treated as “no path.”
+
+### Non-admin footholds
+
+A separate list names every non-admin principal that can reach Domain Admin through a **different technique or graph route**. Already-privileged identities and broad principals (Everyone, Authenticated Users, Domain Users, Domain Computers, and similar well-known groups) are excluded so the list stays actionable.
+
+Each foothold includes:
+
+- **Why** it becomes Domain Admin (catalog `why_da` plus the hop chain or trustee/permission)
+- **Evidence** rows: finding title, type, affected object, permission/rights, and whether the finding is confirmed or still requires validation
+- Graph routes with hop types (`MemberOf`, `Controls`, `Enroll`, …) when the evidence graph reaches a privileged node
+
+Graph walks are bounded (six hops, a capped number of simple paths and named starters). Named trustees on DCSync, dangerous ACLs, ESC enrollment, GPO write, gMSA password read, and similar DA-class findings are included even when they are not yet in the shortest-path graph.
+
+### Technique catalog
+
+Open paths are the catalog techniques backed by confirmed findings. Each open path shows starting access, why it is DA-equivalent, logical stages, a PoC roadmap, verification and authorized-assessment command templates (domain, DC, and target filled when known), how to break the path, detection guidance, and **object-level options** so every affected object remains visible. Findings that did not match a named card but are still DA-adjacent appear as **Other Domain Admin-relevant findings**.
+
+Pending (`needs_validation`) techniques stay visible and are excluded from open-path counts. Findings whose condition still requires validation are excluded from risk scores. A directly observed risky PKI ACL can remain scored while its **takeover chain** separately requires validation. Supported and pending objects are retained even when they belong to the same technique. Unobserved catalog entries remain a pentest checklist; absence of evidence is not evidence of absence.
+
+The map separates existing Tier-0 membership from sensitive delegated access such as DnsAdmins. Existing nested membership is not a new privilege-escalation step. `from_assessment_account.reaches_tier0` reports graph reachability; `has_assessment_options` separately indicates investigation options. Neither field means that takeover was executed.
+
+Each mapped finding has an expandable evidence dossier with its stable ID, target DN, trustee, permissions, prerequisites, expected result, falsifying conditions, a read-only LDAP PoC and retest instructions. Examples use interactive password prompts and do not request secret attributes. Legacy mixed-shell templates replace unsafe directory-name substitutions with `*_REQUIRES_MANUAL_REPLACEMENT`; exact values remain in the safely quoted LDAP dossier. Review remaining placeholders and tool-specific syntax before using any example.
+
+See the [application audit and lab validation](docs/AUDIT_2026-10-12.md) for verified defects, test coverage, live LDAP results and the unresolved lab TLS endpoint limitation.
+
+The catalog covers, among others: DCSync, Kerberoasting, AS-REP roasting, unconstrained/constrained delegation, RBCD, shadow credentials, AD CS ESC1–ESC16, AD CS control-plane ACLs, GPO/GPP, dangerous ACLs, chained escalation, operator groups, LAPS, machine quota, noPac, coercion/relay, KRBTGT, Golden gMSA, gMSA readers, trusts, hybrid identity, RODC, dMSA/BadSuccessor, SCCM, password spray, hidden primary groups, LDAP recon, Tier-0 graph paths, AdminSDHolder, privileged-account hygiene, AD-integrated DNS, and BitLocker recovery passwords in AD.
+
+Commands in the map are templates for authorized engagements. AtilKurt does not execute them.
+
+Every scan prints a short console summary: open path count, DA-equivalent count, object-option count, bind-account routes, and named non-admin footholds. The HTML **Domain Admin Map** tab and the JSON `domain_admin_takeover` object hold the full evidence.
+
+`--check-user` does not replace this map. Use it when you only need the privilege-escalation calculator for one SAM after the same scan.
+
 ## CLI Reference
 
 ### Identity and Connection
@@ -796,13 +918,11 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `-u, --username`: LDAP username
 - `-p, --password`: LDAP password, deprecated in favor of `ATILKURT_PASS`
 - `--dc-ip`: Domain controller IP address or hostname; defaults to the domain name
-- `--ssl`: Use LDAPS on port 636 (default)
+- `--ssl`: Use certificate-verified LDAPS on port 636
 - `--starttls`: Require TLS before binding on port 389
-- `--insecure-ldap`: Explicit NTLM-only plaintext compatibility
+- `--insecure-ldap`: Use LDAP on port 389 without TLS (default)
 - `--auth-method`: Select ntlm, kerberos or simple without fallback
 - `--ca-certs-file`: Trusted PEM CA bundle
-- `--security-evidence`: Target-bound endpoint, PKI, cloud and recovery evidence
-- `--gpo-policy-file`: Offline GPO content, using GPO_ID=PATH
 - `--validate-cert`: Backward-compatible certificate validation flag
 - `--no-validate-cert`: Disable certificate validation
 - `--version`: Print the AtilKurt version and exit
@@ -826,7 +946,7 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 
 - `--analysis-profile {full,fast}`: Select the scan profile
 - `--skip-analysis KEY`: Skip a specific analysis step
-- `--check-user USERNAME`: Evaluate whether a user can reach Domain Admin paths
+- `--check-user USERNAME`: After the scan, print that SAM's privilege-escalation calculator path to Domain Admin (does not replace the Domain Admin takeover map)
 - `--incremental`: Enable incremental scanning
 
 ### Export and Reporting
@@ -843,17 +963,48 @@ Use `--verbose` for informational diagnostics or `--debug` for detailed troubles
 - `--baseline`: Compare risks, security-relevant object state, and attack-graph edges with a prior `--json-export` file
 - `--event-log FILE`: Correlate an offline Windows event file; repeatable; accepts JSON, JSONL, XML, and optional native EVTX
 - `--posture-file FILE`: Verify DC/GPO posture from an offline JSON, XML, INF, or text export; repeatable
+- `--docx-export`, `--pdf-export`: Write real Office Open XML and PDF client deliverables
+- `--mask-client-report`: Mask identities in those DOCX/PDF copies; HTML/JSON retain original names
+- `--redact-secrets`: Redact collected secret values in report/checkpoint outputs; default is visible values
+- `--collect-password-hashes`: Opt in to scoped LM/NTLM, NT password-history and Kerberos key collection via DRS
+- `--hash-collection-timeout SECONDS`: Overall DRS time budget, default 300 seconds
+- `--engagement-export`: Export engagement checks and attack-plan results
+
+### Review, Offline Rebuild, and Simulation
+
+- `--review-file`: Import finding decisions and expiring exceptions
+- `--validation-evidence FILE`: Import local collector evidence; repeatable
+- `--validation-script`: Write the read-only PowerShell evidence collector
+- `--review-export`: Write the current review document
+- `--evidence-max-age-days`: Maximum age of review evidence (default 30, maximum 365)
+- `--remediation-scenario`: JSON scenario of removed graph edges to simulate
+- `--offline-snapshot`: Rebuild reports from a JSON export without LDAP or credentials
 
 ### Accuracy and Operations
 
 - `--verify-effective-access`, `--token-limit`, `--token-delay`: Collect bounded principal token evidence
 - `--quality-dataset`, `--quality-export`: Measure labelled offline cases and save metrics
 - `--retest`, repeatable `--retest-finding`, `--retest-export`: Verify selected prior findings
-- `--history-db`, `--notifications-export`: Store scan history and deduplicated local notifications
+- `--history-db`, `--notifications-export`: Store scan history and deduplicated local notifications; CISO KPI trends compare against the previous fresh scan in that database
 - `--ticket-file`, `--tickets-export`: Import assignments and export stable work items
 - `--trusted-key`, `--require-signed-evidence`, `--signing-key`, `--audit-export`: Verify/sign evidence and preserve audit records
 - `--csv-export`, `--siem-export`, `--cef-export`, `--export-changes-only`: Write local integration files
-- `doctor`, `quality`, `keygen`, `sign`, `verify`, `audit`, `watch`: Operational commands; run `Atilkurt COMMAND --help` for command-specific options
+- `doctor`, `quality`, `verify-finding`, `keygen`, `sign`, `verify`, `audit`, `watch`: Operational commands; run `Atilkurt COMMAND --help` for command-specific options
+
+### Pentest Engagement
+
+These options are opt-in. Remote protocol and SYSVOL checks are rejected on `--offline-snapshot` rebuilds.
+
+- `--scope-file`, `--max-queries`, `--max-scan-seconds`: Engagement domain/OU/host scope and shared request/time budgets
+- `--protocol-target HOST`: Opt-in SMB signing and verified LDAPS TLS checks; repeatable
+- `--adcs-endpoint URL`: Opt-in HEAD observation of an HTTP(S) enrollment endpoint; repeatable
+- `--sysvol`: Opt-in SYSVOL/NETLOGON inspection of the domain controller (`--dc-ip`, or the domain name when `--dc-ip` is omitted)
+- `--sysvol-host HOST`: Opt-in authenticated read-only SYSVOL and NETLOGON inspection; repeatable
+- `--sysvol-dir DIR`: Read-only inspection of an existing offline shared-file copy; repeatable; `--redact-secrets` removes values
+- `--protocol-evidence`, `--security-evidence`: Fresh local signing/EPA/endpoint/PKI evidence
+- `--gpo-target`, `--gpo-context`, `--gpo-policy-file`, `--rsop-file`: Live or offline effective GPO/RSoP evaluation
+- `--bloodhound-import`, `--federation-snapshot`: Offline SharpHound/BloodHound graphs and separately collected domain snapshots
+- `--plan-start`, `--plan-goal`, `--plan-max-hops`: Bounded start/goal attack-path planning
 
 ### Risk Management
 
@@ -897,9 +1048,10 @@ When `--lan tr` and `--json-export` are used together, the JSON export contains 
 
 The HTML report includes:
 
-- An executive dashboard with the domain score, critical/high counts, privileged-account and delegation KPIs, risk distribution, category breakdown, top risky objects, action priorities, password statistics, account activity, administrative-group membership, and account status
+- An executive dashboard with the domain score, critical/high counts, privileged-account and delegation KPIs, risk distribution, category breakdown, top risky objects, action priorities, password statistics, account activity, administrative-group membership, and account status. When `--history-db` is used, score and critical/high KPIs show improving / worsening / stable against the previous fresh scan.
 - Dedicated views for all risks, critical and high risks, privileged accounts (including a dedicated list of disabled Domain Admin and Enterprise Admin accounts), delegation, password issues, users, computers, groups, Kerberos findings, attack paths, service accounts, GPO abuse, DCSync, password policy, trusts, AD CS, GPP, LAPS, vulnerability indicators, legacy operating systems, and ACL security
-- A Domain Admin takeover map that lists every pentest technique that can reach Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a privileged certificate), with the assumed starting access, why the path works, logical stages, a detailed PoC roadmap tied to scan evidence, usable verification and authorized-assessment command templates (domain/DC/target filled when known), how to break the path, and detection guidance
+- A Domain Admin takeover map: bind-account reachability, named non-admin footholds with reasons and evidence, open/pending/unobserved catalog techniques, object-level options, PoC roadmaps, and command templates. See [Domain Admin Takeover Map](#domain-admin-takeover-map).
+- Assessment workspaces for finding validation, scan coverage, risk exceptions, remediation simulation, accuracy and evidence, remediation operations, and the Pentest Workspace
 - Advanced-analysis sections for account-level Kerberos encryption and delegation protection, weak fine-grained password policy overrides, KRBTGT health, gMSA, machine quota, lateral movement, coercion, and extended AD CS findings
 - Finding cards with severity, affected object, technical description, business impact, attack scenario, mitigation guidance, MITRE ATT&CK references, exploitability context, a confidence badge, and an expandable evidence chain
 - Search, sorting, pagination, object-detail dialogs, and client-side CSV export for the relevant directory and risk tables
@@ -922,11 +1074,12 @@ Use `--no-single-file-report` when you prefer a smaller HTML file that reference
 - Consolidated and scored risks
 - Domain score and executive summary
 - All registered analysis result categories
-- Domain Admin takeover map (open paths, evidence, PoC roadmaps, command templates, and the unobserved technique catalog)
+- Domain Admin takeover map (`from_assessment_account`, `nonadmin_starters`, open/pending/unobserved paths, object-level options, evidence summaries, PoC roadmaps, and command templates)
 - Compliance data and risk-management data
 - Baseline comparison data when `--baseline` is used
 - Package B component graphs and the combined Tier-0 evidence graph
 - Event-correlation, posture-evidence, and snapshot-delta summaries when their inputs are supplied
+- Engagement and federated-graph results when those opt-in inputs are supplied
 - Per-finding confidence scores, confidence basis, source identifiers, and evidence-chain claims
 
 JSON output is intended for downstream processing and contains substantially more sensitive directory data than the summary HTML views. Store and transmit it accordingly. In Turkish mode, consumers should continue using the unchanged JSON keys and stable risk identifiers instead of depending on localized display text.
@@ -1046,7 +1199,7 @@ The Makefile provides common development and container shortcuts:
 - The tool performs read-only LDAP search operations only
 - It does not modify Active Directory objects
 - Passwords should be provided through `ATILKURT_PASS` or interactive input
-- Certificate-verified LDAPS is the default; plaintext compatibility is explicit and never uses SIMPLE
+- LDAP without TLS is the scan default; `--ssl` and `--starttls` explicitly enable certificate-verified TLS. SIMPLE requires TLS
 - Explicit TLS failures are reported and never downgraded to plaintext LDAP
 - Use `--no-validate-cert` only in lab environments
 - Treat reports, JSON exports, and checkpoints as sensitive directory data
@@ -1064,7 +1217,7 @@ The report may include offensive validation commands in its Red Team playbook. T
 - Incremental comparison identifies directory-record drift; it is not continuous monitoring and does not replace event collection from domain controllers.
 - `--event-log` performs bounded offline correlation over the files supplied for that run. It is not a SIEM, does not maintain a live event cursor, and cannot establish that an unobserved event never occurred.
 - `--posture-file` trusts the provenance and collection time of the supplied export. A missing value is reported as a coverage gap; a present value should still be validated against resultant policy on every relevant domain controller.
-- The Tier-0 graph contains only relationships evidenced by collected LDAP data and component analyzers. No path means “not observed in this data set,” not proof that no attack path exists.
+- The Tier-0 graph and Domain Admin map contain only relationships evidenced by collected LDAP data, component analyzers, and opt-in engagement checks. Graph routes are bounded in depth and count. Conditional ACEs, sessions, host logons, and uncollected token groups are not modeled. No path means “not observed in this data set,” not proof that no attack path exists. Already-privileged identities and broad principals are omitted from the non-admin foothold list by design.
 - The application does not rotate credentials, remediate findings, modify GPOs, or change Active Directory configuration.
 
 ## Testing
@@ -1099,6 +1252,7 @@ The repository includes tests for:
 - Secure atomic files, checkpoint traversal, and symbolic-link resistance
 - CLI validation and launcher `.env` parsing
 - Risk scoring, compliance mapping, and analysis deduplication
+- Domain Admin takeover map: bind-account identity, non-admin footholds, catalog matching, leftover DA-adjacent findings, and HTML/Turkish presentation
 - Modern Packages A/B/C: identity hardening, control-plane graphing, event/posture correlation, snapshot deltas, confidence scoring, and OpenGraph export
 - Performance controls and representative analyzer edge cases
 - Labelled rule metrics, collection visibility, token limits, signed and tampered evidence, conservative retesting, reopened tasks, deduplicated alerts, audit integrity, and change-only integration exports
@@ -1109,17 +1263,23 @@ The repository includes tests for:
 AtilKurt/
 ├── AtilKurt.py
 ├── run.sh
-├── analysis/                 # Registered security and compliance analyzers
-├── core/                     # LDAP, collection, validation, cache, and persistence
-│   └── collectors/           # User, computer, group, GPO, and ACL collectors
-├── reporting/                # HTML composition, report sections, and exporters
-│   ├── localization.py       # English/Turkish presentation localization
-│   ├── report_sections/      # Dashboard, directory, risk, ACL, and compliance views
-│   └── vendor/               # Offline report assets
-├── risk/                     # Business impact, cost, heat map, and prioritization
-├── scoring/                  # Finding and domain scoring
-├── tests/                    # Unit, regression, security, and launcher tests
-├── .github/workflows/ci.yml  # Python matrix, lint, tests, shell checks, and wheel build
+├── analysis/                          # Registered security and compliance analyzers
+│   ├── registry.py                    # Analysis keys, profiles, consolidation, JSON mappings
+│   ├── assessment_da_paths.py         # Bind-account routes and named non-admin footholds
+│   └── domain_admin_takeover_analyzer.py
+├── core/                              # LDAP, collection, validation, cache, and persistence
+│   ├── assessment_identity.py         # whoami / tokenGroups bind identity
+│   └── collectors/                    # User, computer, group, GPO, and ACL collectors
+├── reporting/                         # HTML composition, report sections, and exporters
+│   ├── localization.py                # English/Turkish presentation localization
+│   ├── report_sections/               # Dashboard, DA map, directory, risk, ACL, compliance
+│   └── vendor/                        # Offline report assets
+├── risk/                              # Business impact, cost, heat map, and prioritization
+├── scoring/                           # Finding and domain scoring
+├── docs/                              # Pentest workflows, security controls, quality audit
+├── tests/                             # Unit, regression, security, and launcher tests
+├── img/screenshots/                   # Synthetic demo report screenshots
+├── .github/workflows/ci.yml           # Python matrix, lint, tests, shell checks, and wheel build
 ├── requirements.txt
 ├── pyproject.toml
 ├── Dockerfile
@@ -1131,19 +1291,31 @@ AtilKurt/
 Main areas:
 
 - `AtilKurt.py` owns CLI validation and orchestrates connection, collection, analysis, scoring, compliance, checkpointing, and report generation.
-- `core/` owns external LDAP access, normalized collectors, input validation, query caching, bounded progress state, and secure file primitives.
+- `core/` owns external LDAP access, normalized collectors, bind-account identity, input validation, query caching, bounded progress state, and secure file primitives.
 - `analysis/registry.py` is the single ordered registry for analysis keys, profiles, result defaults, consolidation, and JSON export mappings.
 - `analysis/` contains directory-data analyzers. Most analyzers are stateless; LDAP-aware modules receive the shared read-only connection boundary.
 - `scoring/` converts findings to contextual 0-to-100 scores and a domain score.
 - `risk/` adds heat-map placement, business-impact estimates, remediation effort, and prioritization.
-- `reporting/` generates the offline HTML application, English/Turkish presentation layer, compliance views, dashboard, purple-team guidance, and integration exports.
+- `reporting/` generates the offline HTML application, English/Turkish presentation layer, Domain Admin map, CISO dashboard, compliance views, purple-team guidance, and integration exports.
 - `tests/` covers the orchestration boundaries as well as individual analyzers and security regressions.
 
 Runtime dependencies include `ldap3` for directory reads, `pycryptodome` for cryptographic parsing, `impacket` for explicitly selected read-only SMB checks/file collection and `reportlab` for real PDF deliverables. The installer checks all declared constraints and reuses compatible installations. Native EVTX import is optional and requires `python-evtx`; JSON/JSONL/XML event correlation works without it. Report UI assets and the client PDF font are vendored for offline use; no CDN is required when opening the default report.
 
 ### Pentest engagement features
 
-The ten new workflows are available through CLI help and the HTML **Pentest Workspace**: scope/time/query budgets, focused finding verification, protocol checks, SYSVOL/NETLOGON reads, start/goal path planning, effective GPO/RSoP, BloodHound ingestion, federated domain graphs, masked DOCX/PDF delivery and expanded labelled accuracy scenarios. See [Pentest workflow usage](docs/PENTEST_WORKFLOWS.md) for commands, input schemas, evidence boundaries and limits, and [implementation plan](docs/PENTEST_FEATURE_PLAN.md) for acceptance criteria.
+Opt-in workflows are available through CLI help and the HTML **Pentest Workspace**:
+
+- Engagement scope and shared query/time budgets
+- Focused finding verification (`Atilkurt verify-finding`)
+- Protocol checks (SMB signing, verified LDAPS, AD CS HEAD)
+- SYSVOL/NETLOGON and offline shared-file inspection (`--sysvol`, `--sysvol-host`, `--sysvol-dir`)
+- Start/goal path planning on the evidence graph
+- Effective GPO and RSoP evaluation
+- BloodHound import and federated domain graphs
+- Masked DOCX/PDF client delivery
+- Labelled accuracy scenarios (49 fixtures across nine families)
+
+See [Pentest workflow usage](docs/PENTEST_WORKFLOWS.md) for commands, input schemas, evidence boundaries, and limits.
 
 ## License
 

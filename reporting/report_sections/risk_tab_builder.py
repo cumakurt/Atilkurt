@@ -5,6 +5,7 @@ Mixin for building the main risk sections tab content and orchestrating risk cat
 import html as html_stdlib
 
 from analysis.privileged_account_status import list_disabled_privileged_admins
+from core.ad_identity import is_privileged_group_name, membership_names
 
 LDAP_DIRECTORY_EXPOSURE_TYPES = frozenset({
     "ldap_anonymous_enabled",
@@ -46,6 +47,32 @@ HIDDEN_PRIVILEGE_TYPES = frozenset({
     "privileged_computer_account",
     "builtin_admin_renamed",
 })
+ESCALATION_TYPES = frozenset({
+    "privilege_escalation_path",
+    "delegation_privilege_escalation",
+    "spn_privilege_escalation",
+    "computer_delegation_privilege_path",
+    "acl_privilege_escalation_path",
+})
+EXTENDED_LDAP_TYPES = frozenset({
+    "rbcd_delegation",
+    "sid_history_present",
+    "foreign_security_principal",
+    "key_credential_link_present",
+    "fine_grained_password_policy",
+    "bitlocker_recovery_in_ad",
+    "adminsdholder_analysis",
+    "ou_gpo_inheritance_blocked",
+    "ou_delegation_risk",
+    "empty_group",
+    "deeply_nested_group",
+    "computer_account_expired",
+    "printer_object_risk",
+    "exchange_objects_found",
+    "dns_zone_found",
+    "ad_recycle_bin_enabled",
+    "ad_recycle_bin_deleted_objects",
+})
 
 
 class RiskTabBuilderMixin:
@@ -53,115 +80,61 @@ class RiskTabBuilderMixin:
 
     def _generate_risk_sections(self, risks, misconfig_findings, ciso_dashboard_html="", users=None, groups=None, computers=None, password_stats=None, compliance_data=None, risk_management_data=None, domain=None, dc_ip=None, kerberoasting_targets=None, asrep_targets=None, domain_admin_takeover=None):
         """Generate HTML sections for all risks."""
-        # Separate risks by category
-        user_risks = [r for r in risks if r.get('object_type') == 'user']
-        computer_risks = [r for r in risks if r.get('object_type') == 'computer']
-        group_risks = [r for r in risks if r.get('object_type') == 'group']
-
-        # Filter escalation risks - exclude users who are already admins
-        escalation_risks_raw = [r for r in risks if r.get('type') in ['privilege_escalation_path', 'delegation_privilege_escalation', 'spn_privilege_escalation', 'computer_delegation_privilege_path', 'acl_privilege_escalation_path']]
-        escalation_risks = self._filter_admin_users_from_escalation_paths(escalation_risks_raw, users, groups) if users and groups else escalation_risks_raw
-        kerberos_risks = [r for r in risks if 'delegation' in r.get('type', '').lower() or 'kerberos' in r.get('type', '').lower()]
-
-        # New categories
-        kerberoasting_risks = [r for r in risks if 'kerberoasting' in r.get('type', '').lower() or 'asrep' in r.get('type', '').lower() or r.get('type') == 'user_with_spn' or r.get('type') == 'kerberos_preauth_disabled']
-        asrep_risks = [r for r in risks if 'asrep' in r.get('type', '').lower() or r.get('type') == 'kerberos_preauth_disabled']
-        service_account_risks = [r for r in risks if 'service_account' in r.get('type', '').lower()]
-        gpo_abuse_risks = [r for r in risks if 'gpo' in r.get('type', '').lower()]
-
-        # Advanced penetration testing categories
-        dcsync_risks = [r for r in risks if 'dcsync' in r.get('type', '').lower()]
-        password_policy_risks = [r for r in risks if r.get("type") in PASSWORD_POLICY_TYPES]
-        trust_risks = [r for r in risks if 'trust' in r.get('type', '').lower() or r.get('object_type') == 'trust']
-        certificate_risks = [
-            r for r in risks
-            if (
-                "certificate" in r.get("type", "").lower()
-                or "esc" in r.get("type", "").lower()
-            )
-            and r.get("type") not in ADCS_EXTENDED_TYPES
-        ]
-        gpp_risks = [r for r in risks if 'gpp' in r.get('type', '').lower()]
-        laps_risks = [r for r in risks if 'laps' in r.get('type', '').lower()]
-        zerologon_risks = [r for r in risks if 'zerologon' in r.get('type', '').lower()]
-        printnightmare_risks = [r for r in risks if 'printnightmare' in r.get('type', '').lower()]
-        petitpotam_risks = [r for r in risks if 'petitpotam' in r.get('type', '').lower()]
-        shadow_credentials_risks = [r for r in risks if 'shadow' in r.get('type', '').lower() and 'credential' in r.get('type', '').lower()]
-        nopac_risks = [r for r in risks if 'nopac' in r.get('type', '').lower()]
-        domain_security_risks = [r for r in risks if r.get("type") in DOMAIN_SECURITY_TYPES]
-        extended_ldap_risks = [r for r in risks if r.get('type') in (
-            'rbcd_delegation', 'sid_history_present', 'foreign_security_principal', 'key_credential_link_present',
-            'fine_grained_password_policy', 'bitlocker_recovery_in_ad', 'adminsdholder_analysis',
-            'ou_gpo_inheritance_blocked', 'ou_delegation_risk', 'empty_group', 'deeply_nested_group',
-            'computer_account_expired', 'printer_object_risk', 'exchange_objects_found', 'dns_zone_found',
-            'ad_recycle_bin_enabled', 'ad_recycle_bin_deleted_objects'
-        )]
-
-        # Legacy OS and ACL Security Analysis
-        legacy_os_risks = [r for r in risks if 'legacy' in r.get('type', '').lower() or 'eol' in r.get('type', '').lower()]
-        acl_security_risks = [r for r in risks if r.get('type', '').startswith('acl_')]
-        shadow_admin_risks = [r for r in risks if r.get('type') == 'shadow_admin']
-        acl_escalation_risks_list = [r for r in risks if r.get('type') == 'acl_privilege_escalation_path']
-
-        # ── New module categories ───────────────────────────────────────────
-        password_spray_risks = [r for r in risks if 'password_spray' in r.get('type', '').lower()]
-        golden_gmsa_risks = [r for r in risks if 'golden_gmsa' in r.get('type', '').lower()]
-        honeypot_risks = [r for r in risks if 'honeypot' in r.get('type', '').lower()]
-        stale_objects_risks = [r for r in risks if 'stale_' in r.get('type', '').lower()]
-        adcs_extended_risks = [r for r in risks if r.get("type") in ADCS_EXTENDED_TYPES]
-        audit_policy_risks = [r for r in risks if 'audit_policy' in r.get('type', '').lower() or 'audit_sacl' in r.get('type', '').lower()]
-        backup_operator_risks = [r for r in risks if 'backup_operator' in r.get('type', '').lower() or 'sensitive_operator' in r.get('type', '').lower()]
-        coercion_risks = [r for r in risks if 'coercion' in r.get('type', '').lower()]
-        gmsa_risks = [r for r in risks if 'gmsa_' in r.get('type', '').lower() and 'golden' not in r.get('type', '').lower()]
-        krbtgt_risks = [r for r in risks if 'krbtgt_' in r.get('type', '').lower()]
-        lateral_movement_risks = [r for r in risks if 'lateral_movement' in r.get('type', '').lower()]
-        machine_quota_risks = [r for r in risks if 'machine_account_quota' in r.get('type', '').lower()]
-        replication_risks = [r for r in risks if 'replication_' in r.get('type', '').lower()]
-        ldap_directory_exposure_risks = [r for r in risks if r.get("type") in LDAP_DIRECTORY_EXPOSURE_TYPES]
-        hidden_privilege_risks = [r for r in risks if r.get("type") in HIDDEN_PRIVILEGE_TYPES]
-        hybrid_identity_risks = [r for r in risks if str(r.get('type', '')).startswith('hybrid_')]
-        rodc_attack_surface_risks = [r for r in risks if str(r.get('type', '')).startswith('rodc_')]
-        delegated_msa_risks = [r for r in risks if str(r.get('type', '')).startswith('dmsa_')]
-        sccm_attack_surface_risks = [r for r in risks if str(r.get('type', '')).startswith('sccm_')]
-        kerberos_account_security_risks = [
-            r for r in risks if r.get("type") in KERBEROS_ACCOUNT_SECURITY_TYPES
-        ]
-        identity_protection_risks = [
-            r for r in risks if r.get("type") in IDENTITY_PROTECTION_TYPES
-        ]
-        fine_grained_password_policy_risks = [
-            r for r in risks if r.get('type') == 'weak_fine_grained_password_policy'
-        ]
-
-        # Filter by severity for KPI navigation
-        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
-                                             r.get('severity', '').lower() == 'critical')]
-        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or
-                                         r.get('severity', '').lower() == 'high')]
-
-        # Filter privileged account risks
-        privileged_account_risks = []
-        for risk in risks:
-            if risk.get('is_privileged', False):
-                privileged_account_risks.append(risk)
-            elif risk.get('type') in ('disabled_domain_admin', 'disabled_enterprise_admin'):
-                privileged_account_risks.append(risk)
-            elif risk.get('object_type') == 'user':
-                affected_user = next((u for u in users if u.get('sAMAccountName') == risk.get('affected_object')), None) if users else None
-                if affected_user:
-                    if affected_user.get('adminCount') == 1 or affected_user.get('adminCount') == '1':
-                        privileged_account_risks.append(risk)
-                    else:
-                        member_of = affected_user.get('memberOf', []) or []
-                        if not isinstance(member_of, list):
-                            member_of = [member_of] if member_of else []
-                        for group_dn in member_of:
-                            if any(priv in group_dn.upper() for priv in ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
-                                privileged_account_risks.append(risk)
-                                break
-
-        # Delegation risks (already filtered in kerberos_risks, but create separate list)
-        delegation_risks = [r for r in risks if 'delegation' in r.get('type', '').lower()]
+        buckets = self._bucket_scored_risks(risks, users)
+        user_risks = buckets['user']
+        computer_risks = buckets['computer']
+        group_risks = buckets['group']
+        escalation_risks = self._filter_admin_users_from_escalation_paths(
+            buckets['escalation'], users, groups
+        ) if users and groups else buckets['escalation']
+        kerberos_risks = buckets['kerberos']
+        kerberoasting_risks = buckets['kerberoasting']
+        asrep_risks = buckets['asrep']
+        service_account_risks = buckets['service_account']
+        gpo_abuse_risks = buckets['gpo']
+        dcsync_risks = buckets['dcsync']
+        password_policy_risks = buckets['password_policy']
+        trust_risks = buckets['trust']
+        certificate_risks = buckets['certificate']
+        gpp_risks = buckets['gpp']
+        laps_risks = buckets['laps']
+        zerologon_risks = buckets['zerologon']
+        printnightmare_risks = buckets['printnightmare']
+        petitpotam_risks = buckets['petitpotam']
+        shadow_credentials_risks = buckets['shadow_credentials']
+        nopac_risks = buckets['nopac']
+        domain_security_risks = buckets['domain_security']
+        extended_ldap_risks = buckets['extended_ldap']
+        legacy_os_risks = buckets['legacy_os']
+        acl_security_risks = buckets['acl_security']
+        shadow_admin_risks = buckets['shadow_admin']
+        acl_escalation_risks_list = buckets['acl_escalation']
+        password_spray_risks = buckets['password_spray']
+        golden_gmsa_risks = buckets['golden_gmsa']
+        honeypot_risks = buckets['honeypot']
+        stale_objects_risks = buckets['stale_objects']
+        adcs_extended_risks = buckets['adcs_extended']
+        audit_policy_risks = buckets['audit_policy']
+        backup_operator_risks = buckets['backup_operator']
+        coercion_risks = buckets['coercion']
+        gmsa_risks = buckets['gmsa']
+        krbtgt_risks = buckets['krbtgt']
+        lateral_movement_risks = buckets['lateral_movement']
+        machine_quota_risks = buckets['machine_quota']
+        replication_risks = buckets['replication']
+        ldap_directory_exposure_risks = buckets['ldap_directory_exposure']
+        hidden_privilege_risks = buckets['hidden_privilege']
+        hybrid_identity_risks = buckets['hybrid_identity']
+        rodc_attack_surface_risks = buckets['rodc']
+        delegated_msa_risks = buckets['delegated_msa']
+        sccm_attack_surface_risks = buckets['sccm']
+        kerberos_account_security_risks = buckets['kerberos_account_security']
+        identity_protection_risks = buckets['identity_protection']
+        fine_grained_password_policy_risks = buckets['fine_grained_password_policy']
+        critical_risks = buckets['critical']
+        high_risks = buckets['high']
+        privileged_account_risks = buckets['privileged']
+        delegation_risks = buckets['delegation']
 
         all_risks_html = self._generate_risk_list(risks, "All Security Risks", "all_risks", group_by_finding=True)
         user_risks_html = self._generate_risk_list(user_risks, "User-Related Risks", "user_risks", group_by_finding=True)
@@ -481,6 +454,152 @@ class RiskTabBuilderMixin:
         {self._generate_compliance_section(compliance_data) if compliance_data else ''}
         {self._generate_risk_management_section(risk_management_data) if risk_management_data else ''}
         """
+
+    def _bucket_scored_risks(self, risks, users=None):
+        """Classify scored findings in a single pass with O(1) user lookup."""
+        buckets = {key: [] for key in (
+            'user', 'computer', 'group', 'escalation', 'kerberos', 'kerberoasting', 'asrep',
+            'service_account', 'gpo', 'dcsync', 'password_policy', 'trust', 'certificate',
+            'gpp', 'laps', 'zerologon', 'printnightmare', 'petitpotam', 'shadow_credentials',
+            'nopac', 'domain_security', 'extended_ldap', 'legacy_os', 'acl_security',
+            'shadow_admin', 'acl_escalation', 'password_spray', 'golden_gmsa', 'honeypot',
+            'stale_objects', 'adcs_extended', 'audit_policy', 'backup_operator', 'coercion',
+            'gmsa', 'krbtgt', 'lateral_movement', 'machine_quota', 'replication',
+            'ldap_directory_exposure', 'hidden_privilege', 'hybrid_identity', 'rodc',
+            'delegated_msa', 'sccm', 'kerberos_account_security', 'identity_protection',
+            'fine_grained_password_policy', 'critical', 'high', 'privileged', 'delegation',
+        )}
+        users_by_name = {
+            user.get('sAMAccountName'): user
+            for user in (users or [])
+            if user.get('sAMAccountName')
+        }
+        for risk in risks:
+            rtype = str(risk.get('type') or '')
+            rtype_l = rtype.lower()
+            obj = risk.get('object_type')
+            severity = str(risk.get('severity_level') or risk.get('severity') or '').lower()
+            if obj == 'user':
+                buckets['user'].append(risk)
+            elif obj == 'computer':
+                buckets['computer'].append(risk)
+            elif obj == 'group':
+                buckets['group'].append(risk)
+            if rtype in ESCALATION_TYPES:
+                buckets['escalation'].append(risk)
+            if 'delegation' in rtype_l or 'kerberos' in rtype_l:
+                buckets['kerberos'].append(risk)
+            if 'kerberoasting' in rtype_l or rtype == 'user_with_spn':
+                buckets['kerberoasting'].append(risk)
+            if 'asrep' in rtype_l or rtype == 'kerberos_preauth_disabled':
+                buckets['asrep'].append(risk)
+            if 'service_account' in rtype_l:
+                buckets['service_account'].append(risk)
+            if 'gpo' in rtype_l:
+                buckets['gpo'].append(risk)
+            if 'dcsync' in rtype_l:
+                buckets['dcsync'].append(risk)
+            if rtype in PASSWORD_POLICY_TYPES:
+                buckets['password_policy'].append(risk)
+            if 'trust' in rtype_l or obj == 'trust':
+                buckets['trust'].append(risk)
+            if ('certificate' in rtype_l or 'esc' in rtype_l) and rtype not in ADCS_EXTENDED_TYPES:
+                buckets['certificate'].append(risk)
+            if 'gpp' in rtype_l:
+                buckets['gpp'].append(risk)
+            if 'laps' in rtype_l:
+                buckets['laps'].append(risk)
+            if 'zerologon' in rtype_l:
+                buckets['zerologon'].append(risk)
+            if 'printnightmare' in rtype_l:
+                buckets['printnightmare'].append(risk)
+            if 'petitpotam' in rtype_l:
+                buckets['petitpotam'].append(risk)
+            if 'shadow' in rtype_l and 'credential' in rtype_l:
+                buckets['shadow_credentials'].append(risk)
+            if 'nopac' in rtype_l:
+                buckets['nopac'].append(risk)
+            if rtype in DOMAIN_SECURITY_TYPES:
+                buckets['domain_security'].append(risk)
+            if rtype in EXTENDED_LDAP_TYPES:
+                buckets['extended_ldap'].append(risk)
+            if 'legacy' in rtype_l or 'eol' in rtype_l:
+                buckets['legacy_os'].append(risk)
+            if rtype.startswith('acl_'):
+                buckets['acl_security'].append(risk)
+            if rtype == 'shadow_admin':
+                buckets['shadow_admin'].append(risk)
+            if rtype == 'acl_privilege_escalation_path':
+                buckets['acl_escalation'].append(risk)
+            if 'password_spray' in rtype_l:
+                buckets['password_spray'].append(risk)
+            if 'golden_gmsa' in rtype_l:
+                buckets['golden_gmsa'].append(risk)
+            if 'honeypot' in rtype_l:
+                buckets['honeypot'].append(risk)
+            if 'stale_' in rtype_l:
+                buckets['stale_objects'].append(risk)
+            if rtype in ADCS_EXTENDED_TYPES:
+                buckets['adcs_extended'].append(risk)
+            if 'audit_policy' in rtype_l or 'audit_sacl' in rtype_l:
+                buckets['audit_policy'].append(risk)
+            if 'backup_operator' in rtype_l or 'sensitive_operator' in rtype_l:
+                buckets['backup_operator'].append(risk)
+            if 'coercion' in rtype_l:
+                buckets['coercion'].append(risk)
+            if 'gmsa_' in rtype_l and 'golden' not in rtype_l:
+                buckets['gmsa'].append(risk)
+            if 'krbtgt_' in rtype_l:
+                buckets['krbtgt'].append(risk)
+            if 'lateral_movement' in rtype_l:
+                buckets['lateral_movement'].append(risk)
+            if 'machine_account_quota' in rtype_l:
+                buckets['machine_quota'].append(risk)
+            if 'replication_' in rtype_l:
+                buckets['replication'].append(risk)
+            if rtype in LDAP_DIRECTORY_EXPOSURE_TYPES:
+                buckets['ldap_directory_exposure'].append(risk)
+            if rtype in HIDDEN_PRIVILEGE_TYPES:
+                buckets['hidden_privilege'].append(risk)
+            if rtype.startswith('hybrid_'):
+                buckets['hybrid_identity'].append(risk)
+            if rtype.startswith('rodc_'):
+                buckets['rodc'].append(risk)
+            if rtype.startswith('dmsa_'):
+                buckets['delegated_msa'].append(risk)
+            if rtype.startswith('sccm_'):
+                buckets['sccm'].append(risk)
+            if rtype in KERBEROS_ACCOUNT_SECURITY_TYPES:
+                buckets['kerberos_account_security'].append(risk)
+            if rtype in IDENTITY_PROTECTION_TYPES:
+                buckets['identity_protection'].append(risk)
+            if rtype == 'weak_fine_grained_password_policy':
+                buckets['fine_grained_password_policy'].append(risk)
+            if severity == 'critical':
+                buckets['critical'].append(risk)
+            if severity == 'high':
+                buckets['high'].append(risk)
+            if (
+                risk.get('is_privileged', False)
+                or rtype in ('disabled_domain_admin', 'disabled_enterprise_admin')
+                or (
+                    obj == 'user'
+                    and self._user_is_privileged_for_report(users_by_name.get(risk.get('affected_object')))
+                )
+            ):
+                buckets['privileged'].append(risk)
+            if 'delegation' in rtype_l:
+                buckets['delegation'].append(risk)
+        return buckets
+
+    @staticmethod
+    def _user_is_privileged_for_report(user):
+        """Return True for AdminSDHolder or exact privileged-group membership."""
+        if not user:
+            return False
+        if str(user.get('adminCount') or '').strip().lower() in {'1', 'true'}:
+            return True
+        return any(is_privileged_group_name(name) for name in membership_names(user.get('memberOf')))
 
     def _generate_disabled_privileged_admin_section(self, users):
         """Dedicated Privileged Accounts panel for disabled DA/EA users."""

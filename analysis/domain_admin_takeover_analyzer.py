@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from core.finding_evidence import is_disproved, requires_validation
+from core.finding_evidence import is_disproved, requires_takeover_validation as requires_validation
 
-from analysis.domain_admin_takeover_playbooks import fill_playbook_fields, playbook_for
+from analysis.assessment_da_paths import (
+    build_assessment_account_view,
+    build_nonadmin_starter_view,
+    evidence_options,
+)
+from analysis.domain_admin_takeover_playbooks import domain_to_dn, fill_playbook_fields, playbook_for
+from analysis.takeover_evidence import evidence_dossier
 from core.constants import MITRETechniques, Severity
 
 logger = logging.getLogger(__name__)
@@ -928,7 +934,316 @@ DA_PATH_CATALOG: list[dict[str, Any]] = [
         ],
         "detection": "Anonymous LDAP binds; 4662 from null sessions.",
     },
+    {
+        "id": "tier0_graph",
+        "name": "Evidence-graph path into Tier-0 / Domain Admins",
+        "category": "attack_path",
+        "starting_access": "Any non-privileged identity that the membership/ACL/control-plane graph can reach a privileged node from.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.CRITICAL,
+        "mitre": MITRETechniques.PRIVILEGE_ESCALATION,
+        "why_da": (
+            "Shortest evidenced edges from a low-privilege user, computer, or reader principal into a "
+            "privileged group are a complete Domain Admin path even when no single catalog technique fired."
+        ),
+        "match": {
+            "types": ("attack_graph_tier0_path", "attack_graph_chokepoint"),
+            "prefixes": ("attack_graph_",),
+        },
+        "stages": [
+            {
+                "title": "Walk every distinct route, not only the shortest",
+                "why": "Fixing one hop can leave a parallel MemberOf or Enroll edge intact.",
+                "action": "Record each hop type (MemberOf, Controls, Enroll) and the chokepoint nodes shared by several routes.",
+            },
+            {
+                "title": "Break the first non-admin edge",
+                "why": "The cheapest hop is the one a tester actually uses.",
+                "action": "Remove the first control or nested-group edge that a non-admin holds toward Tier-0.",
+            },
+        ],
+        "break_path": [
+            "Remove nested group membership and object control that let non-admins reach Domain Admins.",
+            "Re-run the evidence graph and confirm every alternative route is gone.",
+        ],
+        "detection": "Correlate 4728/4732 nested-group changes with 5136 ACL writes along the same chain.",
+    },
+    {
+        "id": "adcs_control",
+        "name": "AD CS control-plane ACL (CA, template, NTAuth)",
+        "category": "adcs",
+        "starting_access": "A non-privileged trustee with write, owner, or DACL control on a PKI object.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.CRITICAL,
+        "mitre": MITRETechniques.VALID_ACCOUNTS_DOMAIN,
+        "why_da": (
+            "Control of NTAuth, a CA, or a template lets an attacker publish or issue an authentication "
+            "certificate for a Domain Admin. That is ESC5-class domain takeover."
+        ),
+        "match": {
+            "types": ("adcs_control_plane_acl", "adcs_ntauth_acl"),
+            "prefixes": ("adcs_control", "adcs_ntauth"),
+        },
+        "stages": [
+            {
+                "title": "Identify the PKI object the trustee can modify",
+                "why": "NTAuth and Enrollment Services are higher impact than a single unused template.",
+                "action": "Confirm GenericAll/WriteDACL/WriteOwner on the named CA, template, or NTAuth container.",
+            },
+            {
+                "title": "Issue or trust an authentication certificate",
+                "why": "A writable template can be turned into ESC1; NTAuth control trusts a rogue CA.",
+                "action": "Treat any non-PKI-admin trustee on those objects as Domain Admin equivalent.",
+            },
+        ],
+        "break_path": [
+            "Restore Microsoft default PKI ACLs; only Enterprise Admins / PKI admins should write CA objects.",
+            "Audit NTAuthCertificates membership and template enrollment ACLs.",
+        ],
+        "detection": "5136 on CN=Public Key Services; unexpected certificate issuance for privileged UPNs.",
+    },
+    {
+        "id": "gmsa_readers",
+        "name": "gMSA managed-password readers",
+        "category": "credential_access",
+        "starting_access": "A principal allowed to retrieve a gMSA managed password, especially a Tier-0 gMSA.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.HIGH,
+        "mitre": MITRETechniques.VALID_ACCOUNTS_DOMAIN,
+        "why_da": (
+            "Anyone who can read a gMSA password can authenticate as that service identity. A Tier-0 gMSA "
+            "or a gMSA with DCSync/delegation is Domain Admin equivalent."
+        ),
+        "match": {
+            "types": (
+                "gmsa_broad_password_reader",
+                "gmsa_privileged_reader_path",
+                "gmsa_excessive_effective_readers",
+            ),
+            "prefixes": ("gmsa_broad", "gmsa_privileged_reader", "gmsa_excessive"),
+        },
+        "stages": [
+            {
+                "title": "List effective msDS-GroupMSAMembership readers",
+                "why": "Broad groups such as Authenticated Users are a domain-wide credential leak.",
+                "action": "Confirm which non-admin principals can retrieve each gMSA password.",
+            },
+            {
+                "title": "Use the gMSA toward DA",
+                "why": "The managed identity may already be privileged or host a constrained-delegation hop.",
+                "action": "Map the gMSA's groups, SPNs, and replication rights before calling the path closed.",
+            },
+        ],
+        "break_path": [
+            "Replace Authenticated Users / Domain Computers readers with the specific hosts that need the gMSA.",
+            "Treat Tier-0 gMSA objects as Domain Admins for ACL review.",
+        ],
+        "detection": "Unusual retrieval of msDS-ManagedPassword; 4662 on gMSA objects from unexpected hosts.",
+    },
+    {
+        "id": "adminsdholder",
+        "name": "AdminSDHolder / SDProp protection drift",
+        "category": "acl",
+        "starting_access": "A dangerous ACE on AdminSDHolder, or a privileged object whose adminCount protection has drifted.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.HIGH,
+        "mitre": MITRETechniques.PRIVILEGE_ESCALATION,
+        "why_da": (
+            "AdminSDHolder is the template SDProp copies onto every protected admin. A persistent ACE there "
+            "re-compromises Domain Admins after every SDProp cycle."
+        ),
+        "match": {
+            "types": (
+                "adminsdholder_dangerous_ace",
+                "adminsdholder_acl_drift",
+                "adminsdholder_orphaned_admincount",
+                "adminsdholder_inheritance_enabled",
+            ),
+            "prefixes": ("adminsdholder_",),
+            "exclude_types": ("adminsdholder_analysis",),
+        },
+        "stages": [
+            {
+                "title": "Diff AdminSDHolder against the Microsoft default",
+                "why": "A single extra ACE is enough for recurring DA takeover.",
+                "action": "Remove non-default GenericAll/WriteDACL/WriteOwner trustees from AdminSDHolder.",
+            },
+            {
+                "title": "Fix stale adminCount objects",
+                "why": "Orphaned adminCount=1 objects stay protected with a stale DACL and are easy to miss.",
+                "action": "Clear stale adminCount or restore the object to the protected set deliberately.",
+            },
+        ],
+        "break_path": [
+            "Reset AdminSDHolder to the documented default DACL and run SDProp.",
+            "Review every adminCount=1 object that is no longer a member of a protected group.",
+        ],
+        "detection": "5136 on CN=AdminSDHolder; recurring 4738 on adminCount=1 objects after SDProp.",
+    },
+    {
+        "id": "privileged_hygiene",
+        "name": "Privileged-account hygiene that keeps a Domain Admin path open",
+        "category": "identity",
+        "starting_access": "The privileged account itself (password reuse, stale DA, missing Protected Users).",
+        "da_equivalent": True,
+        "severity_if_open": Severity.HIGH,
+        "mitre": MITRETechniques.VALID_ACCOUNTS_DOMAIN,
+        "why_da": (
+            "Disabled Domain Admins with a still-valid secret, nested admin groups, adminCount orphans, "
+            "and privileged users outside Protected Users are the identities testers actually steal."
+        ),
+        "match": {
+            "types": (
+                "admin_count_set",
+                "inactive_privileged_account",
+                "disabled_domain_admin",
+                "disabled_enterprise_admin",
+                "too_many_domain_admins",
+                "nested_admin_group",
+                "privileged_user_outside_protected_users",
+                "privileged_user_without_smartcard",
+                "privileged_account_delegatable",
+                "auth_policy_privileged_unprotected",
+            ),
+            "prefixes": (
+                "admin_count",
+                "inactive_privileged",
+                "disabled_domain_admin",
+                "disabled_enterprise_admin",
+                "too_many_domain",
+                "nested_admin",
+                "privileged_user",
+                "privileged_account_delegatable",
+                "auth_policy_privileged",
+            ),
+        },
+        "stages": [
+            {
+                "title": "Inventory every privileged identity, including disabled",
+                "why": "A disabled Domain Admin hash still forges tickets until the password is rotated.",
+                "action": "Rotate or delete stale DA/EA accounts; shrink nested admin groups.",
+            },
+            {
+                "title": "Put remaining Tier 0 in Protected Users / Authentication Policy",
+                "why": "Delegation and NTLM on a live DA is a one-step takeover after password theft.",
+                "action": "Require Protected Users, smart card or phishing-resistant MFA, and silos for Tier 0.",
+            },
+        ],
+        "break_path": [
+            "Reduce Domain Admins to a documented break-glass set; no nested groups.",
+            "Rotate secrets on disabled privileged accounts; enable Protected Users and Authentication Policies.",
+        ],
+        "detection": "4728/4729 on Domain Admins; 4768 without pre-auth or with NTLM from privileged users.",
+    },
+    {
+        "id": "ad_dns",
+        "name": "AD-integrated DNS takeover (WPAD / DC records)",
+        "category": "acl",
+        "starting_access": "Write on an AD-integrated DNS zone or a high-risk node such as WPAD or a DC hostname.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.HIGH,
+        "mitre": MITRETechniques.PRIVILEGE_ESCALATION,
+        "why_da": (
+            "A writable DNS zone lets an attacker answer WPAD or impersonate a Domain Controller name. "
+            "NTLM relay of that name to LDAP is a standard Domain Admin finish."
+        ),
+        "match": {"prefixes": ("ad_dns_",)},
+        "stages": [
+            {
+                "title": "Find who can write the zone or WPAD node",
+                "why": "Authenticated Users create-child on a zone is enough to plant WPAD.",
+                "action": "Remove broad ACEs from AD-integrated zones; protect DC and WPAD records.",
+            },
+            {
+                "title": "Relay the spoofed name to LDAP",
+                "why": "WPAD or a DC A-record plus missing LDAP signing becomes DCSync.",
+                "action": "Treat DNS write plus unsigned LDAP as one Domain Admin option.",
+            },
+        ],
+        "break_path": [
+            "Restrict AD DNS zone ACLs to DNS admins; disable WPAD via GPO.",
+            "Require LDAP signing and channel binding so a spoofed name cannot be relayed.",
+        ],
+        "detection": "DNS record creates for WPAD/*; LDAP binds from unexpected hosts using DC names.",
+    },
+    {
+        "id": "bitlocker",
+        "name": "Readable BitLocker recovery passwords in Active Directory",
+        "category": "credential_access",
+        "starting_access": "LDAP read of msFVE-RecoveryPassword on a Domain Controller or DA workstation.",
+        "da_equivalent": True,
+        "severity_if_open": Severity.HIGH,
+        "mitre": MITRETechniques.UNSECURED_CREDENTIALS,
+        "why_da": (
+            "BitLocker recovery keys stored in AD unlock the disk of the computer they protect. "
+            "A DC or DA jump-host disk is Domain Admin equivalent."
+        ),
+        "match": {"prefixes": ("bitlocker_",)},
+        "stages": [
+            {
+                "title": "See which computers have recovery passwords in AD",
+                "why": "Helpdesk read on msFVE-* often includes Domain Controllers.",
+                "action": "Confirm the computer is a DC, DA workstation, or Tier-0 jump host.",
+            },
+            {
+                "title": "Unlock the disk and harvest LSASS/NTDS",
+                "why": "Offline disk access bypasses the running OS's credential guard.",
+                "action": "Scope BitLocker AD backup to the owning support tier; never to Authenticated Users.",
+            },
+        ],
+        "break_path": [
+            "Remove BitLocker recovery passwords for DCs from AD; use offline escrow.",
+            "Restrict msFVE-* read ACLs; rotate recovery passwords after any broad read.",
+        ],
+        "detection": "LDAP reads of msFVE-RecoveryPassword from unusual callers.",
+    },
 ]
+
+OTHER_DA_SPEC: dict[str, Any] = {
+    "id": "other_da",
+    "name": "Other Domain Admin-relevant findings",
+    "category": "other",
+    "starting_access": "Depends on the listed finding; treat each as a DA-adjacent option until disproved.",
+    "da_equivalent": True,
+    "severity_if_open": Severity.HIGH,
+    "mitre": MITRETechniques.PRIVILEGE_ESCALATION,
+    "why_da": (
+        "These scored findings did not match a named technique card but are still Domain Admin-adjacent "
+        "(privileged credentials, control-plane writes, or DA-class vulnerabilities). They are listed so "
+        "the map is complete."
+    ),
+    "match": {},
+    "stages": [
+        {
+            "title": "Review every leftover high/critical finding",
+            "why": "A tester who only reads named cards will miss one-off DA options.",
+            "action": "For each object below, decide whether it yields DA, a stepping stone, or a false lead.",
+        },
+    ],
+    "break_path": [
+        "Remediate or formally accept each leftover finding; do not leave DA-adjacent issues untracked.",
+    ],
+    "detection": "Finding-specific; see each evidence row.",
+}
+
+EVIDENCE_OBJECT_LIMIT = 100
+EVIDENCE_SUMMARY_LIMIT = 200
+
+DA_RELEVANT_PREFIXES = (
+    "dcsync", "kerberoast", "asrep", "certificate", "adcs", "gpp", "gpo_",
+    "acl_", "shadow_admin", "rbcd", "delegat", "backup_operator", "krbtgt",
+    "golden_gmsa", "gmsa_", "trust", "hybrid", "rodc", "dmsa", "sccm",
+    "hidden_", "ldap_anonymous", "ldap_prewin", "ldap_guest", "attack_graph",
+    "adminsdholder", "machine_quota", "zerologon", "nopac", "petitpotam",
+    "printnightmare", "coercion", "laps", "key_credential", "privilege_escalat",
+    "esc", "unconstrained", "constrained", "admin_count", "inactive_privileged",
+    "disabled_domain_admin", "disabled_enterprise", "too_many_domain",
+    "nested_admin", "privileged_user", "privileged_account", "privileged_computer",
+    "auth_policy_privileged", "ad_dns", "bitlocker", "sid_history",
+    "ou_delegation", "service_account_high", "lateral_movement_tier",
+    "event_dcsync", "event_kerberoast", "event_asrep", "event_suspicious_certificate",
+    "windows_laps", "sensitive_operator",
+)
 
 
 class DomainAdminTakeoverAnalyzer:
@@ -942,9 +1257,11 @@ class DomainAdminTakeoverAnalyzer:
         computers: list[dict[str, Any]] | None = None,
         domain: str | None = None,
         dc_ip: str | None = None,
+        attack_graph: dict[str, Any] | None = None,
+        assessment_identity: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return open paths, supporting evidence, and the unobserved technique catalog."""
-        del users, groups, computers  # reserved for future object-aware ranking
+        del users, computers
         risks = list(risks or [])
         context = {
             "domain": str(domain or "").strip() or "DOMAIN",
@@ -953,18 +1270,37 @@ class DomainAdminTakeoverAnalyzer:
         open_paths: list[dict[str, Any]] = []
         pending_paths: list[dict[str, Any]] = []
         observed_ids: set[str] = set()
+        matched_indexes: set[int] = set()
 
         for spec in DA_PATH_CATALOG:
-            evidence = [risk for risk in risks if self._matches(risk, spec.get("match") or {})]
-            evidence = [risk for risk in evidence if not is_disproved(risk)]
+            evidence = []
+            for index, risk in enumerate(risks):
+                if self._matches(risk, spec.get("match") or {}) and not is_disproved(risk):
+                    evidence.append(risk)
+                    matched_indexes.add(index)
             if not evidence:
                 continue
             observed_ids.add(spec["id"])
             supported = [risk for risk in evidence if not requires_validation(risk)]
             if supported:
                 open_paths.append(self._build_path(spec, supported, status="open", **context))
-            else:
-                pending_paths.append(self._build_path(spec, evidence, status="needs_validation", **context))
+            pending = [risk for risk in evidence if requires_validation(risk)]
+            if pending:
+                pending_paths.append(self._build_path(spec, pending, status="needs_validation", **context))
+
+        leftover = [
+            risk for index, risk in enumerate(risks)
+            if index not in matched_indexes
+            and not is_disproved(risk)
+            and self._is_da_relevant(risk)
+        ]
+        if leftover:
+            supported = [risk for risk in leftover if not requires_validation(risk)]
+            if supported:
+                open_paths.append(self._build_path(OTHER_DA_SPEC, supported, status="open", **context))
+            pending = [risk for risk in leftover if requires_validation(risk)]
+            if pending:
+                pending_paths.append(self._build_path(OTHER_DA_SPEC, pending, status="needs_validation", **context))
 
         open_paths.sort(key=lambda item: (-SEVERITY_RANK.get(item.get("severity"), 0), item.get("name", "")))
 
@@ -974,6 +1310,17 @@ class DomainAdminTakeoverAnalyzer:
             if spec["id"] not in observed_ids
         ]
 
+        from_account = build_assessment_account_view(
+            assessment_identity,
+            attack_graph,
+            risks,
+            groups,
+            open_path_ids=[path["id"] for path in open_paths],
+        )
+        starters = build_nonadmin_starter_view(
+            attack_graph,
+            self._technique_rows(risks, leftover),
+        )
         da_class = [path for path in open_paths if path.get("da_equivalent")]
         summary = {
             "open_path_count": len(open_paths),
@@ -983,19 +1330,39 @@ class DomainAdminTakeoverAnalyzer:
             "high_open_count": sum(1 for path in open_paths if path.get("severity") == Severity.HIGH),
             "catalog_count": len(DA_PATH_CATALOG),
             "unobserved_count": len(unobserved),
+            "option_count": sum(int(path.get("option_count") or 0) for path in open_paths),
+            "evidence_finding_count": sum(int(path.get("evidence_count") or 0) for path in open_paths),
+            "assessment_route_count": int(from_account.get("route_count") or 0),
+            "assessment_option_count": int(from_account.get("option_count") or 0),
+            "nonadmin_starter_count": int(starters.get("principal_count") or 0),
+            "nonadmin_technique_count": int(starters.get("technique_option_count") or 0),
             "categories": sorted({path.get("category") for path in open_paths}),
-            "headline": self._headline(open_paths, da_class),
+            "headline": self._headline(open_paths, da_class, from_account, starters),
+            "from_assessment_account": from_account.get("headline"),
+            "nonadmin_starters": starters.get("headline"),
         }
         logger.info(
-            "Domain Admin takeover map: %s open paths (%s DA-equivalent)",
+            "Domain Admin takeover map: %s open paths, %s non-admin starter account(s), %s routes from %s",
             summary["open_path_count"],
-            summary["da_equivalent_open_count"],
+            summary["nonadmin_starter_count"],
+            from_account.get("route_count") or 0,
+            from_account.get("sam") or "unresolved",
         )
         return {
             "summary": summary,
             "open_paths": open_paths,
             "pending_paths": pending_paths,
             "unobserved_paths": unobserved,
+            "from_assessment_account": from_account,
+            "nonadmin_starters": starters,
+            "existing_access": [
+                {"id": node.get("id"), "label": node.get("label"), "sid": node.get("sid"),
+                 "dn": node.get("dn"), "tier0": bool(node.get("privileged")),
+                 "memberships": [edge.get("target") for edge in (attack_graph or {}).get("edges") or []
+                                 if edge.get("source") == node.get("id") and edge.get("type") == "MemberOf"]}
+                for node in (attack_graph or {}).get("nodes") or []
+                if node.get("kind") in {"user", "computer"} and (node.get("privileged") or node.get("sensitive_access"))
+            ],
         }
 
     def _build_path(
@@ -1008,6 +1375,7 @@ class DomainAdminTakeoverAnalyzer:
     ) -> dict[str, Any]:
         severity = self._severity_for(spec, evidence) if evidence else Severity.LOW
         objects = self._evidence_objects(evidence)
+        options = evidence_options(evidence)
         target = objects[0] if objects else "TARGET"
         targets = ", ".join(objects[:8]) if objects else "TARGET"
         playbook = fill_playbook_fields(
@@ -1022,7 +1390,7 @@ class DomainAdminTakeoverAnalyzer:
             "name": spec["name"],
             "category": spec["category"],
             "status": status,
-            "da_equivalent": bool(spec.get("da_equivalent")),
+            "da_equivalent": self._path_is_da_equivalent(spec, evidence),
             "severity": severity,
             "mitre": spec.get("mitre") or "",
             "starting_access": spec.get("starting_access") or "",
@@ -1034,11 +1402,33 @@ class DomainAdminTakeoverAnalyzer:
             "verify_commands": playbook.get("verify_commands") or [],
             "assessment_commands": playbook.get("assessment_commands") or [],
             "tools": playbook.get("tools") or [],
+            "claim_level": "observed_condition" if status == "open" else status,
+            "takeover_tested": False,
+            "evidence_dossiers": [
+                evidence_dossier(risk, domain_dn=domain_to_dn(domain), dc_ip=dc_ip)
+                for risk in evidence
+            ],
             "evidence_count": len(evidence),
-            "evidence_objects": objects[:12],
+            "evidence_objects": objects[:EVIDENCE_OBJECT_LIMIT],
             "evidence_types": sorted({self._risk_type(item) for item in evidence if self._risk_type(item)}),
             "evidence_summaries": self._evidence_summaries(evidence),
+            "options": options,
+            "option_count": len(options),
         }
+
+    @staticmethod
+    def _finding_is_privileged(risk: dict[str, Any]) -> bool:
+        if risk.get("is_privileged") is True:
+            return True
+        return bool(risk.get("privileged_groups"))
+
+    def _path_is_da_equivalent(self, spec: dict[str, Any], evidence: list[dict[str, Any]]) -> bool:
+        """Kerberoast and AS-REP are DA-equivalent only for a privileged account."""
+        if not spec.get("da_equivalent"):
+            return False
+        if spec.get("id") not in {"kerberoasting", "asrep"} or not evidence:
+            return True
+        return any(self._finding_is_privileged(risk) for risk in evidence)
 
     def _severity_for(self, spec: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
         best = spec.get("severity_if_open") or Severity.HIGH
@@ -1057,7 +1447,6 @@ class DomainAdminTakeoverAnalyzer:
         for risk in evidence:
             raw = (
                 risk.get("affected_object")
-                or risk.get("affected_object")
                 or risk.get("sAMAccountName")
                 or risk.get("name")
                 or ""
@@ -1071,7 +1460,7 @@ class DomainAdminTakeoverAnalyzer:
 
     def _evidence_summaries(self, evidence: list[dict[str, Any]]) -> list[dict[str, str]]:
         summaries: list[dict[str, str]] = []
-        for risk in evidence[:8]:
+        for risk in evidence[:EVIDENCE_SUMMARY_LIMIT]:
             title = str(risk.get("title") or risk.get("name") or risk.get("type") or "").strip()
             affected = str(
                 risk.get("affected_object")
@@ -1092,9 +1481,18 @@ class DomainAdminTakeoverAnalyzer:
     def _risk_type(risk: dict[str, Any]) -> str:
         return str(risk.get("type") or risk.get("risk_type") or "").lower()
 
+    @staticmethod
+    def _replication_pair_incomplete(risk: dict[str, Any]) -> bool:
+        """A single replication right is not a DCSync path."""
+        risk_type = str(risk.get("type") or risk.get("risk_type") or "").lower()
+        if not risk_type.startswith("acl_ds_replication"):
+            return False
+        evidence = risk.get("evidence") if isinstance(risk.get("evidence"), dict) else {}
+        return not evidence.get("dcsync_pair_complete")
+
     def _matches(self, risk: dict[str, Any], match: dict[str, Any]) -> bool:
         risk_type = self._risk_type(risk)
-        if not risk_type:
+        if not risk_type or risk_type == "acl_descriptor_unreadable" or self._replication_pair_incomplete(risk):
             return False
         for prefix in match.get("exclude_prefixes") or ():
             if risk_type.startswith(str(prefix).lower()):
@@ -1113,15 +1511,80 @@ class DomainAdminTakeoverAnalyzer:
                 return True
         return False
 
+    def _technique_rows(
+        self,
+        risks: list[dict[str, Any]],
+        leftover: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Attach each DA-relevant finding to its catalog technique for foothold listing."""
+        rows: list[dict[str, Any]] = []
+        for spec in DA_PATH_CATALOG:
+            for risk in risks:
+                if is_disproved(risk) or not self._matches(risk, spec.get("match") or {}):
+                    continue
+                rows.append(
+                    {
+                        "risk": risk,
+                        "technique_id": spec["id"],
+                        "technique_name": spec["name"],
+                        "why_da": spec.get("why_da") or "",
+                        "category": spec.get("category") or "",
+                        "da_equivalent": self._path_is_da_equivalent(spec, [risk]),
+                        "pending": requires_validation(risk),
+                    }
+                )
+        for risk in leftover:
+            rows.append(
+                {
+                    "risk": risk,
+                    "technique_id": OTHER_DA_SPEC["id"],
+                    "technique_name": OTHER_DA_SPEC["name"],
+                    "why_da": OTHER_DA_SPEC.get("why_da") or "",
+                    "category": OTHER_DA_SPEC.get("category") or "other",
+                    "da_equivalent": True,
+                    "pending": requires_validation(risk),
+                }
+            )
+        return rows
+
+    def _is_da_relevant(self, risk: dict[str, Any]) -> bool:
+        risk_type = self._risk_type(risk)
+        if risk_type == "acl_descriptor_unreadable" or self._replication_pair_incomplete(risk):
+            return False
+        if any(risk_type.startswith(prefix) for prefix in DA_RELEVANT_PREFIXES):
+            return True
+        severity = str(risk.get("severity") or risk.get("severity_level") or "").lower()
+        if severity in {"critical", "high"} and any(
+            token in risk_type for token in ("admin", "privileg", "tier0", "tier-0", "dcsync")
+        ):
+            return True
+        return False
+
     @staticmethod
-    def _headline(open_paths: list[dict[str, Any]], da_class: list[dict[str, Any]]) -> str:
+    def _headline(
+        open_paths: list[dict[str, Any]],
+        da_class: list[dict[str, Any]],
+        from_account: dict[str, Any] | None = None,
+        starters: dict[str, Any] | None = None,
+    ) -> str:
+        account = (from_account or {}).get("headline") or ""
+        count = int((starters or {}).get("principal_count") or 0)
+        starter_bit = (
+            f" {count} named non-admin account(s) have an evidenced foothold."
+            if count
+            else ""
+        )
         if not open_paths:
-            return (
+            base = (
                 "No Domain Admin takeover path is currently evidenced by scan findings. "
                 "The catalog below remains the pentest checklist for conditions that were not observed."
             )
+            return f"{base}{starter_bit} {account}".strip()
         top = da_class[0]["name"] if da_class else open_paths[0]["name"]
-        return (
-            f"{len(open_paths)} Domain Admin-relevant path(s) are evidenced in this domain. "
-            f"Highest-priority open technique: {top}."
+        options = sum(int(path.get("option_count") or 0) for path in open_paths)
+        base = (
+            f"{len(open_paths)} Domain Admin-relevant path(s) are evidenced in this domain "
+            f"({options} object-level option(s)). Highest-priority open technique: {top}."
+            f"{starter_bit}"
         )
+        return f"{base} {account}".strip()

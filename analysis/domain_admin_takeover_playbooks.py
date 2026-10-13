@@ -55,7 +55,21 @@ def fill_playbook_fields(value: Any, **ctx: str) -> Any:
     if isinstance(value, list):
         return [fill_playbook_fields(item, **ctx) for item in value]
     if isinstance(value, dict):
-        return {key: fill_playbook_fields(item, **ctx) for key, item in value.items()}
+        result = {}
+        for key, item in value.items():
+            if key == "command" and isinstance(item, str):
+                # Templates mix shell, PowerShell and LDAP quoting contexts.
+                # Do not embed executable metacharacters from directory names.
+                # Exact values remain available in the escaped read-only dossier.
+                command_ctx = {
+                    field: text if text and text[0].isalnum() and all(char.isalnum() or char in "_.@-" for char in text)
+                    else field.upper() + "_REQUIRES_MANUAL_REPLACEMENT"
+                    for field, text in ctx.items()
+                }
+                result[key] = fill_placeholders(item, **command_ctx)
+            else:
+                result[key] = fill_playbook_fields(item, **ctx)
+        return result
     return value
 
 
@@ -1394,6 +1408,240 @@ DA_PATH_PLAYBOOKS: dict[str, dict[str, Any]] = {
             ),
         ],
         ["ldapsearch", "Get-ADGroupMember", "dSHeuristics"],
+    ),
+    "tier0_graph": _book(
+        [
+            _step(
+                "Walk every evidenced route from the listed source",
+                "Scan evidence {TARGETS} is a membership/ACL/control-plane chain into a privileged node. "
+                "Each route is an independent Domain Admin option.",
+                "The evidence graph shows a simple path from the source to Domain Admins (or another Tier-0 group) within six hops.",
+            ),
+            _step(
+                "Prefer the shortest hop a non-admin already holds",
+                "Testers use the first MemberOf or Controls edge, then re-check remaining routes after that edge is removed.",
+                "Removing the first non-admin hop collapses the route; sibling routes are listed separately on this map.",
+            ),
+        ],
+        [
+            _cmd(
+                "graph_path",
+                "PowerShell — group chain for the evidenced source",
+                "Get-ADPrincipalGroupMembership {TARGET} | Select-Object Name,SID\n"
+                "Get-ADUser {TARGET} -Properties memberOf,adminCount | Format-List SamAccountName,memberOf,adminCount",
+            ),
+        ],
+        [
+            _cmd(
+                "graph_break_note",
+                "Remediation — remove the first non-admin edge (change, not exploit)",
+                "Remove-ADGroupMember -Identity '<first-privileged-or-nested-group>' -Members {TARGET} -Confirm:$false",
+            ),
+        ],
+        ["Get-ADPrincipalGroupMembership", "BloodHound/OpenGraph export"],
+    ),
+    "adcs_control": _book(
+        [
+            _step(
+                "Confirm write control on the PKI object",
+                "Scan evidence {TARGETS} has GenericAll, WriteDACL, or WriteOwner on a CA, template, or NTAuth object.",
+                "dsacls / Get-Acl on the PKI DN lists the non-admin trustee.",
+            ),
+            _step(
+                "Treat PKI write as Domain Admin equivalent",
+                "A writable CA or NTAuth object can issue or trust an authentication certificate for a Domain Admin.",
+                "Engagement notes record {TARGET} as ESC5-class domain takeover.",
+            ),
+        ],
+        [
+            _cmd(
+                "adcs_control_acl",
+                "PowerShell — PKI object ACL",
+                "Get-ADObject -LDAPFilter \"(cn={TARGET})\" -SearchBase \"CN=Public Key Services,CN=Services,CN=Configuration,{DOMAIN_DN}\" "
+                "-Properties nTSecurityDescriptor |\n  Format-List DistinguishedName,nTSecurityDescriptor",
+            ),
+        ],
+        [
+            _cmd(
+                "adcs_control_note",
+                "Authorized assessment — enumerate enrollment services",
+                "Get-ADObject -LDAPFilter \"(objectClass=pKIEnrollmentService)\" "
+                "-SearchBase \"CN=Public Key Services,CN=Services,CN=Configuration,{DOMAIN_DN}\" "
+                "-Properties dNSHostName,certificateTemplates",
+            ),
+        ],
+        ["Get-ADObject", "Certify/Certipy (authorized)"],
+    ),
+    "gmsa_readers": _book(
+        [
+            _step(
+                "Confirm who can retrieve the gMSA password",
+                "Scan evidence {TARGETS} can read msDS-ManagedPassword. A Tier-0 gMSA is Domain Admin equivalent.",
+                "msDS-GroupMSAMembership lists the trustee on the gMSA object.",
+            ),
+            _step(
+                "Map the gMSA's own privilege",
+                "If the gMSA has DCSync, delegation, or Domain Admins membership, password read is domain takeover.",
+                "The gMSA's groups and ACLs are recorded next to the reader principal.",
+            ),
+        ],
+        [
+            _cmd(
+                "gmsa_readers_acl",
+                "PowerShell — gMSA password readers",
+                "Get-ADServiceAccount {TARGET} -Properties PrincipalsAllowedToRetrieveManagedPassword,msDS-GroupMSAMembership |\n"
+                "  Format-List Name,PrincipalsAllowedToRetrieveManagedPassword",
+            ),
+        ],
+        [
+            _cmd(
+                "gmsa_readers_note",
+                "Authorized assessment — identity of the managed account",
+                "Get-ADServiceAccount {TARGET} -Properties MemberOf,msDS-AllowedToDelegateTo,servicePrincipalName",
+            ),
+        ],
+        ["Get-ADServiceAccount"],
+    ),
+    "adminsdholder": _book(
+        [
+            _step(
+                "Diff AdminSDHolder against the default DACL",
+                "Scan evidence {TARGETS} is a dangerous ACE or protection drift on AdminSDHolder / adminCount objects.",
+                "dsacls on CN=AdminSDHolder,CN=System,{DOMAIN_DN} shows a non-default GenericAll/WriteDACL trustee.",
+            ),
+            _step(
+                "Fix stale adminCount and re-run SDProp",
+                "Orphaned adminCount=1 objects keep a stale protected DACL after they leave admin groups.",
+                "SDProp (FixUpInheritance) has run and adminCount orphans are cleared or restored deliberately.",
+            ),
+        ],
+        [
+            _cmd(
+                "sdholder_acl",
+                "PowerShell — AdminSDHolder ACL",
+                "Get-ADObject \"CN=AdminSDHolder,CN=System,{DOMAIN_DN}\" -Properties nTSecurityDescriptor |\n"
+                "  Format-List DistinguishedName,nTSecurityDescriptor",
+            ),
+        ],
+        [
+            _cmd(
+                "sdholder_orphans",
+                "PowerShell — adminCount=1 objects",
+                "Get-ADUser -Filter {adminCount -eq 1} -Properties adminCount,MemberOf |\n"
+                "  Select-Object SamAccountName,adminCount,MemberOf",
+            ),
+        ],
+        ["Get-ADObject", "Get-ADUser", "SDProp"],
+    ),
+    "privileged_hygiene": _book(
+        [
+            _step(
+                "List every privileged identity, including disabled",
+                "Scan evidence {TARGETS} is a Domain Admin, Enterprise Admin, nested admin group, or a privileged user missing Protected Users. Disabled DA secrets still mint tickets.",
+                "Get-ADGroupMember -Recursive on Domain Admins includes the named account, or the account has adminCount=1 / lastLogon stale.",
+            ),
+            _step(
+                "Rotate or constrain the identity",
+                "Put remaining Tier 0 in Protected Users and an Authentication Policy silo. Rotate secrets on disabled privileged accounts.",
+                "The account is no longer nested into DA/EA, is in Protected Users, and its password has been rotated.",
+            ),
+        ],
+        [
+            _cmd(
+                "priv_hygiene_members",
+                "PowerShell — recursive Domain Admins",
+                "Get-ADGroupMember 'Domain Admins' -Recursive | Select-Object Name,SamAccountName,objectClass,SID",
+            ),
+        ],
+        [
+            _cmd(
+                "priv_hygiene_target",
+                "PowerShell — privileged flags on the evidenced account",
+                "Get-ADUser {TARGET} -Properties adminCount,MemberOf,Enabled,PasswordLastSet,AccountNotDelegated |\n"
+                "  Format-List SamAccountName,Enabled,adminCount,MemberOf,PasswordLastSet,AccountNotDelegated",
+            ),
+        ],
+        ["Get-ADGroupMember", "Protected Users"],
+    ),
+    "ad_dns": _book(
+        [
+            _step(
+                "Confirm write on the AD-integrated zone or WPAD node",
+                "Scan evidence {TARGETS} can create or modify DNS records in an AD-integrated zone. WPAD or a DC hostname is the high-value option.",
+                "Get-Acl on the zone DN lists a non-DNS-admin trustee with CreateChild/WriteProperty.",
+            ),
+            _step(
+                "Treat DNS write plus unsigned LDAP as Domain Admin",
+                "A WPAD or spoofed DC A-record plus missing LDAP signing is an NTLM-relay DCSync path.",
+                "Engagement notes record {TARGET} as a DNS-to-LDAP relay option.",
+            ),
+        ],
+        [
+            _cmd(
+                "ad_dns_acl",
+                "PowerShell — AD DNS zone object",
+                "Get-ADObject -LDAPFilter \"(dc={TARGET})\" -SearchBase \"DC=DomainDnsZones,{DOMAIN_DN}\" "
+                "-Properties nTSecurityDescriptor | Format-List DistinguishedName",
+            ),
+        ],
+        [
+            _cmd(
+                "ad_dns_note",
+                "Authorized assessment — WPAD / DC records",
+                "Get-DnsServerResourceRecord -ZoneName {DOMAIN} -Name wpad, '@' | Format-Table HostName,RecordType,RecordData",
+            ),
+        ],
+        ["Get-ADObject", "Get-DnsServerResourceRecord"],
+    ),
+    "bitlocker": _book(
+        [
+            _step(
+                "Confirm who can read msFVE-RecoveryPassword",
+                "Scan evidence {TARGETS} stores a BitLocker recovery password in AD. A DC or DA workstation disk is Domain Admin equivalent.",
+                "LDAP shows msFVE-RecoveryPassword on the computer object with a non-admin read ACE.",
+            ),
+            _step(
+                "Scope recovery to the owning support tier",
+                "Remove DC recovery passwords from AD; rotate after any broad read.",
+                "msFVE-* is no longer readable by Authenticated Users or helpdesk on Tier-0 computers.",
+            ),
+        ],
+        [
+            _cmd(
+                "bitlocker_search",
+                "PowerShell — computers with BitLocker recovery in AD",
+                "Get-ADObject -LDAPFilter \"(objectClass=msFVE-RecoveryInformation)\" -SearchBase {DOMAIN_DN} |\n"
+                "  Select-Object DistinguishedName",
+            ),
+        ],
+        [
+            _cmd(
+                "bitlocker_target",
+                "PowerShell — recovery object for the evidenced computer",
+                "Get-ADObject -LDAPFilter \"(objectClass=msFVE-RecoveryInformation)\" "
+                "-SearchBase \"CN={TARGET},OU=Domain Controllers,{DOMAIN_DN}\" -Properties msFVE-RecoveryGuid",
+            ),
+        ],
+        ["Get-ADObject"],
+    ),
+    "other_da": _book(
+        [
+            _step(
+                "Triage every leftover Domain Admin-adjacent finding",
+                "Scan evidence {TARGETS} did not match a named technique card. Each row is still a DA option until disproved.",
+                "Every leftover critical/high finding has an owner, a DA/not-DA decision, and a remediation or exception.",
+            ),
+        ],
+        [
+            _cmd(
+                "other_da_list",
+                "PowerShell — inspect the evidenced object",
+                "Get-ADObject -LDAPFilter \"(sAMAccountName={TARGET})\" -Properties * |\n"
+                "  Select-Object Name,sAMAccountName,DistinguishedName,adminCount,MemberOf",
+            ),
+        ],
+        [],
+        ["Get-ADObject"],
     ),
 }
 

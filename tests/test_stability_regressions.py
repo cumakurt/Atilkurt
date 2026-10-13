@@ -263,6 +263,21 @@ def test_malformed_paging_cookie_cannot_be_treated_as_a_complete_result(cookie):
     assert ldap.query_failure_count == 1
 
 
+def test_timed_out_inventory_is_kept_and_not_cached_as_complete(monkeypatch):
+    ldap = paged_wrapper([([{'dn': 'one'}], b'next')])
+    calls = {'count': 0}
+
+    def clock():
+        calls['count'] += 1
+        return 0 if calls['count'] < 4 else 301
+
+    monkeypatch.setattr('core.ldap_connection.time.monotonic', clock)
+    assert ldap.search() == [{'dn': 'one'}]
+    assert ldap.query_audit[-1]['status'] == 'incomplete'
+    ldap.connection = PagedConnection([([{'dn': 'two'}], b'')])
+    assert ldap.search() == [{'dn': 'two'}]
+
+
 def test_paging_last_page_cannot_exceed_overall_deadline(monkeypatch):
     ldap = paged_wrapper([([{'dn': 'one'}], b'')])
     clock = iter([0, 0, 31])
@@ -420,3 +435,100 @@ def test_checkpoint_destinations_are_protected_before_logging_or_network(tmp_pat
                                              '--log-file', '.atilkurt_checkpoints/scan.json'])
     with pytest.raises(SystemExit):
         AtilKurt.validate_output_paths(args)
+
+
+def test_incomplete_collection_exits_with_code_2_and_does_not_print_success():
+    assert AtilKurt.scan_exit_code(
+        {'collection_health': {'status': 'partial'}}, {'analysis_execution': {'partial_steps': {}}}
+    ) == 2
+    assert AtilKurt.scan_exit_code(
+        {'collection_health': {'status': 'completed'}},
+        {'analysis_execution': {'partial_steps': {'dcsync': {'failed_queries': 1}}}},
+    ) == 2
+    assert AtilKurt.scan_exit_code(
+        {'collection_health': {'status': 'completed'}}, {'analysis_execution': {'partial_steps': {}}}
+    ) == 0
+
+
+def test_gpo_link_lookup_failure_is_not_reported_as_no_links():
+    from unittest.mock import MagicMock
+    from core.collectors.gpo_collector import GPOCollector
+
+    ldap = MagicMock()
+    ldap.search.side_effect = RuntimeError('ldap timeout')
+    recorded = []
+    ldap.merge_query_audit.side_effect = recorded.extend
+    collector = GPOCollector(ldap, show_progress=False)
+    assert collector._get_linked_ous('CN={11111111-1111-1111-1111-111111111111},CN=Policies,CN=System,DC=example,DC=com') is None
+    assert recorded and recorded[0]['status'] == 'failed'
+    assert recorded[0]['collection'] == 'gpos'
+
+
+def test_incomplete_collection_does_not_print_success():
+    assert AtilKurt.scan_completion_message(
+        {'collection_health': {'status': 'partial'}}, {'analysis_execution': {'partial_steps': {}}}
+    ) == "[*] Analysis finished with incomplete collection or analysis coverage."
+    assert AtilKurt.scan_completion_message(
+        {'collection_health': {'status': 'completed'}},
+        {'analysis_execution': {'partial_steps': {'dcsync': {'failed_queries': 1}}}},
+    ) == "[*] Analysis finished with incomplete collection or analysis coverage."
+    assert AtilKurt.scan_completion_message(
+        {'collection_health': {'status': 'completed'}}, {'analysis_execution': {'partial_steps': {}}}
+    ) == "[+] Analysis completed successfully!"
+
+
+def test_apply_engagement_keeps_tier_data_without_security_evidence():
+    from core.engagement_workflow import apply_engagement
+
+    args = SimpleNamespace(
+        domain=DOMAIN,
+        _assessment_scope=SimpleNamespace(snapshot=lambda: {}),
+        _engagement_documents={},
+    )
+    analysis = {'tier_data': {'marker': True}}
+    apply_engagement(args, {'computers': [{'name': 'PC1'}], 'users': [], 'groups': []}, analysis)
+    assert analysis['tier_data'] == {'marker': True}
+
+
+def test_parallel_collection_timeout_raises_data_collection_error(monkeypatch):
+    from core.exceptions import DataCollectionError
+
+    class TimedOut:
+        def result(self, timeout=None):
+            raise AtilKurt.FuturesTimeoutError()
+
+        def cancel(self):
+            return True
+
+    class ImmediatePool:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, *args, **kwargs):
+            return TimedOut()
+
+    monkeypatch.setattr(AtilKurt, 'ThreadPoolExecutor', ImmediatePool)
+    monkeypatch.setattr(AtilKurt, 'as_completed', lambda futures: list(futures))
+    ldap = LDAPConnection(DOMAIN, 'auditor', 'test-only-password', DOMAIN)
+    with pytest.raises(DataCollectionError, match='timed out'):
+        AtilKurt._collect_data_parallel(ldap, False, 1, None, timeout=1)
+
+
+def test_acl_collector_propagates_ldap_search_errors():
+    from core.collectors.acl_collector import ACLCollector
+    from core.exceptions import LDAPSearchError
+
+    ldap = Mock()
+    ldap.search.side_effect = LDAPSearchError('descriptor unreadable')
+    with pytest.raises(LDAPSearchError):
+        ACLCollector(ldap).collect_acl_risks(
+            [{'adminCount': 1, 'sAMAccountName': 'da', 'distinguishedName': 'CN=da,DC=example,DC=com'}],
+            [],
+            [],
+        )

@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence, forest_configuration_dn
+from core.ad_identity import account_has_current_privileged_membership, forest_configuration_dn
 from core.ad_security import as_int, as_list, as_text
 from core.constants import MITRETechniques, RiskTypes, Severity
 
@@ -46,7 +46,7 @@ class CertificateMappingAnalyzer:
         risks: list[dict[str, Any]] = []
         for row in rows:
             name = as_text(row.get("sAMAccountName") or row.get("distinguishedName")) or "unknown account"
-            privileged = account_has_privileged_evidence(row)
+            privileged = account_has_current_privileged_membership(row)
             weak_types = [
                 mapping_type for value in as_list(row.get("altSecurityIdentities"))
                 if (mapping_type := self.classify_mapping(value)).startswith("weak:")

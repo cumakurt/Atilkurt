@@ -102,6 +102,21 @@ class TestDomainAdminTakeoverAnalyzer(unittest.TestCase):
         self.assertEqual(result['open_paths'], [])
         self.assertEqual([path['id'] for path in result['pending_paths']], ['adcs'])
 
+    def test_confirmed_certificate_esc1_is_an_open_path(self):
+        result = DomainAdminTakeoverAnalyzer().analyze(
+            [
+                {
+                    "type": "certificate_esc1",
+                    "severity": "critical",
+                    "title": "ESC1 template",
+                    "affected_object": "VulnerableTemplate",
+                    "evidence": {"vulnerability_confirmed": True},
+                }
+            ]
+        )
+        self.assertEqual([path["id"] for path in result["open_paths"]], ["adcs"])
+        self.assertEqual(result["pending_paths"], [])
+
 
 class TestDomainAdminTakeoverExportAndReport(unittest.TestCase):
     """JSON export and HTML report wiring."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from core.optional_directory import optional_subtree
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,8 @@ class SCCMAttackSurfaceAnalyzer:
         risks: list[dict[str, Any]] = []
         container_dn = f"CN=System Management,CN=System,{self.ldap.base_dn}"
         objects = self._search_container(container_dn)
-        if objects is None:
-            logger.info("System Management container not present")
+        if not objects:
+            logger.info("System Management container not observed with the assessment token")
             return risks
         management_points = [
             obj for obj in objects
@@ -77,10 +78,10 @@ class SCCMAttackSurfaceAnalyzer:
 
     def _search_container(self, container_dn: str) -> list[dict[str, Any]] | None:
         try:
-            return self.ldap.search(
-                search_base=container_dn,
+            return optional_subtree(
+                self.ldap, self.ldap.base_dn, container_dn,
                 search_filter="(objectClass=*)",
-                attributes=["cn", "objectClass", "dNSHostName", "distinguishedName", "mSSMSSiteCode"],
+                attributes=["cn", "objectClass", "dNSHostName", "distinguishedName"],
             ) or []
         except Exception as exc:
             message = str(exc).lower()

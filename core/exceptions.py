@@ -16,7 +16,10 @@ class LDAPConnectionError(AtilKurtException):
 
 class LDAPSearchError(AtilKurtException):
     """Raised when LDAP search operation fails."""
-    pass
+
+    def __init__(self, message: str = "", partial_results: list | None = None):
+        super().__init__(message)
+        self.partial_results = list(partial_results or [])
 
 
 class DataCollectionError(AtilKurtException):

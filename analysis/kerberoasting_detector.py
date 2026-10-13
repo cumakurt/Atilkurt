@@ -5,9 +5,56 @@ Detects accounts vulnerable to Kerberoasting and AS-REP roasting attacks
 
 import logging
 from typing import Any
-from core.constants import RiskTypes, Severity, MITRETechniques
+from analysis.privileged_account_status import account_is_disabled
+from core.ad_identity import first_ldap_rdn, is_privileged_group_name, privileged_membership_values
+from core.constants import MITRETechniques, RiskTypes, Severity, UACFlags
 
 logger = logging.getLogger(__name__)
+
+_MACHINE_TRUST_FLAGS = (
+    UACFlags.WORKSTATION_TRUST_ACCOUNT
+    | UACFlags.SERVER_TRUST_ACCOUNT
+    | UACFlags.INTERDOMAIN_TRUST_ACCOUNT
+)
+_MANAGED_SERVICE_CLASSES = frozenset({
+    "msds-groupmanagedserviceaccount",
+    "msds-managedserviceaccount",
+})
+
+
+def _account_uac(user: dict[str, Any]) -> int | None:
+    raw = user.get("userAccountControl")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_kerberos_roastable_account(user: dict[str, Any]) -> bool:
+    """Return True when a TGT or TGS can still be issued for this account.
+
+    Disabled accounts, krbtgt, computer accounts, and managed service accounts
+    are not practical Kerberoasting or AS-REP targets. The KDC rejects disabled
+    clients, and managed/machine passwords are random.
+    """
+    sam = str(user.get("sAMAccountName") or "")
+    if not sam or sam.casefold() == "krbtgt" or sam.endswith("$"):
+        return False
+    if account_is_disabled(user):
+        return False
+    uac = _account_uac(user)
+    if uac is not None and uac & _MACHINE_TRUST_FLAGS:
+        return False
+    classes = user.get("objectClass") or []
+    if isinstance(classes, str):
+        classes = [classes]
+    if {str(item).casefold() for item in classes} & _MANAGED_SERVICE_CLASSES:
+        return False
+    if user.get("msDS-GroupMSAMembership") or user.get("msDS-ManagedPasswordInterval"):
+        return False
+    return True
 
 
 class KerberoastingDetector:
@@ -31,7 +78,7 @@ class KerberoastingDetector:
 
         for user in users:
             username = user.get('sAMAccountName')
-            if not username:
+            if not username or not is_kerberos_roastable_account(user):
                 continue
 
             spns = user.get('servicePrincipalName') or []
@@ -42,22 +89,12 @@ class KerberoastingDetector:
             if not spns or len(spns) == 0:
                 continue
 
-            # Check if user is in privileged groups (higher risk)
-            member_of = user.get('memberOf', []) or []
-            if not isinstance(member_of, list):
-                member_of = [member_of] if member_of else []
-
-            privileged_groups = []
-            is_privileged = False
-            for group_dn in member_of:
-                group_name = self._extract_group_name(group_dn)
-                if group_name:
-                    if any(priv in group_name.upper() for priv in
-                          ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
-                        is_privileged = True
-                        privileged_groups.append(group_name)
-
-            # Determine severity
+            privileged_groups = [
+                first_ldap_rdn(group_dn)
+                for group_dn in privileged_membership_values(user.get('memberOf'))
+                if is_privileged_group_name(first_ldap_rdn(group_dn))
+            ]
+            is_privileged = bool(privileged_groups)
             severity = Severity.CRITICAL if is_privileged else Severity.HIGH
 
             risks.append({
@@ -109,7 +146,7 @@ class KerberoastingDetector:
 
         for user in users:
             username = user.get('sAMAccountName')
-            if not username:
+            if not username or not is_kerberos_roastable_account(user):
                 continue
 
             uac = user.get('userAccountControl', 0)
@@ -124,23 +161,12 @@ class KerberoastingDetector:
             if not (uac & 4194304):
                 continue
 
-            # Check if user is in privileged groups
-            member_of = user.get('memberOf', []) or []
-            if not isinstance(member_of, list):
-                member_of = [member_of] if member_of else []
-
-            privileged_groups = []
-            is_privileged = False
-            for group_dn in member_of:
-                group_name = self._extract_group_name(group_dn)
-                if group_name:
-                    if any(priv in group_name.upper() for priv in
-                          ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
-                        is_privileged = True
-                        privileged_groups.append(group_name)
-
-            # Determine severity
-            severity = Severity.CRITICAL if is_privileged else Severity.CRITICAL  # Always critical
+            privileged_groups = [
+                first_ldap_rdn(group_dn)
+                for group_dn in privileged_membership_values(user.get('memberOf'))
+            ]
+            is_privileged = bool(privileged_groups)
+            severity = Severity.CRITICAL if is_privileged else Severity.HIGH
 
             risks.append({
                 'type': RiskTypes.ASREP_ROASTING_TARGET,
@@ -177,16 +203,8 @@ class KerberoastingDetector:
         return risks
 
     def _extract_group_name(self, group_dn: str) -> str:
-        """Extract group name from DN."""
-        if not group_dn:
-            return ''
-        if 'CN=' in group_dn:
-            try:
-                cn_part = group_dn.split('CN=')[1].split(',')[0]
-                return cn_part
-            except Exception:
-                return ''
-        return group_dn
+        """Extract the first RDN from a group DN or return the bare name."""
+        return first_ldap_rdn(group_dn)
 
     def _generate_export_format(self, username: str, spns: list[str], attack_type: str) -> dict[str, Any]:
         """

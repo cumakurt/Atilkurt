@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence, is_privileged_group_record
+from core.ad_identity import account_has_current_privileged_membership, is_privileged_group_record, is_security_group, is_tier0_group_record
 from core.ad_security import as_list, as_text, sid_text
 from core.constants import MITRETechniques, RiskTypes, Severity
 from core.finding_evidence import is_disproved, requires_validation
@@ -32,6 +32,7 @@ class AttackGraphV2Analyzer:
         edges: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         sid_to_id: dict[str, str] = {}
         dn_to_id: dict[str, str] = {}
+        label_to_id: dict[str, str] = {}
 
         for kind, objects in (("user", users), ("group", groups), ("computer", computers)):
             for obj in objects:
@@ -39,13 +40,16 @@ class AttackGraphV2Analyzer:
                 if not label:
                     continue
                 node_id = self._node_id(kind, label)
-                privileged = account_has_privileged_evidence(obj) or (
+                sensitive = account_has_current_privileged_membership(obj) or (
                     kind == "group" and is_privileged_group_record(obj)
                 )
                 nodes[node_id] = {
                     "id": node_id, "label": label, "kind": kind,
-                    "privileged": privileged,
+                    "privileged": kind == "group" and is_tier0_group_record(obj),
+                    "sensitive_access": sensitive and (kind != "group" or is_security_group(obj)),
+                    "security_enabled": kind != "group" or is_security_group(obj),
                 }
+                label_to_id[label.casefold()] = node_id
                 sid = sid_text(obj.get("objectSid"))
                 dn = as_text(obj.get("distinguishedName") or obj.get("dn"))
                 if sid:
@@ -62,15 +66,50 @@ class AttackGraphV2Analyzer:
                     continue
                 for parent_dn in as_list(obj.get("memberOf")):
                     target = dn_to_id.get(as_text(parent_dn).casefold())
-                    if target:
+                    if target and nodes[target].get("security_enabled") and nodes[source].get("security_enabled"):
                         self._edge(edges, source, target, "MemberOf", {"evidence": "memberOf"})
+
+        # Primary groups and member backlinks are omitted from memberOf in some snapshots.
+        for obj in [*users, *groups, *computers]:
+            source = sid_to_id.get(sid_text(obj.get("objectSid")))
+            primary = obj.get("primaryGroupID")
+            sid = sid_text(obj.get("objectSid"))
+            target = sid_to_id.get(sid.rsplit("-", 1)[0] + "-" + str(primary)) if sid and primary else None
+            if source and target and nodes[target].get("security_enabled"):
+                self._edge(edges, source, target, "MemberOf", {"evidence": "primaryGroupID"})
+        for group in groups:
+            target = self._lookup_object(group, "group", nodes)
+            if not target or not nodes[target].get("security_enabled"):
+                continue
+            for member in as_list(group.get("member")):
+                source = dn_to_id.get(as_text(member).casefold())
+                if source and nodes[source].get("security_enabled"):
+                    self._edge(edges, source, target, "MemberOf", {"evidence": "member"})
+
+        # Token membership is existing access, not a new control grant.
+        membership_children: dict[str, set[str]] = defaultdict(set)
+        for edge in edges.values():
+            if edge["type"] == "MemberOf":
+                membership_children[edge["target"]].add(edge["source"])
+        for flag in ("privileged", "sensitive_access"):
+            membership_queue = deque(node_id for node_id, node in nodes.items() if node.get(flag))
+            expanded: set[str] = set()
+            while membership_queue:
+                parent = membership_queue.popleft()
+                if parent in expanded:
+                    continue
+                expanded.add(parent)
+                for child in membership_children.get(parent, ()):
+                    nodes[child][flag] = True
+                    nodes[child]["privilege_basis"] = "existing_nested_membership"
+                    membership_queue.append(child)
 
         for finding in analysis_results.get("comprehensive_acl_risks") or []:
             if requires_validation(finding) or is_disproved(finding):
                 continue
             trustee_sid = as_text(finding.get("trustee"))
             source = sid_to_id.get(trustee_sid)
-            target = self._find_by_label(nodes, as_text(finding.get("affected_object")))
+            target = label_to_id.get(as_text(finding.get("affected_object")).casefold())
             if source and target:
                 self._edge(edges, source, target, "Controls", {
                     "permission": finding.get("permission"), "risk_type": finding.get("type"),
@@ -86,19 +125,45 @@ class AttackGraphV2Analyzer:
             adjacency[edge["source"]].add(edge["target"])
         targets = {node_id for node_id, node in nodes.items() if node.get("privileged")}
 
+        reverse_adj: dict[str, set[str]] = defaultdict(set)
+        for source, destinations in adjacency.items():
+            for destination in destinations:
+                reverse_adj[destination].add(source)
+
+        predecessor: dict[str, str] = {}
+        distance: dict[str, int] = {}
+        queue = deque()
+        for target in targets:
+            queue.append(target)
+            distance[target] = 0
+        while queue:
+            current = queue.popleft()
+            if distance[current] >= self.MAX_DEPTH:
+                continue
+            for parent in reverse_adj.get(current, set()):
+                if parent in distance:
+                    continue
+                distance[parent] = distance[current] + 1
+                predecessor[parent] = current
+                queue.append(parent)
+
         paths: list[dict[str, Any]] = []
         source_nodes = [
             node_id for node_id, node in nodes.items()
             if node.get("kind") in {"user", "computer", "principal"} and node_id not in targets
         ]
         for source in source_nodes:
-            path = self._shortest_path(source, targets, adjacency)
-            if not path:
+            if source not in predecessor:
                 continue
+            path = [source]
+            node_id = source
+            while node_id not in targets:
+                node_id = predecessor[node_id]
+                path.append(node_id)
             paths.append({
                 "source": source, "target": path[-1], "path": path,
                 "hop_count": len(path) - 1,
-                "labels": [nodes.get(node_id, {}).get("label", node_id) for node_id in path],
+                "labels": [nodes.get(item, {}).get("label", item) for item in path],
             })
         paths.sort(key=lambda item: (item["hop_count"], item["source"], item["target"]))
 
@@ -111,10 +176,7 @@ class AttackGraphV2Analyzer:
             for node_id, count in centrality.items() if count >= 3
         ]
         chokepoints.sort(key=lambda item: (-item["path_count"], item["node"]))
-        blast_radius = {
-            node_id: len(self._reachable_targets(node_id, targets, adjacency))
-            for node_id in nodes
-        }
+        blast_radius = self._blast_radius_from_targets(targets, reverse_adj, nodes)
         for node_id, count in blast_radius.items():
             nodes[node_id]["tier0_blast_radius"] = count
 
@@ -164,16 +226,31 @@ class AttackGraphV2Analyzer:
             "ad_dns_security_graph", "hybrid_identity_v2_graph",
         ):
             graph = results.get(key) or {}
+            by_sid = {str(node["sid"]): node_id for node_id, node in nodes.items() if node.get("sid")}
+            by_dn = {str(node["dn"]).casefold(): node_id for node_id, node in nodes.items() if node.get("dn")}
+            aliases: dict[str, str] = {}
             for node in graph.get("nodes") or []:
                 if not isinstance(node, dict) or not node.get("id"):
                     continue
                 node_id = str(node["id"])
-                existing = nodes.setdefault(node_id, dict(node))
-                existing.update({k: v for k, v in node.items() if v not in (None, "")})
+                sid, dn = str(node.get("sid") or ""), str(node.get("dn") or "").casefold()
+                canonical = by_sid.get(sid) if sid else by_dn.get(dn)
+                canonical = canonical or node_id
+                aliases[node_id] = canonical
+                if canonical in nodes:
+                    # Component evidence cannot revoke known membership or rename inventory identities.
+                    nodes[canonical]["privileged"] = bool(nodes[canonical].get("privileged") or node.get("privileged"))
+                else:
+                    nodes[canonical] = dict(node, id=canonical)
+                if sid:
+                    by_sid[sid] = canonical
+                if dn:
+                    by_dn[dn] = canonical
             for edge in graph.get("edges") or []:
                 if not isinstance(edge, dict):
                     continue
-                source, target = str(edge.get("source") or ""), str(edge.get("target") or "")
+                source = aliases.get(str(edge.get("source")), str(edge.get("source") or ""))
+                target = aliases.get(str(edge.get("target")), str(edge.get("target") or ""))
                 if source and target:
                     self._edge(edges, source, target, str(edge.get("type") or "RelatedTo"), {
                         key: value for key, value in edge.items() if key not in {"source", "target", "type"}
@@ -196,6 +273,29 @@ class AttackGraphV2Analyzer:
                     visited.add(neighbor)
                     queue.append((neighbor, [*path, neighbor]))
         return None
+
+    @classmethod
+    def _blast_radius_from_targets(
+        cls,
+        targets: set[str],
+        reverse_adj: dict[str, set[str]],
+        nodes: dict[str, dict[str, Any]],
+    ) -> dict[str, int]:
+        blast = {node_id: 0 for node_id in nodes}
+        for target in targets:
+            seen = {target}
+            queue = deque([(target, 0)])
+            while queue:
+                current, depth = queue.popleft()
+                if current != target:
+                    blast[current] = blast.get(current, 0) + 1
+                if depth >= cls.MAX_DEPTH:
+                    continue
+                for parent in reverse_adj.get(current, set()):
+                    if parent not in seen:
+                        seen.add(parent)
+                        queue.append((parent, depth + 1))
+        return blast
 
     @classmethod
     def _reachable_targets(

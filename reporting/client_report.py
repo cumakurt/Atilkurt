@@ -13,33 +13,29 @@ import tempfile
 import zipfile
 
 from core.exceptions import ExportError
+from core.directory_redaction import SECRET_KEYS, redact_credential_text
 
-SECRET_FIELDS = r'password|passwd|pwd|cpassword|secret|credential|private.?key|api[_-]?key|(?:access|refresh|auth)[_-]?token|tokenvalue|authorization|connection[_-]?string|ms.?mcs.?admpwd|mslaps.?password'
-SECRET_KEYS = re.compile(r'(?i)(?:' + SECRET_FIELDS + r')$')
-SECRET_ASSIGNMENT = re.compile(
-    r'(?im)(\b(?:' + SECRET_FIELDS + r')\b\s*[=:]\s*)'
-    r'''(?:"(?:\\.|[^"\\\r\n])*(?:"|$)|'(?:\\.|[^'\\\r\n])*(?:'|$)|(?:Bearer|Basic)\s+[^\s"';]+|[^\s"';]+)'''
-)
 IDENTITY_KEY = re.compile(r'(?i)(?:,\s*DC=|^S-1-\d+-|@|(?:[a-z0-9_-]+\.)+[a-z]{2,}|^(?:\d{1,3}\.){3}\d{1,3}$)')
 
 
-def _sanitize(value):
+def _sanitize(value, *, redact=True):
     if isinstance(value, dict):
-        return {key: '[REDACTED]' if SECRET_KEYS.search(str(key)) else _sanitize(item) for key, item in value.items()}
+        return {key: '[REDACTED]' if redact and SECRET_KEYS.search(str(key)) else _sanitize(item, redact=redact) for key, item in value.items()}
     if isinstance(value, list):
-        return [_sanitize(item) for item in value]
+        return [_sanitize(item, redact=redact) for item in value]
     if isinstance(value, str):
-        return SECRET_ASSIGNMENT.sub(r'\1[REDACTED]', value)
+        return redact_credential_text(value) if redact else value
     if isinstance(value, bytes):
         return '[BINARY EVIDENCE OMITTED]'
     return value
 
 
-def client_document(domain, data, risks, workspace, *, masked=False):
+def client_document(domain, data, risks, workspace, *, masked=False, redact_secrets=True):
     document = _sanitize({'domain': domain, 'scope': data.get('engagement_scope') or {'coverage': 'unspecified'},
                           'context': data.get('scan_context') or {}, 'collection_health': {key: (data.get('collection_health') or {}).get(key)
-                          for key in ('status', 'completed_queries', 'failed_queries')},
-                          'findings': deepcopy(risks), 'engagement': workspace.get('engagement') or {}})
+                          for key in ('status', 'query_count', 'failed_queries')},
+                          'findings': deepcopy(risks), 'engagement': workspace.get('engagement') or {},
+                          'password_hashes': data.get('password_hashes')}, redact=redact_secrets)
     if not masked:
         return document
     identities = {str(domain)}
@@ -82,7 +78,8 @@ def client_document(domain, data, risks, workspace, *, masked=False):
 
     def mask(value):
         if isinstance(value, dict):
-            return {mask(key) if isinstance(key, str) and IDENTITY_KEY.search(key) else key: mask(item)
+            return {mask(key) if isinstance(key, str) and IDENTITY_KEY.search(key) else key:
+                    item if key in {'lm', 'ntlm', 'kerberos_key', 'secret_value'} else mask(item)
                     for key, item in value.items()}
         if isinstance(value, list):
             return [mask(item) for item in value]
@@ -108,6 +105,7 @@ def _paragraphs(document, language):
     paragraphs = [(1, labels['title']), (0, document['domain']), (1, labels['scope']),
                   (0, json.dumps(document['scope'], ensure_ascii=False, default=str)),
                   (0, json.dumps(document['context'], ensure_ascii=False, default=str)),
+                  (0, json.dumps(document['collection_health'], ensure_ascii=False, default=str)),
                   (0, 'Kısmi ve bilinmeyen sonuçlar riskin giderildiğini kanıtlamaz.' if tr else 'Partial or unknown results do not prove absence or remediation.'),
                   (1, labels['findings'])]
     for finding in document['findings']:
@@ -121,6 +119,12 @@ def _paragraphs(document, language):
                            (2, labels['remediation']), (0, str(finding.get('mitigation') or finding.get('recommendation') or ''))])
     for key, value in document['engagement'].items():
         paragraphs.extend([(1, key.replace('_', ' ').title()), (0, json.dumps(value, ensure_ascii=False, default=str))])
+    hashes = document.get('password_hashes')
+    if hashes:
+        paragraphs.extend([(1, 'Parola Özetleri' if tr else 'Password Hashes'),
+                           (0, json.dumps({key: value for key, value in hashes.items() if key != 'records'}, ensure_ascii=False))])
+        for record in hashes.get('records', []):
+            paragraphs.extend([(2, str(record.get('account', ''))), (0, json.dumps(record, ensure_ascii=False))])
     return paragraphs
 
 

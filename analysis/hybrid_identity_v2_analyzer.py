@@ -9,6 +9,7 @@ from typing import Any
 from core.ad_security import ace_permission_names, as_int, as_text, dangerous_broad_aces, parsed_security_descriptor, sid_text
 from core.security_descriptor_parser import directory_right_granted
 from uuid import UUID
+from core.optional_directory import optional_subtree
 from core.constants import MITRETechniques, RiskTypes, Severity
 
 logger = logging.getLogger(__name__)
@@ -161,8 +162,8 @@ class HybridIdentityV2Analyzer:
     def _adfs_dkm(self, nodes: dict[str, dict[str, Any]], edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
         base = f"CN=ADFS,CN=Microsoft,CN=Program Data,{self.ldap.base_dn}"
         try:
-            rows = self.ldap.search(
-                search_base=base,
+            rows = optional_subtree(
+                self.ldap, self.ldap.base_dn, base,
                 search_filter="(objectClass=*)",
                 attributes=["cn", "distinguishedName", "nTSecurityDescriptor"],
             ) or []

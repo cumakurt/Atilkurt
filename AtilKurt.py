@@ -14,14 +14,14 @@ import os
 import re
 import sys
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from core.ldap_connection import LDAPConnection
 from core.validators import validate_output_file
-from core.exceptions import AnalysisError, ValidationError, LDAPConnectionError, LDAPSearchError
+from core.exceptions import AnalysisError, DataCollectionError, ValidationError, LDAPConnectionError, LDAPSearchError
 from core.collectors.user_collector import UserCollector
 from core.collectors.computer_collector import ComputerCollector
 from core.collectors.group_collector import GroupCollector
@@ -163,10 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--json-export',
                         help='Optional JSON export file path')
     transport = parser.add_mutually_exclusive_group()
-    transport.add_argument('--ssl', action='store_true', default=True,
-                           help='Use certificate-verified LDAPS on port 636 (default)')
+    transport.add_argument('--ssl', action='store_true', default=False,
+                           help='Use certificate-verified LDAPS on port 636')
     transport.add_argument('--insecure-ldap', action='store_false', dest='ssl',
-                           help='Explicitly allow LDAP without TLS for a controlled compatibility assessment')
+                           help='Use LDAP without TLS on port 389 (default)')
     transport.add_argument('--starttls', action='store_true', help='Require StartTLS before binding on port 389')
     parser.add_argument('--ca-certs-file', help='Trusted PEM CA bundle for LDAP TLS')
     parser.add_argument('--auth-method', choices=('ntlm', 'kerberos', 'simple'), default='ntlm',
@@ -189,6 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Disable progress tracking output')
     parser.add_argument('--kerberoasting-export',
                         help='Export Kerberoasting targets to JSON')
+    parser.add_argument('--collect-password-hashes', action='store_true',
+                        help='Collect current LM/NTLM and Kerberos keys via DRS for scoped inventory accounts; requires replication rights')
+    parser.add_argument('--hash-collection-timeout', type=_positive_int, default=300,
+                        help='Overall DRS collection time budget in seconds (default: 300)')
+    parser.add_argument('--redact-secrets', action='store_true',
+                        help='Redact collected secret values in reports and checkpoints (default: show values)')
     parser.add_argument('--check-user',
                         help='Check if specific user can become Domain Admin')
 
@@ -310,6 +316,8 @@ def validate_cli_arguments(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error('--ca-certs-file requires a readable PEM bundle')
     if args.auth_method == 'simple' and not (args.ssl or args.starttls):
         parser.error('SIMPLE authentication requires LDAPS or StartTLS')
+    if args.collect_password_hashes and (args.offline_snapshot or args.resume or args.auth_method == 'kerberos'):
+        parser.error('--collect-password-hashes requires a fresh password-authenticated scan; offline/resume reuse saved results')
     if args.require_signed_evidence and args.event_log:
         parser.error('Raw event logs cannot satisfy signed-evidence policy; use signed --security-evidence')
     if (args.ticket_file or args.tickets_export or args.notifications_export or args.audit_export) and not args.history_db:
@@ -388,6 +396,7 @@ def validate_output_paths(args: argparse.Namespace) -> None:
         inputs = {name: getattr(args, name, None) for name in (
             'baseline', 'review_file', 'remediation_scenario', 'offline_snapshot', 'quality_dataset',
             'retest', 'ticket_file', 'signing_key', 'scope_file', 'protocol_evidence', 'gpo_context', 'rsop_file',
+            'ca_certs_file',
         )}
         for name in ('event_log', 'posture_file', 'validation_evidence', 'trusted_key', 'bloodhound_import', 'federation_snapshot', 'security_evidence'):
             inputs.update({f'{name}[{index}]': path for index, path in enumerate(getattr(args, name, []))})
@@ -461,6 +470,7 @@ def collect_data(
     use_parallel: bool = False,
     max_workers: int = 5,
     stealth_settings: dict[str, Any] | None = None,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Collect all AD objects via LDAP.
 
@@ -470,22 +480,24 @@ def collect_data(
     print("[*] Collecting Active Directory data...")
 
     if use_parallel:
-        return _collect_data_parallel(ldap_conn, show_progress, max_workers, stealth_settings)
+        return _collect_data_parallel(
+            ldap_conn, show_progress, max_workers, stealth_settings, timeout=timeout
+        )
 
     user_collector = UserCollector(ldap_conn, show_progress=show_progress)
-    users = _collect_scoped(user_collector, ldap_conn)
+    users = _collect_scoped(user_collector, ldap_conn, "users")
     print(f"[+] Collected {len(users)} users")
 
     computer_collector = ComputerCollector(ldap_conn, show_progress=show_progress)
-    computers = _collect_scoped(computer_collector, ldap_conn)
+    computers = _collect_scoped(computer_collector, ldap_conn, "computers")
     print(f"[+] Collected {len(computers)} computers")
 
     group_collector = GroupCollector(ldap_conn, show_progress=show_progress)
-    groups = _collect_scoped(group_collector, ldap_conn)
+    groups = _collect_scoped(group_collector, ldap_conn, "groups")
     print(f"[+] Collected {len(groups)} groups")
 
     gpo_collector = GPOCollector(ldap_conn, show_progress=show_progress)
-    gpos = _collect_scoped(gpo_collector, ldap_conn)
+    gpos = _collect_scoped(gpo_collector, ldap_conn, "gpos")
     print(f"[+] Collected {len(gpos)} GPOs")
 
     return {
@@ -496,14 +508,78 @@ def collect_data(
     }
 
 
-def _collect_scoped(collector, ldap_conn):
+def assessment_evidence_complete(data: dict[str, Any] | None, analysis: dict[str, Any] | None) -> bool:
+    """Return False when directory collection or an analysis step did not finish.
+
+    Legacy callers without health metadata retain their behavior. Explicitly
+    unknown, partial or failed collection cannot substantiate a clean result.
+    """
+    health = (data or {}).get('collection_health') or {}
+    partial_steps = ((analysis or {}).get('analysis_execution') or {}).get('partial_steps') or {}
+    if health.get('status') in {'partial', 'failed', 'unknown'}:
+        return False
+    hashes = (data or {}).get('password_hashes')
+    if hashes and hashes.get('status') != 'completed':
+        return False
+    return not partial_steps
+
+
+def scan_completion_message(data: dict[str, Any] | None, analysis: dict[str, Any] | None) -> str:
+    """Return the console status for a finished report write."""
+    health = (data or {}).get('collection_health') or {}
+    partial_steps = ((analysis or {}).get('analysis_execution') or {}).get('partial_steps') or {}
+    if health.get('status') == 'completed' and not partial_steps and assessment_evidence_complete(data, analysis):
+        return "[+] Analysis completed successfully!"
+    return "[*] Analysis finished with incomplete collection or analysis coverage."
+
+
+def scan_exit_code(data: dict[str, Any] | None, analysis: dict[str, Any] | None) -> int:
+    """Return 2 when the written report is based on an incomplete assessment."""
+    return 0 if assessment_evidence_complete(data, analysis) else 2
+
+
+def apply_collection_boundary(scoring: dict[str, Any], data: dict[str, Any] | None,
+                              analysis: dict[str, Any] | None) -> None:
+    """Stop an empty incomplete assessment from being stored as a perfect score."""
+    from core.finding_evidence import is_score_excluded
+
+    complete = assessment_evidence_complete(data, analysis)
+    scoring['evidence_complete'] = complete
+    if complete:
+        return
+    included = [risk for risk in scoring.get('scored_risks') or [] if not is_score_excluded(risk)]
+    if not included:
+        if scoring.get('domain_score') is not None:
+            print("[*] Domain security score withheld: collection or analysis is incomplete and produced no scored findings.")
+        scoring['domain_score'] = None
+
+
+def _note_unassessed_collection(ldap_conn, collection_name: str, reason: str) -> None:
+    """Remember that an empty list means the read did not finish."""
+    failed = getattr(ldap_conn, "failed_collections", None)
+    if not isinstance(failed, list):
+        failed = []
+        ldap_conn.failed_collections = failed
+    if collection_name not in failed:
+        failed.append(collection_name)
+    ldap_conn.merge_query_audit([{
+        "status": "failed",
+        "reason": reason,
+        "scope": "engagement",
+        "collection": collection_name,
+        "attributes": [],
+        "unobserved_attributes": [],
+    }])
+
+
+def _collect_scoped(collector, ldap_conn, collection_name: str = "unknown"):
     from core.assessment_scope import ScopeLimitError
+    from core.exceptions import LDAPSearchError
     try:
         return collector.collect()
-    except ScopeLimitError as exc:
-        print(f'[*] Collection not assessed: {exc}')
-        ldap_conn.merge_query_audit([{'status': 'failed', 'reason': str(exc), 'scope': 'engagement',
-                                    'attributes': [], 'unobserved_attributes': []}])
+    except (ScopeLimitError, LDAPSearchError) as exc:
+        print(f'[*] Collection not assessed ({collection_name}): {exc}')
+        _note_unassessed_collection(ldap_conn, collection_name, str(exc))
         return []
 
 
@@ -545,24 +621,25 @@ def _collect_with_new_connection(
     collector_cls: Any,
     show_progress: bool,
     stealth_settings: dict[str, Any] | None,
+    collection_name: str,
 ) -> list[dict[str, Any]]:
     """Run one collector with an isolated LDAP connection."""
-    from core.assessment_scope import ScopeLimitError
     conn = _clone_ldap_connection(base_conn)
     try:
         _apply_stealth_to_connection(conn, stealth_settings)
         conn.connect()
         collector = collector_cls(conn, show_progress=show_progress)
-        return _collect_scoped(collector, conn)
-    except ScopeLimitError as exc:
-        conn.merge_query_audit([{'status': 'failed', 'reason': str(exc), 'scope': 'engagement',
-                                'attributes': [], 'unobserved_attributes': []}])
-        return []
+        return _collect_scoped(collector, conn, collection_name)
     finally:
         if hasattr(base_conn, 'merge_query_audit'):
             base_conn.merge_query_audit(getattr(conn, 'query_audit', []))
             if getattr(conn, 'query_audit_overflow', False):
                 base_conn.query_audit_overflow = True
+        failed = list(getattr(base_conn, "failed_collections", []) or [])
+        for name in getattr(conn, "failed_collections", []) or []:
+            if name not in failed:
+                failed.append(name)
+        base_conn.failed_collections = failed
         conn.disconnect()
 
 
@@ -571,6 +648,7 @@ def _collect_data_parallel(
     show_progress: bool,
     max_workers: int,
     stealth_settings: dict[str, Any] | None,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Collect top-level AD object sets concurrently with isolated connections."""
     collectors = {
@@ -591,12 +669,24 @@ def _collect_data_parallel(
                 collector_cls,
                 show_progress,
                 stealth_settings,
+                key,
             ): key
             for key, collector_cls in collectors.items()
         }
+        scope = getattr(ldap_conn, 'assessment_scope', None)
+        worker_timeout = getattr(scope, 'max_seconds', None) if scope else None
+        if not worker_timeout:
+            worker_timeout = max(int(timeout or getattr(ldap_conn, 'base_timeout', 30) or 30) * 20, 120)
         for future in as_completed(future_to_key):
             key = future_to_key[future]
-            collected[key] = future.result()
+            try:
+                collected[key] = future.result(timeout=worker_timeout)
+            except FuturesTimeoutError as exc:
+                for pending in future_to_key:
+                    pending.cancel()
+                raise DataCollectionError(
+                    f"Parallel {key} collection timed out after {worker_timeout} seconds"
+                ) from exc
             print(f"[+] Collected {len(collected[key])} {key}")
 
     return {
@@ -873,8 +963,12 @@ def score_and_consolidate(
 
     scored_risks = scorer.score_risks(all_risks, users=users, groups=groups,
                                        computers=computers)
-    domain_score = scorer.calculate_domain_score(scored_risks)
-    print(f"[+] Domain security score: {domain_score:.1f}/100")
+    evidence_complete = assessment_evidence_complete(data, analysis)
+    domain_score = scorer.calculate_domain_score(scored_risks, evidence_complete=evidence_complete)
+    if domain_score is None:
+        print("[*] Domain security score: not assessed (collection or analysis is incomplete)")
+    else:
+        print(f"[+] Domain security score: {domain_score:.1f}/100")
 
     executive_summary = scorer.generate_executive_summary(scored_risks, users,
                                                           computers, groups)
@@ -889,20 +983,36 @@ def score_and_consolidate(
         computers=computers,
         domain=domain,
         dc_ip=dc_ip,
+        attack_graph=analysis.get("attack_graph_v2"),
+        assessment_identity=data.get("assessment_identity"),
     )
     print(
         f"[+] Domain Admin takeover paths: {takeover['summary']['open_path_count']} open "
-        f"({takeover['summary']['da_equivalent_open_count']} DA-equivalent)"
+        f"({takeover['summary']['da_equivalent_open_count']} DA-equivalent, "
+        f"{takeover['summary'].get('option_count') or 0} object options)"
     )
+    account = takeover.get("from_assessment_account") or {}
+    if account.get("sam"):
+        print(
+            f"[+] From assessment account {account.get('sam')}: {account.get('headline')} "
+            f"({account.get('route_count') or 0} route(s), "
+            f"{account.get('option_count') or 0} session option(s))"
+        )
+    starters = takeover.get("nonadmin_starters") or {}
+    if starters.get("principal_count"):
+        print(f"[+] Non-admin Domain Admin footholds: {starters.get('headline')}")
 
     from analysis.scan_coverage import build_scan_coverage
     from analysis.remediation_simulator import simulate_remediation
-    coverage = build_scan_coverage(analysis, scored_risks, review_center)
+    coverage = build_scan_coverage(
+        analysis, scored_risks, review_center, collection_health=(data or {}).get('collection_health'),
+    )
     simulation = simulate_remediation(analysis.get('attack_graph_v2') or {}, removed_edge_ids)
 
     return {
         'scored_risks': scored_risks,
         'domain_score': domain_score,
+        'evidence_complete': evidence_complete,
         'executive_summary': executive_summary,
         'shadow_admin_risks': shadow_admin_risks,
         'acl_escalation_risks': acl_escalation_risks,
@@ -1008,6 +1118,12 @@ def generate_reports(
     """
     from core.product_workflow import product_workspace_transaction
     from core.engagement_workflow import refresh_engagement_graph
+    from core.directory_redaction import redact_assessment_secrets
+    if getattr(args, 'redact_secrets', True):
+        redact_assessment_secrets(data, analysis)
+        from core.directory_redaction import redact_nested_secrets
+        analysis = redact_nested_secrets(analysis)
+        scoring = redact_nested_secrets(scoring)
     refresh_engagement_graph(args, data, analysis)
 
     with product_workspace_transaction(args, data, analysis, scoring) as workspace:
@@ -1060,6 +1176,7 @@ def _write_reports(args, data, analysis, scoring, compliance, product_workspace)
         scan_coverage=scoring.get('scan_coverage'),
         remediation_simulation=scoring.get('remediation_simulation'),
         product_workspace=product_workspace,
+        password_hashes=data.get('password_hashes'),
     )
     print(f"[+] HTML report generated: {output_file}")
 
@@ -1069,7 +1186,8 @@ def _write_reports(args, data, analysis, scoring, compliance, product_workspace)
     # JSON export
     if args.json_export:
         _export_json(args.json_export, data, analysis, scoring, compliance,
-                     baseline_comparison, language=args.language, signing_key=getattr(args, 'signing_key', None))
+                     baseline_comparison, language=args.language, signing_key=getattr(args, 'signing_key', None),
+                     redact_secrets=getattr(args, 'redact_secrets', True))
 
     # Kerberoasting export
     if args.kerberoasting_export:
@@ -1109,8 +1227,12 @@ def _export_json(
     baseline_comparison: dict[str, Any] | None,
     language: str = 'en',
     signing_key: str | None = None,
+    redact_secrets: bool = True,
 ) -> None:
     """Write full results to a JSON file."""
+    from core.directory_redaction import redact_assessment_secrets
+    if redact_secrets:
+        redact_assessment_secrets(data, analysis)
     export_data = {
         'schema_version': 2,
         'domain': (scoring.get('review_center') or {}).get('domain'),
@@ -1130,6 +1252,9 @@ def _export_json(
         'analysis_execution': analysis.get('analysis_execution'),
         'scan_context': data.get('scan_context'),
         'collection_health': data.get('collection_health'),
+        'assessment_identity': data.get('assessment_identity'),
+        'password_hashes': data.get('password_hashes'),
+        'secrets_redacted': redact_secrets,
         'effective_access': analysis.get('effective_access'),
         'product_workspace': scoring.get('product_workspace'),
         'engagement_scope': data.get('engagement_scope'),
@@ -1137,6 +1262,9 @@ def _export_json(
         'federated_graph': analysis.get('federated_graph'),
     }
     export_data.update(build_export_analysis_slice(analysis))
+    if redact_secrets:
+        from core.directory_redaction import redact_nested_secrets
+        export_data = redact_nested_secrets(export_data)
     if language == 'tr':
         from reporting.localization import localize_export_payload
         export_data = localize_export_payload(export_data, language)
@@ -1237,9 +1365,15 @@ def build_checkpoint_payload(
     compliance: dict[str, Any],
 ) -> dict[str, Any]:
     """Build a full checkpoint payload that can be resumed without recollection."""
+    from core.directory_redaction import redact_assessment_secrets
+    if getattr(args, 'redact_secrets', True):
+        redact_assessment_secrets(data, analysis)
+        from core.directory_redaction import redact_nested_secrets
+        analysis = redact_nested_secrets(analysis)
+        scoring = redact_nested_secrets(scoring)
     return {
         "domain": args.domain,
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "data": data,
         "analysis": analysis,
         "scoring": scoring,
@@ -1296,7 +1430,7 @@ def _load_bounded_json(path: str) -> dict[str, Any]:
     return document
 
 
-def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], removed: list[str]) -> None:
+def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], removed: list[str]) -> int:
     """Re-evaluate saved evidence and review expiry without opening a connection."""
     if not hasattr(args, '_assessment_scope'):
         from core.engagement_workflow import prepare_engagement_inputs
@@ -1316,6 +1450,14 @@ def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], 
     if any(not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) for rows in data.values()):
         raise ValidationError('Offline snapshot contains invalid directory collections')
     _restore_snapshot_binary_attributes(data)
+    identity = snapshot.get('assessment_identity')
+    if identity is not None and not isinstance(identity, dict):
+        raise ValidationError('Offline snapshot assessment_identity must be an object')
+    data['assessment_identity'] = identity
+    hashes = snapshot.get('password_hashes')
+    if hashes is not None and (not isinstance(hashes, dict) or not isinstance(hashes.get('records'), list)):
+        raise ValidationError('Offline password_hashes must be an object with records')
+    data['password_hashes'] = hashes
     data['collection_health'] = snapshot.get('collection_health') or {'status': 'unknown', 'queries': []}
     data['scan_context'] = {**(snapshot.get('scan_context') or {}), 'fresh_ldap': False}
     risks = snapshot.get('risks', [])
@@ -1369,6 +1511,8 @@ def generate_offline_report(args: argparse.Namespace, document: dict[str, Any], 
     }
     generate_reports(args, data, analysis, scoring, compliance, None)
     print('[+] Offline report completed. Directory evidence was reused; no LDAP connection was opened.')
+    print(scan_completion_message(data, analysis))
+    return scan_exit_code(data, analysis)
 
 
 def _restore_snapshot_binary_attributes(data: dict[str, Any]) -> None:
@@ -1470,7 +1614,9 @@ def main() -> None:
         prepare_engagement_inputs(args)
         review_document, removed_edge_ids = load_workflow_inputs(args)
         if args.offline_snapshot:
-            generate_offline_report(args, review_document, removed_edge_ids)
+            exit_code = generate_offline_report(args, review_document, removed_edge_ids)
+            if exit_code:
+                sys.exit(exit_code)
             return
         persistence = ProgressPersistence() if args.resume or args.checkpoint or args.incremental else None
         checkpoint_payload = None
@@ -1576,6 +1722,11 @@ def main() -> None:
                 use_parallel=args.parallel,
                 max_workers=args.max_workers,
                 stealth_settings=stealth_settings if args.parallel else None,
+                timeout=args.timeout,
+            )
+            from core.assessment_identity import resolve_assessment_identity
+            data["assessment_identity"] = resolve_assessment_identity(
+                ldap_conn, data.get("users"), data.get("groups"), data.get("computers"),
             )
 
             incremental_diff = None
@@ -1606,15 +1757,32 @@ def main() -> None:
                     if key in completed:
                         analysis.update(runners[key](ldap_conn, {**data, '_analysis_results': analysis}))
             from core.diagnostics import collection_health
-            from datetime import timezone
             data['collection_health'] = collection_health(ldap_conn, data)
+            if args.collect_password_hashes:
+                from core.password_hashes import collect_password_hashes, domain_replication_authorization
+                authorization = domain_replication_authorization(ldap_conn, data.get('assessment_identity'))
+                print('[*] Collecting password hashes via DRS for inventoried accounts...')
+                data['password_hashes'] = collect_password_hashes(
+                    data, host=args.dc_ip or args.domain, domain=args.domain,
+                    username=args.username, password=password, timeout=args.timeout,
+                    max_seconds=args.hash_collection_timeout, scope=args._assessment_scope,
+                    authorization=authorization,
+                )
+                result = data['password_hashes']
+                print(f"[*] Password hash collection: {result['status']}; "
+                      f"{result['summary']['collected']}/{result['summary']['requested']} accounts; "
+                      f"authorization {result['authorization']['status']}")
             data['scan_context'] = {'fresh_ldap': True, 'collected_at': datetime.now(timezone.utc).isoformat(),
                                     'profile': args.analysis_profile}
             apply_package_c_evidence(args, data, analysis)
             if incremental_diff:
                 analysis["incremental_diff"] = incremental_diff
+            from core.directory_redaction import redact_assessment_secrets
+            if args.redact_secrets:
+                redact_assessment_secrets(data, analysis)
 
             # --- Risk scoring ------------------------------------------------
+            data['collection_health'] = collection_health(ldap_conn, data)
             scoring = score_and_consolidate(
                 analysis, data, domain=args.domain, dc_ip=args.dc_ip, review_document=review_document,
                 evidence_max_age_days=args.evidence_max_age_days, removed_edge_ids=removed_edge_ids,
@@ -1625,6 +1793,7 @@ def main() -> None:
                 ldap_conn, scoring['scored_risks'], data, args.hourly_rate
             )
             data['collection_health'] = collection_health(ldap_conn, data)
+            apply_collection_boundary(scoring, data, analysis)
 
             # --- Checkpoint --------------------------------------------------
             checkpoint_id = args.checkpoint
@@ -1649,6 +1818,7 @@ def main() -> None:
             compliance = generate_compliance_and_risk(
                 ldap_conn, scoring['scored_risks'], data, args.hourly_rate
             )
+            apply_collection_boundary(scoring, data, analysis)
 
         # --- Reports & export ------------------------------------------------
         generate_reports(args, data, analysis, scoring, compliance, ldap_conn)
@@ -1657,12 +1827,15 @@ def main() -> None:
         if args.check_user:
             check_privilege_escalation(args.check_user, data)
 
-        print("[+] Analysis completed successfully!")
+        print(scan_completion_message(data, analysis))
+        exit_code = scan_exit_code(data, analysis)
+        if exit_code:
+            sys.exit(exit_code)
 
     except ValidationError as e:
         print(f"[-] Validation error: {e}", file=sys.stderr)
         sys.exit(1)
-    except AnalysisError as e:
+    except (AnalysisError, DataCollectionError) as e:
         print(f"[-] Analysis error: {e}", file=sys.stderr)
         sys.exit(1)
     except (LDAPConnectionError, LDAPSearchError) as e:

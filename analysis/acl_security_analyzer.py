@@ -406,7 +406,9 @@ class ACLSecurityAnalyzer:
                 sd = sd[0]
 
             # Parse security descriptor using BloodHound parser
-            aces = self._parse_security_descriptor(sd)
+            aces, descriptor_readable = self._parse_security_descriptor(sd)
+            if not descriptor_readable:
+                return [self._unreadable_descriptor_finding(obj)]
 
             # Determine object type from objectClass (use local vars so obj is not mutated for identity)
             object_class = entry.get('objectClass', [])
@@ -443,26 +445,19 @@ class ACLSecurityAnalyzer:
                             is_inherited=is_inherited,
                         )
                         findings.append(finding)
+            self._annotate_replication_pairs(findings, obj_type)
 
         except Exception as e:
             logger.debug(f"Error analyzing ACL for {obj.get('dn')}: {e}")
 
         return findings
 
-    def _parse_security_descriptor(self, sd: Any) -> list[dict[str, Any]]:
-        """
-        Parse security descriptor to extract ACEs using our custom parser.
-
-        Args:
-            sd: Security descriptor (binary data from LDAP)
-
-        Returns:
-            list: List of ACE dictionaries with permissions
-        """
+    def _parse_security_descriptor(self, sd: Any) -> tuple[list[dict[str, Any]], bool]:
+        """Return parsed ACEs and whether the descriptor was readable."""
         aces = []
 
         if not sd:
-            return aces
+            return aces, False
 
         try:
             # Convert to bytes if it's not already
@@ -477,7 +472,7 @@ class ACLSecurityAnalyzer:
                         sd_bytes = base64.b64decode(sd)
                     except Exception:
                         logger.debug(f"Could not decode security descriptor: {type(sd)}")
-                        return aces
+                        return aces, False
             elif isinstance(sd, bytes):
                 sd_bytes = sd
             elif isinstance(sd, list) and len(sd) > 0:
@@ -485,10 +480,12 @@ class ACLSecurityAnalyzer:
                 sd_bytes = sd[0] if isinstance(sd[0], bytes) else bytes(sd[0])
             else:
                 logger.debug(f"Unknown security descriptor type: {type(sd)}")
-                return aces
+                return aces, False
 
             # Parse using our custom parser
             parsed_sd = parse_security_descriptor(sd_bytes)
+            if parsed_sd.get('parse_valid') is not True:
+                return [], False
 
             # Extract ACEs from DACL
             dacl_aces = effective_allow_aces(parsed_sd, self._tokens)
@@ -521,8 +518,58 @@ class ACLSecurityAnalyzer:
             logger.debug(f"Error parsing security descriptor: {e}")
             import traceback
             logger.debug(traceback.format_exc())
+            return [], False
 
-        return aces
+        return aces, True
+
+    def _unreadable_descriptor_finding(self, obj: dict[str, Any]) -> dict[str, Any]:
+        """Report a present descriptor that could not be parsed.
+
+        An empty ACE list from a failed parse is not a clean DACL.
+        """
+        name = obj.get('name') or obj.get('dn') or 'unknown'
+        return {
+            'type': 'acl_descriptor_unreadable',
+            'severity': Severity.MEDIUM,
+            'severity_level': 'medium',
+            'title': f'Security descriptor unreadable: {name}',
+            'description': (
+                f"The security descriptor for {obj.get('type') or 'object'} '{name}' was present "
+                "but could not be parsed. No ACL finding for this object is not evidence of a clean DACL."
+            ),
+            'affected_object': name,
+            'object_type': obj.get('type') or 'unknown',
+            'object_dn': obj.get('dn') or '',
+            'evidence': {'requires_runtime_validation': True, 'parse_valid': False},
+        }
+
+    def _annotate_replication_pairs(self, findings: list[dict[str, Any]], obj_type: str) -> None:
+        """DCSync requires Get-Changes and Get-Changes-All on the same domain trustee."""
+        required = {'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All'}
+        rights_by_trustee: dict[str, set[str]] = {}
+        for finding in findings:
+            permission = str(finding.get('permission') or '')
+            if permission.startswith('DS-Replication-'):
+                rights_by_trustee.setdefault(str(finding.get('trustee') or ''), set()).add(permission)
+        for finding in findings:
+            permission = str(finding.get('permission') or '')
+            if not permission.startswith('DS-Replication-'):
+                continue
+            rights = rights_by_trustee.get(str(finding.get('trustee') or ''), set())
+            complete = obj_type == 'domain' and required <= rights
+            evidence = finding.setdefault('evidence', {})
+            evidence['dcsync_pair_complete'] = complete
+            evidence['replication_rights'] = sorted(rights)
+            if complete:
+                evidence['requires_runtime_validation'] = False
+                evidence['vulnerability_confirmed'] = True
+                finding['severity'] = Severity.CRITICAL
+                finding['severity_level'] = 'critical'
+                continue
+            evidence['requires_runtime_validation'] = True
+            finding['severity'] = Severity.HIGH
+            finding['severity_level'] = 'high'
+            finding['title'] = f'Replication right without a complete DCSync pair: {permission}'
 
     def _create_acl_finding(self, obj_type: str, obj_name: str, obj_dn: str,
                             trustee_sid: str, sid_to_display_name: dict[str, str],
@@ -852,10 +899,6 @@ class ACLSecurityAnalyzer:
         Returns:
             bool: True if user is already admin
         """
-        # Check adminCount flag
-        if str(user.get("adminCount") or "").strip() in {"1", "true", "True"}:
-            return True
-
         admin_names: set[str] = set()
         for group in groups:
             if (
@@ -886,39 +929,51 @@ class ACLSecurityAnalyzer:
         - Service Account → Domain Admin path
         """
         paths = []
-
-        # Build graph of ACL relationships
+        identity_index = self._build_identity_index(users, groups, computers)
         acl_graph = defaultdict(list)
 
         for finding in acl_findings:
             if requires_validation(finding):
                 continue
-            trustee = finding.get('trustee')
-            target = finding.get('affected_object')
+            source = self._resolve_identity(
+                identity_index, finding.get('trustee'), finding.get('trustee_display_name')
+            )
+            target = self._resolve_identity(
+                identity_index, finding.get('object_dn'), finding.get('affected_object')
+            )
             permission = finding.get('permission')
-
-            if trustee and target:
-                acl_graph[trustee].append({
+            if source and target:
+                acl_graph[source].append({
                     'target': target,
                     'permission': permission,
-                    'finding': finding
+                    'finding': finding,
+                    'label': finding.get('affected_object') or target,
                 })
 
-        # Find paths to Domain Admin
-        da_group_names = {'domain admins', 'enterprise admins'}
+        da_keys = set()
+        for group in groups:
+            if group_is_role(group, ROLE_DOMAIN_ADMINS) or group_is_role(group, ROLE_ENTERPRISE_ADMINS):
+                resolved = self._resolve_identity(
+                    identity_index,
+                    group.get('objectSid'),
+                    group.get('sAMAccountName'),
+                    group.get('name'),
+                    group.get('distinguishedName'),
+                )
+                if resolved:
+                    da_keys.add(resolved.casefold())
 
         for user in users:
             user_name = user.get('sAMAccountName')
             if not user_name:
                 continue
-
-            # Skip users who are already Domain Admin or Enterprise Admin
             if self._is_user_already_admin(user, groups):
                 logger.debug(f"Skipping user '{user_name}' - already has admin privileges")
                 continue
-
-            # Check if user can reach DA through ACL paths
-            path = self._find_path_to_da(user_name, acl_graph, da_group_names, groups)
+            start = self._resolve_identity(
+                identity_index, user.get('objectSid'), user_name, user.get('distinguishedName')
+            )
+            path = self._find_path_to_da(start, acl_graph, da_keys)
             if path:
                 paths.append({
                     'source_user': user_name,
@@ -930,34 +985,68 @@ class ACLSecurityAnalyzer:
 
         return paths
 
+    def _identity_aliases(self, obj: dict[str, Any]) -> list[str]:
+        aliases: list[str] = []
+        sid = sid_text(obj.get('objectSid'))
+        if sid:
+            aliases.append(sid)
+        for key in ('sAMAccountName', 'name', 'displayName', 'cn', 'distinguishedName', 'dn'):
+            value = obj.get(key)
+            if value not in (None, ''):
+                aliases.append(str(value))
+        return aliases
+
+    def _build_identity_index(
+        self,
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+        computers: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        index: dict[str, str] = {}
+        for collection in (users, groups, computers):
+            for obj in collection or []:
+                aliases = self._identity_aliases(obj)
+                if not aliases:
+                    continue
+                canonical = sid_text(obj.get('objectSid')) or str(
+                    obj.get('sAMAccountName') or aliases[0]
+                )
+                for alias in aliases + [canonical]:
+                    index[alias.casefold()] = canonical
+        return index
+
+    @staticmethod
+    def _resolve_identity(index: dict[str, str], *candidates: Any) -> Optional[str]:
+        for candidate in candidates:
+            if candidate in (None, ''):
+                continue
+            resolved = index.get(str(candidate).casefold())
+            if resolved:
+                return resolved
+        for candidate in candidates:
+            if candidate not in (None, ''):
+                return str(candidate)
+        return None
+
     def _find_path_to_da(self, start_user: str, acl_graph: dict,
-                        da_group_names: set[str], groups: list[dict[str, Any]]) -> Optional[list[str]]:
-        """Find path from user to Domain Admin through ACLs."""
-        # Simplified BFS to find path
-        # In production, would use more sophisticated graph traversal
+                        da_keys: set[str], groups: Optional[list[dict[str, Any]]] = None) -> Optional[list[str]]:
+        """Find a path from a resolved identity to Domain Admin through ACL edges."""
+        if not start_user:
+            return None
         visited = set()
         queue = [(start_user, [start_user])]
 
         while queue:
             current, path = queue.pop(0)
-
             if current in visited:
                 continue
             visited.add(current)
-
-            # Check if current is DA
-            for group in groups:
-                group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
-                if current.lower() == group_name.lower():
-                    if any(group_is_role(group, role) for role in (ROLE_DOMAIN_ADMINS, ROLE_ENTERPRISE_ADMINS)):
-                        return path
-
-            # Check ACL edges
+            if current.casefold() in da_keys:
+                return path
             for edge in acl_graph.get(current, []):
                 target = edge['target']
                 if target not in visited:
-                    new_path = path + [target]
-                    queue.append((target, new_path))
+                    queue.append((target, path + [target]))
 
         return None
 
@@ -1144,9 +1233,13 @@ class ACLSecurityAnalyzer:
     def _calculate_shadow_admin_risk(self, dangerous_perms: list[dict[str, Any]]) -> str:
         """Calculate Shadow Admin risk level."""
         perm_names = [p.get('permission', '') for p in dangerous_perms]
-        if any('DCSync' in p or 'GenericAll' in p for p in perm_names):
+        names = set(perm_names)
+        pair = {'DS-Replication-Get-Changes', 'DS-Replication-Get-Changes-All'}
+        if 'GenericAll' in names or 'AllExtendedRights' in names or 'DCSync' in names or pair <= names:
             return Severity.CRITICAL
-        elif 'WriteDACL' in perm_names or 'WriteOwner' in perm_names:
+        if 'WriteDACL' in names or 'WriteOwner' in names or any(
+            name.startswith('DS-Replication-Get-Changes') for name in names
+        ):
             return Severity.HIGH
         return Severity.MEDIUM
 

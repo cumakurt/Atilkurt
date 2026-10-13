@@ -8,7 +8,7 @@ import csv
 import logging
 import hashlib
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.secure_file import atomic_text_writer
 
@@ -122,7 +122,7 @@ class ExportFormats:
             output_file: Output file path
         """
         export_data = {
-            'export_date': datetime.now().isoformat(),
+            'export_date': datetime.now(timezone.utc).isoformat(),
             'targets': []
         }
 
@@ -156,7 +156,7 @@ class ExportFormats:
         with atomic_text_writer(output_file, encoding='utf-8') as f:
             for risk in risks:
                 siem_event = {
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
                     'source': 'AtilKurt',
                     'domain': domain,
                     'host': host,
@@ -214,7 +214,7 @@ class ExportFormats:
                 identifier = risk.get('finding_id') or hashlib.sha256(str(risk.get('type', '')).encode()).hexdigest()[:24]
                 severity = {'critical': 10, 'high': 8, 'medium': 5, 'low': 1}.get(risk.get('severity'), 0)
                 ext = (
-                    f"rt={int(datetime.now().timestamp()) * 1000} "
+                    f"rt={int(datetime.now(timezone.utc).timestamp()) * 1000} "
                     f"cn1={4 if risk.get('severity') == 'critical' else 3 if risk.get('severity') == 'high' else 2} "
                     f"cs1Label=riskType cs1={_cef_escape(risk.get('type', ''))} "
                     f"cs2Label=affectedObject cs2={_cef_escape(str(risk.get('affected_object', '')))} "

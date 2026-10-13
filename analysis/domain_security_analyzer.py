@@ -24,14 +24,11 @@ class DomainSecurityAnalyzer:
         Checks LDAP signing, NTLM restrictions, and SMB signing.
         """
         risks = []
-        try:
-            risks.extend(self._check_ldap_signing_channel_binding())
-            risks.extend(self._check_ntlm_restrictions())
-            if gpos:
-                risks.extend(self._check_smb_signing(gpos))
-            logger.info(f"Domain security analysis found {len(risks)} risks")
-        except Exception as e:
-            logger.error(f"Error in domain security analysis: {str(e)}")
+        risks.extend(self._check_ldap_signing_channel_binding())
+        risks.extend(self._check_ntlm_restrictions())
+        if gpos:
+            risks.extend(self._check_smb_signing(gpos))
+        logger.info(f"Domain security analysis found {len(risks)} risks")
         return risks
 
     def _check_ldap_signing_channel_binding(self) -> list[dict[str, Any]]:

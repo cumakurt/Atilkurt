@@ -4,7 +4,7 @@ Collects all computer objects from Active Directory
 """
 
 import logging
-from datetime import datetime
+from core.ad_security import filetime_utc
 from core.progress_tracker import ProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_OPTIONAL_ATTRIBUTES = frozenset({
     'msDS-SupportedEncryptionTypes',
     'msDS-AllowedToDelegateTo',
+    'msDS-AllowedToActOnBehalfOfOtherIdentity',
     'msDS-ExternalDirectoryObjectId',
     'ms-Mcs-AdmPwdExpirationTime',
     'msLAPS-PasswordExpirationTime',
@@ -74,6 +75,7 @@ class ComputerCollector:
                 'whenCreated',
                 'whenChanged',
                 'msDS-AllowedToDelegateTo',
+                'msDS-AllowedToActOnBehalfOfOtherIdentity',
                 'accountExpires',
                 'primaryGroupID',
                 'msDS-ExternalDirectoryObjectId',
@@ -127,6 +129,7 @@ class ComputerCollector:
                     'unconstrainedDelegation': self._check_unconstrained_delegation(uac),
                     'trustedForDelegation': self._check_trusted_for_delegation(uac),
                     'msDS-AllowedToDelegateTo': entry.get('msDS-AllowedToDelegateTo', []),
+                    'msDS-AllowedToActOnBehalfOfOtherIdentity': entry.get('msDS-AllowedToActOnBehalfOfOtherIdentity'),
                     'accountExpires': entry.get('accountExpires'),
                     'ms-Mcs-AdmPwdExpirationTime': entry.get('ms-Mcs-AdmPwdExpirationTime'),
                     'msLAPS-PasswordExpirationTime': entry.get('msLAPS-PasswordExpirationTime'),
@@ -283,17 +286,4 @@ class ComputerCollector:
         Returns:
             datetime or None: Converted datetime object
         """
-        if not timestamp:
-            return None
-
-        try:
-            if isinstance(timestamp, (int, str)):
-                timestamp = int(timestamp)
-                if timestamp == 0:
-                    return None
-                # Convert to Unix timestamp
-                unix_timestamp = (timestamp / 10000000) - 11644473600
-                return datetime.fromtimestamp(unix_timestamp)
-            return timestamp
-        except (ValueError, TypeError, OSError):
-            return None
+        return filetime_utc(timestamp)

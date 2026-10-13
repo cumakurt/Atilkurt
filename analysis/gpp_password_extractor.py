@@ -41,7 +41,7 @@ class GPPPasswordExtractor:
         risks: list[dict[str, Any]] = []
         for gpo in gpos or []:
             evidence_count = self._cpassword_evidence_count(gpo)
-            if evidence_count == 0 and not gpo.get("has_gpp_password"):
+            if evidence_count == 0:
                 continue
             gpo_name = str(gpo.get("name") or gpo.get("displayName") or "Unknown")
             gpo_path = gpo.get("gPCFileSysPath") or ""

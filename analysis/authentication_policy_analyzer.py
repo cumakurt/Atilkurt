@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence, forest_configuration_dn
+from core.ad_identity import account_has_current_privileged_membership, forest_configuration_dn
 from core.ad_security import as_int, as_text, truthy_ldap
 from core.constants import MITRETechniques, RiskTypes, Severity
 
@@ -56,7 +56,7 @@ class AuthenticationPolicyAnalyzer:
         risks: list[dict[str, Any]] = []
 
         if not silos and not policies:
-            privileged = [u for u in users if account_has_privileged_evidence(u)]
+            privileged = [u for u in users if account_has_current_privileged_membership(u)]
             if privileged:
                 risks.append({
                     "type": RiskTypes.AUTH_POLICY_NOT_DEPLOYED,
@@ -140,9 +140,9 @@ class AuthenticationPolicyAnalyzer:
              "msDS-AssignedAuthNPolicy", "msDS-AssignedAuthNPolicySilo"],
         )
         if privileged_rows is None:
-            privileged_rows = [u for u in users if account_has_privileged_evidence(u)]
+            privileged_rows = [u for u in users if account_has_current_privileged_membership(u)]
         for user in privileged_rows:
-            if not account_has_privileged_evidence(user):
+            if not account_has_current_privileged_membership(user):
                 continue
             name = as_text(user.get("sAMAccountName") or user.get("distinguishedName")) or "privileged account"
             assigned_policy = as_text(user.get("msDS-AssignedAuthNPolicy"))

@@ -104,7 +104,7 @@ def test_key_credential_parser_and_duplicate_device_detection():
     assert parsed.device_id == str(device_id)
     ldap = FakeLDAP({
         "msDS-KeyCredentialLink=*": [
-            {"sAMAccountName": "DA1", "adminCount": "1", "msDS-KeyCredentialLink": [value]},
+            {"sAMAccountName": "DA1", "adminCount": "1", "memberOf": ["CN=Domain Admins,CN=Users,DC=contoso,DC=com"], "msDS-KeyCredentialLink": [value]},
             {"sAMAccountName": "PC1$", "msDS-KeyCredentialLink": [value]},
         ]
     })
@@ -140,6 +140,7 @@ def test_certificate_mapping_detects_weak_mapping_and_missing_sid_extension():
         "configurationNamingContext": [{"configurationNamingContext": "CN=Configuration,DC=contoso,DC=com"}],
         "altSecurityIdentities=*": [{
             "sAMAccountName": "DA1", "adminCount": "1",
+            "memberOf": ["CN=Domain Admins,CN=Users,DC=contoso,DC=com"],
             "altSecurityIdentities": ["X509:<I>CN=CA<S>CN=DA1"],
         }],
         "pKICertificateTemplate": [{
@@ -159,10 +160,14 @@ def test_kerberos_rc4_readiness_distinguishes_aes_accounts():
         {"sAMAccountName": "svc_rc4", "servicePrincipalName": ["HTTP/app"], "msDS-SupportedEncryptionTypes": 4},
         {"sAMAccountName": "svc_aes", "servicePrincipalName": ["HTTP/aes"], "msDS-SupportedEncryptionTypes": 24},
         {"sAMAccountName": "svc_unknown", "servicePrincipalName": ["HTTP/old"], "msDS-SupportedEncryptionTypes": None},
+        {"sAMAccountName": "svc_zero", "servicePrincipalName": ["HTTP/zero"], "msDS-SupportedEncryptionTypes": 0},
     ]
     types = [risk["type"] for risk in KerberosRC4ReadinessAnalyzer(FakeLDAP()).analyze(users, [])]
     assert types.count("kerberos_rc4_only") == 1
-    assert "kerberos_aes_readiness_unknown" in types
+    assert types.count("kerberos_aes_readiness_unknown") == 1
+    unknown = next(risk for risk in KerberosRC4ReadinessAnalyzer(FakeLDAP()).analyze(users, []) if risk["type"] == "kerberos_aes_readiness_unknown")
+    assert "svc_zero" in unknown["affected_object"]
+    assert "svc_unknown" in unknown["affected_object"]
 
 
 def test_adminsdholder_detects_broad_ace_and_unprotected_orphan():

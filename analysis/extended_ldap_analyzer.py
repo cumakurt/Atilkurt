@@ -20,6 +20,7 @@ Performs additional LDAP-based security checks:
 import logging
 from typing import Any
 from core.ad_identity import forest_configuration_dn
+from core.optional_directory import optional_subtree
 from core.constants import RiskTypes, Severity, MITRETechniques
 
 logger = logging.getLogger(__name__)
@@ -410,9 +411,9 @@ class ExtendedLDAPAnalyzer:
                 return risks
             exchange_base = f"CN=Microsoft Exchange,CN=Services,{config_dn}"
             try:
-                results = self.ldap.search(
-                    search_filter='(objectClass=*)',
-                    search_base=exchange_base,
+                results = optional_subtree(
+                    self.ldap, config_dn, exchange_base,
+                    search_filter='(objectClass=msExchExchangeServer)',
                     attributes=['name', 'distinguishedName'],
                     size_limit=20
                 )
@@ -442,10 +443,10 @@ class ExtendedLDAPAnalyzer:
         risks = []
         try:
             # DNS zones can be in Microsoft DNS container
-            dns_base = f"CN=Microsoft DNS,CN=System,{self.base_dn}"
-            results = self.ldap.search(
+            dns_base = f"CN=MicrosoftDNS,CN=System,{self.base_dn}"
+            results = optional_subtree(
+                self.ldap, self.base_dn, dns_base,
                 search_filter='(objectClass=dnsZone)',
-                search_base=dns_base,
                 attributes=['name', 'dc'],
                 size_limit=20
             )

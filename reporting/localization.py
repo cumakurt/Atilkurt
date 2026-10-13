@@ -30,7 +30,8 @@ RISK_TYPE_TITLES_TR = {
     "password_not_required": "Parola Gerektirmeyen Hesap",
     "kerberos_preauth_disabled": "Kerberos Ön Kimlik Doğrulamasının Devre Dışı Olması",
     "user_with_spn": "SPN Tanımlı Kullanıcı Hesabı",
-    "admin_count_set": "Korumalı Yönetici Hesabı İşareti",
+    "admin_count_set": "Güncel ayrıcalığı olmayan adminCount işareti",
+    "disabled_account_sensitive_configuration": "Hassas yapılandırması kalan devre dışı hesap",
     "inactive_privileged_account": "Etkin Olmayan Ayrıcalıklı Hesap",
     "disabled_user_account": "Devre Dışı Kullanıcı Hesabı",
     "disabled_domain_admin": "Devre Dışı Etki Alanı Yöneticisi",
@@ -38,7 +39,7 @@ RISK_TYPE_TITLES_TR = {
     "locked_user_account": "Kilitli Kullanıcı Hesabı",
     "service_account_password_never_expires": "Süresiz Parolalı Hizmet Hesabı",
     "recently_created_account": "Yakın Zamanda Oluşturulan Hesap",
-    "recently_modified_group_membership": "Yakın Zamanda Değişen Grup Üyeliği",
+    "recently_modified_group_membership": "Yakın Zamanda Değişen Ayrıcalıklı Hesap",
     "reversible_encryption_enabled": "Geri Döndürülebilir Parola Şifrelemesi",
     "privileged_user_outside_protected_users": "Protected Users Dışındaki Ayrıcalıklı Kullanıcı",
     "privileged_user_without_smartcard": "Akıllı Kart Zorunluluğu Olmayan Ayrıcalıklı Kullanıcı",
@@ -139,6 +140,7 @@ RISK_TYPE_TITLES_TR = {
     "stale_inactive_account": "Uzun Süredir Etkin Olmayan Hesap",
     "stale_ancient_password": "Çok Eski Hesap Parolası",
     "stale_description_credential": "Açıklama Alanında Kimlik Bilgisi",
+    "alt_security_identities_unverified": "Doğrulanmamış Sertifika Eşlemesi",
     "stale_computer_account": "Atıl Bilgisayar Hesabı",
     "stale_orphan_sid": "Sahipsiz SID",
     "golden_gmsa_root_key": "Golden gMSA Kök Anahtarı Riski",
@@ -424,7 +426,7 @@ TEXT_TRANSLATIONS_TR = {
     "Critical Risks": "Kritik Riskler", "High Risks": "Yüksek Riskler",
     "Medium Risks": "Orta Riskler", "Low Risks": "Düşük Riskler",
     "Privileged Accounts": "Ayrıcalıklı Hesaplar", "Delegation Risks": "Yetkilendirme Riskleri",
-    "Password Issues": "Parola Sorunları", "Users": "Kullanıcılar", "Computers": "Bilgisayarlar",
+    "Password Issues": "Parola Sorunları", "Password Hashes": "Parola Özetleri", "Users": "Kullanıcılar", "Computers": "Bilgisayarlar",
     "Groups": "Gruplar", "Kerberos": "Kerberos", "Paths": "Yollar",
     "Kerberoasting": "Kerberoasting", "Services": "Hizmetler", "GPO": "GPO",
     "DCSync": "DCSync", "Password Policy": "Parola İlkesi", "Trusts": "Güven İlişkileri",
@@ -532,9 +534,11 @@ TEXT_TRANSLATIONS_TR = {
     "Last 90 Days": "Son 90 Gün", "Last 10 days": "Son 10 gün", "Last 30 days": "Son 30 gün",
     "Last 60 days": "Son 60 gün", "Last 90 days": "Son 90 gün",
     "Recently Created Accounts": "Yakın Zamanda Oluşturulan Hesaplar",
-    "Recently Modified Group Memberships": "Yakın Zamanda Değiştirilen Grup Üyelikleri",
-    "Recently Created:": "Yakın Zamanda Oluşturuldu:", "Group Changed:": "Grup Değişikliği:",
-    "Group Added": "Gruba Eklendi", "Account Activity": "Hesap Etkinliği",
+    "Recently Changed Accounts": "Yakın Zamanda Değişen Hesaplar",
+    "Recently Created:": "Yakın Zamanda Oluşturuldu:", "Object changed:": "Nesne değişti:",
+    "Object changed": "Nesne değişti", "Account Activity": "Hesap Etkinliği",
+    "Collections not assessed:": "Değerlendirilmeyen koleksiyonlar:",
+    "An empty count is not evidence that those objects are absent.": "Boş bir sayım, bu nesnelerin bulunmadığını göstermez.",
     "User Details:": "Kullanıcı Ayrıntıları:", "Computer Details:": "Bilgisayar Ayrıntıları:",
     "Group Details:": "Grup Ayrıntıları:", "User Risks": "Kullanıcı Riskleri",
     "Computer Risks": "Bilgisayar Riskleri", "Group Risks": "Grup Riskleri",
@@ -667,10 +671,30 @@ TEXT_TRANSLATIONS_TR = {
     "No disabled Domain Admin or Enterprise Admin accounts were found.": "Devre dışı Etki Alanı Yöneticisi veya Kuruluş Yöneticisi hesabı bulunamadı.",
     "No executive description available.": "Yönetici özeti açıklaması yok.",
     "No exploitable findings for playbook. Run full scan with domain/DC context.": "Uygulama rehberi için kötüye kullanılabilir bulgu yok. Etki alanı/DC bağlamıyla tam tarama çalıştırın.",
-    "No scan finding currently maps to a Domain Admin technique. Review the catalog below — several DA paths require host, CA, or network evidence that LDAP cannot always prove.": "Mevcut tarama bulgularından hiçbiri bir Etki Alanı Yöneticisi tekniğiyle eşleşmiyor. Aşağıdaki kataloğu inceleyin; bazı yollar LDAP taramasının tek başına doğrulayamayacağı ana makine, CA veya ağ kanıtı gerektirir.",
+    "No scan finding currently maps to a Domain Admin technique. That does not prove the domain is clean. Review the assessment-account block and the catalog below — several DA paths require host, CA, or network evidence that LDAP cannot always prove.": "Mevcut tarama bulgularından hiçbiri bir Etki Alanı Yöneticisi tekniğiyle eşleşmiyor. Bu, etki alanının temiz olduğunu kanıtlamaz. Değerlendirme hesabı bloğunu ve aşağıdaki kataloğu inceleyin; bazı yollar LDAP taramasının tek başına doğrulayamayacağı ana makine, CA veya ağ kanıtı gerektirir.",
+    "From the account used for this scan": "Bu tarama için kullanılan hesaptan",
+    "Assessment account": "Değerlendirme hesabı",
+    "Routes from this account": "Bu hesaptan rotalar",
+    "ESC templates this token can enroll on": "Bu belirtecin kayıt olabileceği ESC şablonları",
+    "Findings that name this account or its token": "Bu hesabı veya belirtecini adlandıran bulgular",
+    "Domain Admin techniques this session can start": "Bu oturumun başlatabileceği Domain Admin teknikleri",
+    "Object-level options": "Nesne düzeyinde seçenekler",
+    "Object options": "Nesne seçenekleri",
+    "Mapped findings": "Eşlenen bulgular",
+    "Non-admin footholds": "Yönetici olmayan tutunma noktaları",
+    "Non-admin accounts that can reach Domain Admin": "Etki Alanı Yöneticisine ulaşabilen yönetici olmayan hesaplar",
+    "Non-admin foothold": "Yönetici olmayan tutunma noktası",
+    "finding foothold": "bulgu tutunma noktası",
+    "Graph routes": "Graf rotaları",
+    "requires validation": "doğrulama gerekir",
+    "No finding row attached; the graph route is the evidence.": "Bulgu satırı yok; kanıt graf rotasıdır.",
+    "no prior scan": "önceki tarama yok",
+    "improving vs previous scan": "önceki taramaya göre iyileşiyor",
+    "worsening vs previous scan": "önceki taramaya göre kötüleşiyor",
+    "stable vs previous scan": "önceki taramaya göre sabit",
     "Absence of evidence is not evidence of absence. These techniques remain on a Domain Admin assessment checklist even when this LDAP-only scan did not observe the supporting attributes.": "Kanıt bulunmaması, riskin bulunmadığını göstermez. Yalnızca LDAP kullanan tarama destekleyici öznitelikleri gözlemlemese bile bu teknikler Etki Alanı Yöneticisi değerlendirme listesinde kalır.",
     "This view is written the way an internal penetration test is scoped: every technique that can become Domain Admin (or a Domain Admin equivalent such as DCSync, KRBTGT, or a privileged certificate). Each open path is backed by findings from this scan. Stages describe attack logic for assessment and defense — not exploit procedures.": "Bu görünüm iç sızma testi kapsamına göre hazırlanmıştır: Etki Alanı Yöneticisine veya DCSync, KRBTGT ya da ayrıcalıklı sertifika gibi eşdeğer bir yetkiye dönüşebilecek tüm teknikleri içerir. Her açık yol bu taramanın bulgularıyla desteklenir. Aşamalar kötüye kullanım prosedürlerini değil, değerlendirme ve savunma için saldırı mantığını açıklar.",
-    "\"Group Added\" time is approximate (based on account's last modification time).": "“Gruba Eklenme” zamanı yaklaşıktır (hesabın son değiştirilme zamanına dayanır).",
+    "\"Object changed\" is the account whenChanged time. It is not the time the account was added to the group.": "“Nesne değişti” hesabın whenChanged zamanıdır. Hesabın gruba eklenme zamanı değildir.",
     "Accounts vulnerable to Kerberoasting and AS-REP roasting attacks. These accounts can be targeted for offline password cracking.": "Kerberoasting ve AS-REP roasting saldırılarına açık hesaplar. Bu hesaplar çevrimdışı parola kırma saldırılarında hedeflenebilir.",
     "Admin Privilege Age:": "Yönetici Ayrıcalığı Yaşı:", "Days Since EOL:": "Destek Sonundan Beri Geçen Gün:",
     "EOL Status:": "Destek Ömrü Durumu:", "Object": "Nesne", "Path:": "Yol:",
@@ -711,7 +735,7 @@ TEXT_TRANSLATIONS_TR = {
     "No risks found for this group.": "Bu grup için risk bulunamadı.",
     "No password issues found.": "Parola sorunu bulunamadı.", "No disabled accounts found.": "Devre dışı hesap bulunamadı.",
     "No locked accounts found.": "Kilitli hesap bulunamadı.", "No recently created accounts found.": "Yakın zamanda oluşturulan hesap bulunamadı.",
-    "No recently modified group memberships found.": "Yakın zamanda değiştirilen grup üyeliği bulunamadı.",
+    "No recently changed accounts found.": "Yakın zamanda değişen hesap bulunamadı.",
     "No Domain Admin members found.": "Etki Alanı Yöneticisi üyesi bulunamadı.",
     "No Enterprise Admin members found.": "Kuruluş Yöneticisi üyesi bulunamadı.",
     "No Schema Admin members found.": "Şema Yöneticisi üyesi bulunamadı.",
@@ -765,6 +789,77 @@ _PHRASE_REPLACEMENTS_TR = (
 )
 
 
+TEXT_TRANSLATIONS_TR.update({
+    "Existing privileged and delegated access": "Mevcut ayrıcalıklı ve devredilmiş erişim",
+    "Existing Tier-0 membership": "Mevcut Tier-0 üyeliği",
+    "Sensitive delegated access; Tier-0 not established": "Hassas devredilmiş erişim; Tier-0 kanıtlanmadı",
+    "These are current memberships, not newly acquired privileges. DNS and operator groups require additional evidence for a Tier-0 claim.":
+        "Bunlar mevcut üyeliklerdir, yeni kazanılan ayrıcalıklar değildir. DNS ve operatör grupları için Tier-0 iddiası ek kanıt gerektirir.",
+    'Evidence boundary:':
+        'Kanıt sınırı:',
+    'Observed conditions and graph reachability are not a completed takeover. Existing nested administrator membership is current access. Credential recovery, service reachability, conditional permissions and end-to-end exploitation require separate proof. PoC examples are not executed by this report.':
+        'Gözlemlenen koşullar ve grafikteki erişim, tamamlanmış bir ele geçirme testi değildir. İç içe yönetici üyeliği mevcut erişimdir. Kimlik bilgisi elde etme, servis erişimi, koşullu izinler ve uçtan uca istismar ayrıca kanıtlanmalıdır. Rapordaki PoC örnekleri otomatik çalıştırılmaz.',
+    'Finding evidence and validation':
+        'Bulgu kanıtı ve doğrulama',
+    'Finding reference':
+        'Bulgu referansı',
+    'Target DN / trustee':
+        'Hedef DN / yetki sahibi',
+    'Observed permissions':
+        'Gözlemlenen izinler',
+    'Observation':
+        'Gözlem',
+    'Prerequisites to verify':
+        'Doğrulanacak önkoşullar',
+    'What invalidates this claim:':
+        'Bu iddiayı geçersiz kılan koşullar:',
+    'Read-only PoC example':
+        'Salt okunur PoC örneği',
+    'Retest:':
+        'Yeniden test:',
+    'observed_condition':
+        'gözlemlenen koşul',
+    'needs_validation':
+        'doğrulama gerekiyor',
+    'Example only; not executed by this report. Requires ldapsearch, a reachable LDAPS service, trusted CA and replacement of <BIND_DN>. The password is prompted with -W. Missing/hidden attributes remain unknown. Decode returned DACL bytes before interpreting rights.':
+        'Yalnızca örnektir; bu rapor tarafından çalıştırılmadı. ldapsearch, erişilebilir LDAPS, güvenilir CA ve <BIND_DN> yerine hesap DN’si gerekir. Parola -W ile sorulur. Eksik/görünmeyen öznitelikler bilinmiyor olarak kalır. Hakları yorumlamadan önce dönen DACL verisini çözümleyin.',
+    'Repeat the same object-scoped query and a fresh scan after remediation; retain both timestamps and compare the finding ID and effective rights.':
+        'Düzeltmeden sonra aynı nesne sorgusunu ve yeni taramayı tekrarlayın; iki zaman damgasını saklayıp bulgu kimliğini ve etkin hakları karşılaştırın.',
+    'Both Get-Changes and Get-Changes-All on the domain root':
+        'Etki alanı kökünde Get-Changes ve Get-Changes-All haklarının birlikte bulunması',
+    'Effective allow/deny evaluation for the complete trustee token':
+        'Yetki sahibinin tam güvenlik belirteci için etkin allow/deny değerlendirmesi',
+    'Trustee is outside the approved DC/synchronization service inventory':
+        'Yetki sahibinin onaylı DC/senkronizasyon servis envanteri dışında olması',
+    'The same effective token holds GUIDs 1131f6aa-9c07-11d1-f79f-00c04fc2dcd2 AND 1131f6ad-9c07-11d1-f79f-00c04fc2dcd2 at the domain root.':
+        'Aynı etkin güvenlik belirteci etki alanı kökünde 1131f6aa-9c07-11d1-f79f-00c04fc2dcd2 VE 1131f6ad-9c07-11d1-f79f-00c04fc2dcd2 GUID haklarını taşır.',
+    'One replication right alone, a grant on a child OU, an applicable deny, or an approved service account does not establish unauthorized DCSync.':
+        'Tek çoğaltma hakkı, alt OU üzerindeki izin, uygulanabilir bir deny veya onaylı servis hesabı yetkisiz DCSync kanıtı değildir.',
+    'Property/ObjectType GUID and inheritance scope':
+        'Öznitelik/ObjectType GUID ve kalıtım kapsamı',
+    'Applicable deny ACEs and trustee nested security groups':
+        'Uygulanabilir deny ACE’leri ve yetki sahibinin iç içe güvenlik grupları',
+    'A concrete privileged target reachable after this control step':
+        'Bu kontrol adımından sonra erişilebilen somut ayrıcalıklı hedef',
+    'The effective right applies to the exact target and property, not merely to an unrelated object with the same label.':
+        'Etkin hak, aynı ada sahip ilgisiz bir nesneye değil tam hedefe ve özniteliğe uygulanmalıdır.',
+    'An inherit-only ACE, wrong property GUID, filtered GPO, or non-applicable deny/allow combination breaks the proposed chain.':
+        'Yalnızca alt nesnelere kalıtılan ACE, yanlış öznitelik GUID’i, filtrelenmiş GPO veya uygulanamayan deny/allow birleşimi önerilen zinciri bozar.',
+    'Current enabled account and effective nested security-group membership':
+        'Güncel etkin hesap ve iç içe güvenlik grubu üyeliği',
+    'Separate evidence of any required credential recovery or privileged session':
+        'Gerekli kimlik bilgisi elde etme veya ayrıcalıklı oturum için ayrı kanıt',
+    'Configuration flags and membership reproduce the condition. Existing admin membership is recorded as current access.':
+        'Yapılandırma bayrakları ve üyelik koşulu yeniden üretir. Mevcut yönetici üyeliği mevcut erişim olarak kaydedilir.',
+    'A stale adminCount, distribution-group membership, account-age indicator or SPN alone does not prove Domain Admin takeover.':
+        'Eski adminCount, dağıtım grubu üyeliği, hesap yaşı göstergesi veya SPN tek başına Domain Admin ele geçirmesini kanıtlamaz.',
+    'condition_verified':
+        'Koşulun doğrulanması',
+    'security_impact_verified':
+        'Güvenlik etkisinin doğrulanması',
+})
+
+
 def _translate_simple_text(value: str) -> str:
     stripped = value.strip()
     if not stripped:
@@ -802,6 +897,10 @@ def _translate_simple_text(value: str) -> str:
         (r"^(\d+) days ago$", r"\1 gün önce"),
         (r"^(\d+) days old$", r"\1 günlük"),
         (r"^Page (\d+)$", r"Sayfa \1"),
+        (r"^Routes from this account \((\d+)\)$", r"Bu hesaptan rotalar (\1)"),
+        (r"^Object-level options \((\d+)\):$", r"Nesne düzeyinde seçenekler (\1):"),
+        (r"^(\d+) hop\(s\)$", r"\1 hop"),
+        (r"^(\d+) technique\(s\)$", r"\1 teknik"),
     )
     for pattern, replacement in dynamic_patterns:
         translated = re.sub(pattern, replacement, translated, flags=re.IGNORECASE)
@@ -851,10 +950,20 @@ def _human_value_for_key(key: str, value: str) -> str:
         for name, pattern in patterns.items():
             match = re.search(pattern, value)
             numbers[name] = int(match.group(1)) if match else 0
+        if "did not finish collecting or analyzing" in value:
+            return (
+                "Bu Active Directory güvenlik değerlendirmesi dizin toplama veya analizini tamamlamadı. "
+                "Puanlanmış risk üretilmedi. Bu, ortamın iyi durumda olduğunun kanıtı değildir."
+            )
         if numbers["total"] == 0 and "did not identify any scored risks" in value:
             return (
                 "Bu Active Directory güvenlik değerlendirmesinde puanlanmış risk belirlenmedi. "
                 "Denetimlerin düzenli olarak yinelenmesi önerilir."
+            )
+        incomplete_prefix = ""
+        if value.startswith("Directory collection or analysis did not finish."):
+            incomplete_prefix = (
+                "Dizin toplama veya analiz tamamlanmadı. Puan ve sayılar yalnızca toplanan kanıtı yansıtır. "
             )
         parts = [
             "Bu rapor kapsamlı Active Directory güvenlik sağlık denetimini özetler. "
@@ -876,7 +985,7 @@ def _human_value_for_key(key: str, value: str) -> str:
         parts.append(
             "Kategori ayrıntıları tam analiz özeti tablosunda ve risk sekmelerinde yer alır."
         )
-        return " ".join(parts)
+        return incomplete_prefix + " ".join(parts)
     translated = _translate_simple_text(value)
     if translated != value:
         return translated

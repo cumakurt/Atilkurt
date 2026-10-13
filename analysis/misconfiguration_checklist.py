@@ -5,6 +5,9 @@ CIS Benchmark and Microsoft best practices based checklist
 
 import logging
 
+from analysis.privileged_account_status import account_is_disabled
+from core.ad_identity import computer_has_unexpected_unconstrained_delegation
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,12 +42,6 @@ class MisconfigurationChecker:
         # Delegation misconfigurations
         findings.extend(self._check_delegation_misconfig(users, computers))
 
-        # ACL issues
-        findings.extend(self._check_acl_issues(users, groups))
-
-        # Trust risks (placeholder - would need trust data)
-        findings.extend(self._check_trust_risks())
-
         # Tiering issues
         findings.extend(self._check_tiering_issues(users, groups))
 
@@ -58,6 +55,8 @@ class MisconfigurationChecker:
         # Count users with password never expires
         never_expires_count = 0
         for user in users:
+            if account_is_disabled(user):
+                continue
             uac = user.get('userAccountControl', 0)
             if isinstance(uac, (int, str)):
                 try:
@@ -110,10 +109,9 @@ class MisconfigurationChecker:
         findings = []
 
         # Count unconstrained delegation
-        unconstrained_count = 0
-        for computer in computers:
-            if computer.get('unconstrainedDelegation'):
-                unconstrained_count += 1
+        unconstrained_count = sum(
+            1 for computer in computers if computer_has_unexpected_unconstrained_delegation(computer)
+        )
 
         if unconstrained_count > 0:
             findings.append({
@@ -126,42 +124,6 @@ class MisconfigurationChecker:
                 'cis_reference': 'CIS Benchmark 2.2.1 - Disable unconstrained delegation',
                 'microsoft_reference': 'Microsoft Security Baseline - Kerberos Delegation'
             })
-
-        return findings
-
-    def _check_acl_issues(self, users, groups):
-        """Check ACL-related issues."""
-        findings = []
-
-        # This is a placeholder - full ACL analysis would require SD parsing
-        findings.append({
-            'type': 'acl_review_needed',
-            'severity': 'medium',
-            'title': 'ACL Review Recommended',
-            'description': 'Regular ACL review is recommended to identify excessive permissions on critical objects',
-            'category': 'Access Control',
-            'recommendation': 'Review ACLs on Domain Admins, Enterprise Admins, and other privileged groups. Ensure principle of least privilege',
-            'cis_reference': 'CIS Benchmark 2.4 - Review ACLs on privileged groups',
-            'microsoft_reference': 'Microsoft Security Baseline - Access Control'
-        })
-
-        return findings
-
-    def _check_trust_risks(self):
-        """Check trust-related risks."""
-        findings = []
-
-        # Placeholder - would need trust data from AD
-        findings.append({
-            'type': 'trust_review_needed',
-            'severity': 'medium',
-            'title': 'Trust Relationship Review',
-            'description': 'Review all trust relationships regularly to ensure they are necessary and secure',
-            'category': 'Trust Relationships',
-            'recommendation': 'Audit all domain trusts. Remove unnecessary trusts. Ensure external trusts use selective authentication',
-            'cis_reference': 'CIS Benchmark 2.5 - Review trust relationships',
-            'microsoft_reference': 'Microsoft Security Baseline - Trust Relationships'
-        })
 
         return findings
 

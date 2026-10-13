@@ -7,6 +7,8 @@ import logging
 from collections import defaultdict
 
 from analysis.privileged_account_status import account_is_disabled
+from core.ad_identity import account_has_current_privileged_membership
+from core.finding_evidence import is_score_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +91,7 @@ class CISODashboardGenerator:
         pass
 
     def generate_dashboard_data(self, risks, users, computers, groups, domain_score, executive_summary,
-                                 analysis_summary_counts=None):
+                                 analysis_summary_counts=None, previous_kpis=None, evidence_complete=True):
         """
         Generate CISO dashboard data structure.
 
@@ -107,6 +109,7 @@ class CISODashboardGenerator:
         """
         # Calculate top KPIs
         kpis = self._calculate_top_kpis(risks, users, computers, groups)
+        self._apply_history_trends(kpis, domain_score, previous_kpis)
 
         # Calculate risk distribution
         risk_distribution = self._calculate_risk_distribution(risks)
@@ -124,7 +127,8 @@ class CISODashboardGenerator:
 
         # Generate enhanced CISO / Executive summary text (paragraph + key metrics)
         ciso_summary = self._generate_ciso_summary(
-            risks, risk_by_category, analysis_summary_counts=analysis_summary_counts
+            risks, risk_by_category, analysis_summary_counts=analysis_summary_counts,
+            evidence_complete=evidence_complete,
         )
 
         # Generate action priorities
@@ -160,26 +164,20 @@ class CISODashboardGenerator:
     def _calculate_top_kpis(self, risks, users, computers, groups):
         """Calculate top KPIs for CISO dashboard."""
         # Get severity from 'severity' or 'severity_level' field
-        critical_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
-                                               r.get('severity', '').lower() == 'critical')]
-        high_risks = [r for r in risks if (r.get('severity_level', '').lower() == 'high' or
-                                          r.get('severity', '').lower() == 'high')]
+        critical_risks = [
+            r for r in risks
+            if not is_score_excluded(r)
+            and (r.get('severity_level', '').lower() == 'critical' or r.get('severity', '').lower() == 'critical')
+        ]
+        high_risks = [
+            r for r in risks
+            if not is_score_excluded(r)
+            and (r.get('severity_level', '').lower() == 'high' or r.get('severity', '').lower() == 'high')
+        ]
 
-        # Count privileged accounts
-        privileged_accounts = 0
-        for user in users:
-            if user.get('adminCount') == 1 or user.get('adminCount') == '1':
-                privileged_accounts += 1
-            else:
-                member_of = user.get('memberOf', []) or []
-                if not isinstance(member_of, list):
-                    member_of = [member_of] if member_of else []
-                for group_dn in member_of:
-                    group_name = self._extract_group_name(group_dn)
-                    if group_name and any(priv in group_name.upper() for priv in
-                        ['DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS']):
-                        privileged_accounts += 1
-                        break
+        privileged_accounts = sum(
+            1 for user in users if account_has_current_privileged_membership(user)
+        )
 
         # Count delegation risks
         delegation_risks = len([r for r in risks if 'delegation' in r.get('type', '').lower()])
@@ -217,6 +215,34 @@ class CISODashboardGenerator:
             }
         }
 
+    @staticmethod
+    def _trend_direction(current, previous, *, higher_is_better=False):
+        if previous is None:
+            return 'unknown'
+        try:
+            current_value = float(current)
+            previous_value = float(previous)
+        except (TypeError, ValueError):
+            return 'unknown'
+        if current_value == previous_value:
+            return 'stable'
+        improved = current_value > previous_value if higher_is_better else current_value < previous_value
+        return 'improving' if improved else 'worsening'
+
+    def _apply_history_trends(self, kpis, domain_score, previous_kpis):
+        previous = previous_kpis if isinstance(previous_kpis, dict) else {}
+        kpis['overall_score']['trend'] = self._trend_direction(
+            domain_score, previous.get('score'), higher_is_better=True,
+        )
+        kpis['critical_risks']['trend'] = self._trend_direction(
+            kpis['critical_risks']['value'], previous.get('critical'),
+        )
+        kpis['high_risks']['trend'] = self._trend_direction(
+            kpis['high_risks']['value'], previous.get('high'),
+        )
+        kpis['privileged_accounts']['trend'] = 'unknown'
+        kpis['delegation_risks']['trend'] = 'unknown'
+
     def _calculate_risk_distribution(self, risks):
         """Calculate risk distribution by severity."""
         distribution = {
@@ -227,6 +253,8 @@ class CISODashboardGenerator:
         }
 
         for risk in risks:
+            if is_score_excluded(risk):
+                continue
             # Try both 'severity_level' and 'severity' fields
             severity = risk.get('severity_level') or risk.get('severity', 'Medium')
             if isinstance(severity, str):
@@ -258,6 +286,8 @@ class CISODashboardGenerator:
         }
 
         for risk in risks:
+            if is_score_excluded(risk):
+                continue
             risk_type = risk.get('type', '').lower()
 
             # Categorize risks
@@ -460,13 +490,15 @@ class CISODashboardGenerator:
             result.append({'key': key, 'label': label, 'count': count, 'status': status})
         return result
 
-    def _generate_ciso_summary(self, risks, risk_by_category, analysis_summary_counts=None):
+    def _generate_ciso_summary(self, risks, risk_by_category, analysis_summary_counts=None,
+                               evidence_complete=True):
         """Generate enhanced CISO / Executive summary: one paragraph + key metrics."""
-        critical_count = len([r for r in risks if (r.get('severity_level', '').lower() == 'critical' or
+        counted = [r for r in risks if not is_score_excluded(r)]
+        critical_count = len([r for r in counted if (r.get('severity_level', '').lower() == 'critical' or
                                                      r.get('severity', '').lower() == 'critical')])
-        high_count = len([r for r in risks if (r.get('severity_level', '').lower() == 'high' or
-                                               r.get('severity', '').lower() == 'high')])
-        total_risks = len(risks)
+        high_count = len([r for r in counted if (r.get('severity_level', '').lower() == 'high' or
+                                                  r.get('severity', '').lower() == 'high')])
+        total_risks = len(counted)
         identity_risks = risk_by_category.get('Identity', 0)
         privilege_risks = risk_by_category.get('Privilege', 0)
         delegation_count = risk_by_category.get('Delegation', 0)
@@ -482,8 +514,26 @@ class CISODashboardGenerator:
 
         summary_parts = []
 
-        # Opening: overall assessment
-        if total_risks == 0:
+        # Opening: overall assessment. An unfinished read is not a clean result.
+        if not evidence_complete and total_risks == 0:
+            summary_parts.append(
+                "This Active Directory security assessment did not finish collecting or analyzing the directory. "
+                "No scored risks were produced. That is not evidence the environment is in good standing."
+            )
+        elif not evidence_complete:
+            summary_parts.append(
+                "Directory collection or analysis did not finish. The score and counts reflect only the evidence that was collected."
+            )
+            summary_parts.append(
+                f"This report summarizes a comprehensive Active Directory security health check. "
+                f"Across all analyses, {total_risks} risk(s) were identified and scored."
+            )
+            if total_findings > 0 and total_findings != total_risks:
+                summary_parts.append(
+                    f"Findings span {categories_with_findings} analysis categories "
+                    f"({total_findings} total finding items before consolidation)."
+                )
+        elif total_risks == 0:
             summary_parts.append(
                 "This Active Directory security assessment did not identify any scored risks. "
                 "The environment appears to be in good standing from the perspective of this analysis."

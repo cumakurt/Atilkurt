@@ -10,7 +10,10 @@ from core.finding_evidence import requires_validation
 
 
 def build_scan_coverage(
-    analysis: dict[str, Any], risks: list[dict[str, Any]], review_center: dict[str, Any]
+    analysis: dict[str, Any],
+    risks: list[dict[str, Any]],
+    review_center: dict[str, Any],
+    collection_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     execution = analysis.get("analysis_execution") or {}
     known = {key for key, _, _ in ANALYSIS_STEP_REGISTRY}
@@ -62,6 +65,7 @@ def build_scan_coverage(
             "target_control_states": {state: sum(row.get('status') == state for row in target_controls)
                                       for state in ('secure', 'insecure', 'unknown', 'conflicting', 'not_applicable')},
             "assurance_status": 'incomplete' if not target_controls or any(row.get('status') in ('unknown', 'conflicting') for row in target_controls) else 'measured_targets_only',
+            "collection_status": (collection_health or {}).get("status") or "unknown",
         },
         "score_scope": "The security score describes supported findings. Completed analysis does not prove that every control or host was verified.",
     }

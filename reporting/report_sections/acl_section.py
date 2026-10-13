@@ -5,6 +5,8 @@ Mixin for ACL security, legacy OS, attack paths, misconfiguration, and escalatio
 from collections import defaultdict
 import html as html_stdlib
 
+from core.ad_identity import first_ldap_rdn, is_privileged_group_name, is_privileged_group_record, membership_names
+
 
 
 class ACLSectionMixin:
@@ -84,7 +86,7 @@ class ACLSectionMixin:
             <div class="card-body">
                 <div class="input-group mb-3">
                     <span class="input-group-text"><i class="fas fa-search"></i></span>
-                    <input type="text" class="form-control" id="attackPathsSearch" placeholder="Search paths by user, group, or description..." onkeyup="filterAttackPaths()">
+                    <input type="text" class="form-control" id="attackPathsSearch" placeholder="Search paths by user, group, or description..." aria-label="Search paths by user, group, or description..." onkeyup="filterAttackPaths()">
                     <button class="btn btn-outline-secondary" type="button" onclick="clearAttackPathsSearch()">
                         <i class="fas fa-times"></i> Clear
                     </button>
@@ -160,7 +162,7 @@ class ACLSectionMixin:
                 <p class="text-muted">This section contains findings based on CIS Benchmark and Microsoft Security Baseline recommendations.</p>
                 <div class="input-group mb-3">
                     <span class="input-group-text"><i class="fas fa-search"></i></span>
-                    <input type="text" class="form-control" id="misconfigSearch" placeholder="Search findings by title, category, or description..." onkeyup="filterMisconfig()">
+                    <input type="text" class="form-control" id="misconfigSearch" placeholder="Search findings by title, category, or description..." aria-label="Search findings by title, category, or description..." onkeyup="filterMisconfig()">
                     <button class="btn btn-outline-secondary" type="button" onclick="clearMisconfigSearch()">
                         <i class="fas fa-times"></i> Clear
                     </button>
@@ -455,6 +457,11 @@ class ACLSectionMixin:
 
         filtered_risks = []
         privileged_group_names = self._get_privileged_group_names(groups)
+        users_by_name = {
+            user.get('sAMAccountName'): user
+            for user in users
+            if user.get('sAMAccountName')
+        }
 
         for risk in escalation_risks:
             # Extract username from different risk formats
@@ -471,102 +478,49 @@ class ACLSectionMixin:
                 filtered_risks.append(risk)
                 continue
 
-            # Check if user is already admin
-            if self._is_user_already_admin_in_report(user, users, groups, privileged_group_names):
+            if self._is_user_already_admin_in_report(
+                user, users, groups, privileged_group_names, users_by_name=users_by_name
+            ):
                 continue
 
             filtered_risks.append(risk)
 
         return filtered_risks
 
-    def _is_user_already_admin_in_report(self, username, users, groups, privileged_group_names=None):
-        """
-        Check if user is already Domain Admin or Enterprise Admin.
-
-        Args:
-            username: Username to check
-            users: List of user dictionaries
-            groups: List of group dictionaries
-            privileged_group_names: Optional set of privileged group names
-
-        Returns:
-            bool: True if user is already admin
-        """
-        if not username or not users:
+    def _is_user_already_admin_in_report(
+        self, username, users, groups, privileged_group_names=None, users_by_name=None
+    ):
+        """Return True when current membership is a well-known privileged group."""
+        if not username:
             return False
-
-        # Find user in users list
-        user_obj = None
-        for u in users:
-            if u.get('sAMAccountName') == username:
-                user_obj = u
-                break
-
+        if users_by_name is None:
+            users_by_name = {
+                user.get('sAMAccountName'): user
+                for user in (users or [])
+                if user.get('sAMAccountName')
+            }
+        user_obj = users_by_name.get(username)
         if not user_obj:
             return False
-
-        # Check adminCount flag
-        if user_obj.get('adminCount') == 1 or user_obj.get('adminCount') == '1':
-            return True
-
-        # Check group memberships
         if not privileged_group_names:
             privileged_group_names = self._get_privileged_group_names(groups)
-
-        member_of = user_obj.get('memberOf', [])
-        if isinstance(member_of, str):
-            member_of = [member_of]
-
-        for group_dn in member_of:
-            # Extract group name from DN
-            group_name = self._extract_group_name_from_dn(group_dn)
-            if group_name and group_name.lower() in privileged_group_names:
-                return True
-
-        return False
+        return bool(membership_names(user_obj.get('memberOf')) & privileged_group_names)
 
     def _get_privileged_group_names(self, groups):
-        """
-        Get set of privileged group names (lowercase).
-
-        Args:
-            groups: List of group dictionaries
-
-        Returns:
-            set: Set of privileged group names in lowercase
-        """
+        """Return casefolded names of well-known privileged groups in this inventory."""
         privileged_groups = {
             'domain admins', 'enterprise admins', 'schema admins',
             'account operators', 'backup operators', 'server operators',
             'print operators', 'administrators'
         }
-
-        # Also check actual group names
-        for group in groups:
-            group_name = (group.get('name') or group.get('sAMAccountName') or '').lower()
-            if any(priv_name in group_name for priv_name in ['domain admin', 'enterprise admin', 'schema admin']):
-                privileged_groups.add(group_name)
-
+        for group in groups or []:
+            name = (group.get('name') or group.get('sAMAccountName') or '').strip()
+            if is_privileged_group_record(group) or is_privileged_group_name(name):
+                if name:
+                    privileged_groups.add(name.casefold())
         return privileged_groups
 
     def _extract_group_name_from_dn(self, dn):
-        """
-        Extract group name from distinguished name.
-
-        Args:
-            dn: Distinguished name string
-
-        Returns:
-            str: Group name or None
-        """
-        if not dn:
-            return None
-
-        try:
-            if 'CN=' in dn:
-                cn_part = dn.split('CN=')[1].split(',')[0]
-                return cn_part.strip()
-        except Exception:
-            pass
-
-        return None
+        """Extract the first RDN from a distinguished name."""
+        name = first_ldap_rdn(dn)
+        return name or None

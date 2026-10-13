@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 
 from core.constants import UACFlags
-from core.ad_identity import account_has_privileged_evidence
+from core.ad_identity import account_has_current_privileged_membership
 from core.finding_evidence import annotate_validation, is_score_excluded, requires_validation
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,8 @@ class RiskScorer:
         'password_not_required': 95,  # Critical - even higher than specified
         'kerberos_preauth_disabled': 85,
         'user_with_spn': 40,
-        'admin_count_set': 60,
+        'admin_count_set': 40,
+        'disabled_account_sensitive_configuration': 40,
         'inactive_privileged_account': 50,
         'disabled_domain_admin': 80,
         'disabled_enterprise_admin': 85,
@@ -63,8 +64,8 @@ class RiskScorer:
         'shadow_admin': 85,
         'acl_inheritance_risk': 45,
         'acl_privilege_escalation_path': 90,
-        'kerberoasting_target': 75,
-        'asrep_roasting_target': 80,
+        'kerberoasting_target': 55,
+        'asrep_roasting_target': 70,
         'disabled_user_account': 10,
         'locked_user_account': 20,
         'service_account_password_never_expires': 55,
@@ -331,18 +332,8 @@ class RiskScorer:
 
         if object_type == 'user' and affected_object:
             user = user_map.get(affected_object)
-            if user:
-                # Check if privileged user
-                if account_has_privileged_evidence(user):
-                    return self.OBJECT_TYPE_MULTIPLIERS['privileged_user']
-                # Check if member of privileged groups
-                member_of = user.get('memberOf', []) or []
-                if not isinstance(member_of, list):
-                    member_of = [member_of] if member_of else []
-                for group_dn in member_of:
-                    group_name = self._extract_group_name(group_dn)
-                    if (group_name or '').upper() in {'DOMAIN ADMINS', 'ENTERPRISE ADMINS', 'SCHEMA ADMINS'}:
-                        return self.OBJECT_TYPE_MULTIPLIERS['privileged_user']
+            if user and account_has_current_privileged_membership(user):
+                return self.OBJECT_TYPE_MULTIPLIERS['privileged_user']
             return self.OBJECT_TYPE_MULTIPLIERS['normal_user']
 
         elif object_type == 'computer' and affected_object:
@@ -440,16 +431,20 @@ class RiskScorer:
         else:
             return 'Critical'
 
-    def calculate_domain_score(self, scored_risks):
+    def calculate_domain_score(self, scored_risks, *, evidence_complete=True):
         """
         Calculate overall domain security score (0-100, higher is better).
 
         Formula: Weighted score based on risk severity distribution and total risk impact
-        Uses logarithmic scaling to prevent score from dropping to 0 too quickly
+        Uses logarithmic scaling to prevent score from dropping to 0 too quickly.
+
+        An empty finding list is a perfect score only when collection and analysis
+        finished. Incomplete evidence returns None so callers cannot present it
+        as a clean result.
         """
         scored_risks = [risk for risk in scored_risks if not is_score_excluded(risk)]
         if not scored_risks:
-            return 100.0
+            return 100.0 if evidence_complete else None
 
         # Count risks by severity
         critical_count = len([r for r in scored_risks if (r.get('severity_level', '').lower() == 'critical' or

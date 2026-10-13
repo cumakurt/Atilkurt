@@ -12,7 +12,7 @@ import mimetypes
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.constants import DEVELOPER_INFO
 from core.secure_file import atomic_write_text
@@ -94,7 +94,7 @@ class HTMLReportGenerator(
                  kerberoasting_targets=None, asrep_targets=None,
                  analysis_summary_counts=None, domain_admin_takeover=None,
                  inline_assets: bool = True, review_center=None, scan_coverage=None, remediation_simulation=None,
-                 product_workspace=None):
+                 product_workspace=None, password_hashes=None):
         """
         Generate HTML report.
 
@@ -124,7 +124,7 @@ class HTMLReportGenerator(
             domain_score, executive_summary, legacy_os_data, acl_security_data,
             compliance_data, risk_management_data, domain, dc_ip,
             kerberoasting_targets, asrep_targets, analysis_summary_counts,
-            domain_admin_takeover, inline_assets, review_center, scan_coverage, remediation_simulation, product_workspace
+            domain_admin_takeover, inline_assets, review_center, scan_coverage, remediation_simulation, product_workspace, password_hashes
         )
 
         atomic_write_text(output_file, html_content)
@@ -143,7 +143,7 @@ class HTMLReportGenerator(
                        domain=None, dc_ip=None, kerberoasting_targets=None,
                        asrep_targets=None, analysis_summary_counts=None,
                        domain_admin_takeover=None, inline_assets: bool = True,
-                       review_center=None, scan_coverage=None, remediation_simulation=None, product_workspace=None):
+                       review_center=None, scan_coverage=None, remediation_simulation=None, product_workspace=None, password_hashes=None):
         """Generate complete HTML content."""
         if review_center is None:
             from copy import deepcopy
@@ -231,27 +231,34 @@ class HTMLReportGenerator(
         stats["da_takeover_count"] = int(summary.get("open_path_count") or 0)
 
         # Generate CISO dashboard data (includes enhanced Executive Summary + all analyses overview)
+        health_status = ((product_workspace or {}).get('collection_health') or {}).get('status')
+        partial_steps = (scan_coverage.get('summary') or {}).get('partial_steps') or 0
+        evidence_complete = health_status not in {'partial', 'failed', 'unknown'} and not partial_steps
         ciso_generator = CISODashboardGenerator()
         ciso_data = ciso_generator.generate_dashboard_data(
             risks, users, computers, groups, domain_score, executive_summary,
-            analysis_summary_counts=analysis_summary_counts
+            analysis_summary_counts=analysis_summary_counts,
+            previous_kpis=(product_workspace or {}).get('previous_kpis'),
+            evidence_complete=evidence_complete,
         )
         if self.language == 'tr':
             ciso_data = localize_report_structure(ciso_data, self.language)
 
-        # Update KPIs with domain score - ensure it's a valid number
-        if domain_score is None:
-            domain_score = 0.0
-        try:
-            domain_score = float(domain_score)
-            # Ensure score is between 0 and 100
-            domain_score = max(0.0, min(100.0, domain_score))
-            domain_score = round(domain_score, 1)
-        except (ValueError, TypeError):
-            domain_score = 0.0
+        # None means the score was withheld because evidence did not support a number.
+        score_withheld = domain_score is None
+        if not score_withheld:
+            try:
+                domain_score = float(domain_score)
+                domain_score = max(0.0, min(100.0, domain_score))
+                domain_score = round(domain_score, 1)
+            except (ValueError, TypeError):
+                domain_score = 0.0
+                score_withheld = False
 
-        ciso_data['kpis']['overall_score']['value'] = domain_score
-        ciso_data['kpis']['overall_score']['color'] = self._get_score_color(domain_score)
+        ciso_data['kpis']['overall_score']['value'] = None if score_withheld else domain_score
+        ciso_data['kpis']['overall_score']['color'] = (
+            'secondary' if score_withheld else self._get_score_color(domain_score)
+        )
 
         # Generate charts data
         charts_data = self._generate_charts_data(risks)
@@ -260,11 +267,20 @@ class HTMLReportGenerator(
         ciso_dashboard_html = self._generate_ciso_dashboard_html(ciso_data, stats)
         from reporting.report_sections.assessment_sections import LABELS
         labels = LABELS[self.language]
-        execution = (scan_coverage.get('summary') or {}).get('execution_percent')
-        coverage_label = f'{execution}%' if execution is not None else labels['execution_unknown']
+        coverage_summary = scan_coverage.get('summary') or {}
+        execution = coverage_summary.get('execution_percent')
+        collection_incomplete = (
+            coverage_summary.get('collection_status') in {'partial', 'failed', 'unknown'}
+            or bool(coverage_summary.get('partial_steps'))
+        )
+        if collection_incomplete:
+            coverage_label = labels['partial']
+        else:
+            coverage_label = f'{execution}%' if execution is not None else labels['execution_unknown']
+        incomplete_note = f" {labels['collection_incomplete']}" if collection_incomplete else ''
         ciso_dashboard_html = (
             f'<div class="alert alert-secondary"><strong>{labels["coverage"]}: {coverage_label}</strong>'
-            f'<p class="mb-0">{labels["score_scope"]}</p></div>' + ciso_dashboard_html
+            f'<p class="mb-0">{labels["score_scope"]}{incomplete_note}</p></div>' + ciso_dashboard_html
         )
         accepted_count = (review_center.get('summary') or {}).get('active_exceptions', 0)
         if accepted_count:
@@ -283,6 +299,8 @@ class HTMLReportGenerator(
         risk_sections += self._generate_assessment_sections(review_center, scan_coverage, remediation_simulation)
         risk_sections += self._generate_product_sections(product_workspace, review_center)
         risk_sections += self._generate_engagement_sections(product_workspace)
+        from reporting.report_sections.password_hash_section import password_hash_section
+        risk_sections += password_hash_section(password_hashes, self.language)
 
         # Inline vendor CSS/JS so the HTML file is completely self-contained.
         inline_css = None
@@ -309,7 +327,7 @@ class HTMLReportGenerator(
             inline_css = "\n\n".join(css_parts) if css_parts else None
             inline_js = "\n\n".join(js_parts) if js_parts else None
 
-        report_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        report_date = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         html = build_saas_report(
             logo_base64 or '',
             report_date,

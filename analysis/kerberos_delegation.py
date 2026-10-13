@@ -5,6 +5,12 @@ Analyzes Kerberos and delegation-related security risks
 
 import logging
 
+from analysis.privileged_account_status import account_is_disabled
+from core.ad_identity import computer_has_unexpected_unconstrained_delegation
+from core.ad_security import as_list, as_text
+from core.constants import MITRETechniques, RiskTypes, Severity, UACFlags
+from core.security_descriptor_parser import parse_security_descriptor
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +55,7 @@ class KerberosDelegationAnalyzer:
 
         # Check computers
         for computer in computers:
-            if computer.get('unconstrainedDelegation'):
+            if computer_has_unexpected_unconstrained_delegation(computer):
                 risks.append({
                     'type': 'unconstrained_delegation',
                     'severity': 'critical',
@@ -73,6 +79,9 @@ class KerberosDelegationAnalyzer:
                 except ValueError:
                     continue
 
+            if account_is_disabled(user):
+                continue
+
             if uac & 524288:  # TRUSTED_FOR_DELEGATION
                 risks.append({
                     'type': 'unconstrained_delegation_user',
@@ -91,45 +100,111 @@ class KerberosDelegationAnalyzer:
         return risks
 
     def _check_constrained_delegation(self, users, computers):
-        """Check for constrained delegation configurations."""
+        """Flag accounts with an explicit msDS-AllowedToDelegateTo service list."""
         risks = []
-
-        # Note: Constrained delegation requires checking msDS-AllowedToDelegateTo attribute
-        # This is a simplified check - full implementation would need to query this attribute
-        # For now, we'll flag computers/users with delegation flags but note this is a limitation
-
-        for computer in computers:
-            uac = computer.get('userAccountControl', 0)
-            # TRUSTED_TO_AUTH_FOR_DELEGATION = 16777216 (0x1000000)
-            if uac & 16777216:
+        for object_type, objects, name_key in (
+            ('computer', computers, 'name'),
+            ('user', users, 'sAMAccountName'),
+        ):
+            for obj in objects or []:
+                allowed = [as_text(item) for item in as_list(obj.get('msDS-AllowedToDelegateTo')) if as_text(item)]
+                if not allowed:
+                    continue
+                name = as_text(obj.get(name_key) or obj.get('sAMAccountName') or obj.get('name')) or 'unknown'
                 risks.append({
-                    'type': 'constrained_delegation',
-                    'severity': 'medium',
+                    'type': RiskTypes.CONSTRAINED_DELEGATION,
+                    'severity': Severity.MEDIUM,
                     'title': 'Constrained Delegation Configured',
-                    'description': f"Computer '{computer.get('name')}' has constrained delegation configured",
-                    'affected_object': computer.get('name'),
-                    'object_type': 'computer',
-                    'impact': 'Constrained delegation is more secure than unconstrained, but still requires careful review to ensure only necessary services are allowed',
-                    'attack_scenario': 'If misconfigured, constrained delegation could allow an attacker to access more services than intended if they compromise the delegated account',
-                    'mitigation': 'Review constrained delegation settings regularly. Ensure only necessary services are in the allowed list. Consider using resource-based constrained delegation instead',
+                    'description': (
+                        f"{object_type.title()} '{name}' can impersonate users to "
+                        f"{len(allowed)} service(s) via msDS-AllowedToDelegateTo"
+                    ),
+                    'affected_object': name,
+                    'object_type': object_type,
+                    'allowed_services': allowed,
+                    'protocol_transition': bool(self._uac_value(obj) & UACFlags.TRUSTED_TO_AUTH_FOR_DELEGATION),
+                    'impact': 'Constrained delegation is narrower than unconstrained, but a compromise of this account can still reach every listed service.',
+                    'attack_scenario': 'If the delegated account is compromised, an attacker can request S4U2Proxy tickets for the allowed SPNs and impersonate users to those services.',
+                    'mitigation': 'Review and minimize the allowed service list. Prefer resource-based constrained delegation and remove protocol transition unless required.',
                     'cis_reference': 'CIS Benchmark recommends reviewing all delegation configurations',
-                    'mitre_attack': 'T1558.002 - Steal or Forge Kerberos Tickets: Silver Ticket'
+                    'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
                 })
-
         return risks
 
     def _check_rbcd(self, users, computers):
-        """Check for resource-based constrained delegation risks."""
+        """Report resource-based constrained delegation from collected security descriptors."""
         risks = []
-
-        # Note: Full RBCD analysis requires checking msDS-AllowedToActOnBehalfOfOtherIdentity
-        # This is a placeholder - in a full implementation, you would query this attribute
-        # and analyze the relationships
-
-        # For now, we'll provide a general risk note
-        # In production, this would analyze actual RBCD configurations
-
+        for object_type, objects, name_key in (
+            ('computer', computers, 'name'),
+            ('user', users, 'sAMAccountName'),
+        ):
+            for obj in objects or []:
+                blob = obj.get('msDS-AllowedToActOnBehalfOfOtherIdentity')
+                if blob in (None, '', [], b''):
+                    continue
+                principals = self._rbcd_principals(blob)
+                name = as_text(obj.get(name_key) or obj.get('sAMAccountName') or obj.get('name')) or 'unknown'
+                if not principals:
+                    risks.append({
+                        'type': 'delegation_descriptor_unreadable',
+                        'severity': Severity.MEDIUM,
+                        'title': f'Delegation descriptor unreadable: {name}',
+                        'description': (
+                            f"{object_type.title()} '{name}' has msDS-AllowedToActOnBehalfOfOtherIdentity set, "
+                            'but no trustee SID could be read from it. This is not a confirmed RBCD grant.'
+                        ),
+                        'affected_object': name,
+                        'object_type': object_type,
+                        'rbcd_principals': [],
+                        'evidence': {'requires_runtime_validation': True, 'parse_valid': False},
+                        'impact': 'An unreadable delegation descriptor cannot be treated as a clean configuration or as a confirmed impersonation grant.',
+                        'mitigation': 'Re-read the security descriptor with a security-descriptor control and review the DACL before treating the attribute as RBCD.',
+                        'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
+                    })
+                    continue
+                risks.append({
+                    'type': RiskTypes.RBCD_DELEGATION,
+                    'severity': Severity.HIGH,
+                    'title': f'RBCD Configured: {name}',
+                    'description': (
+                        f"{object_type.title()} '{name}' allows "
+                        f"{len(principals) or 'one or more'} principal(s) to act on its behalf "
+                        'via msDS-AllowedToActOnBehalfOfOtherIdentity.'
+                    ),
+                    'affected_object': name,
+                    'object_type': object_type,
+                    'rbcd_principals': principals,
+                    'impact': 'A principal listed in the RBCD descriptor can impersonate users to this account. Write access to the attribute is a common privilege-escalation primitive.',
+                    'attack_scenario': 'Compromise or create a listed principal, then use S4U2Self/S4U2Proxy to impersonate a privileged user to the target.',
+                    'mitigation': 'Audit and clear unexpected msDS-AllowedToActOnBehalfOfOtherIdentity values. Restrict who can write the attribute.',
+                    'mitre_attack': MITRETechniques.STEAL_FORGE_KERBEROS_SILVER,
+                })
         return risks
+
+    @staticmethod
+    def _uac_value(obj: dict) -> int:
+        try:
+            return int(obj.get('userAccountControl') or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _rbcd_principals(value) -> list[str]:
+        principals: list[str] = []
+        for item in as_list(value):
+            raw = item
+            if hasattr(raw, 'raw_values') and raw.raw_values:
+                raw = raw.raw_values[0]
+            if isinstance(raw, memoryview):
+                raw = raw.tobytes()
+            if not isinstance(raw, (bytes, bytearray)):
+                continue
+            parsed = parse_security_descriptor(bytes(raw))
+            for ace in parsed.get('dacl') or []:
+                sid = ace.get('sid')
+                if sid and sid not in principals:
+                    principals.append(sid)
+        return principals
 
     def _check_spn_misuse(self, users, computers):
         """Check for SPN misuse and duplicate SPNs."""

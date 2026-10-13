@@ -43,6 +43,7 @@ class RiskTypes:
     ADMIN_COUNT_SET = 'admin_count_set'
     INACTIVE_PRIVILEGED_ACCOUNT = 'inactive_privileged_account'
     DISABLED_USER_ACCOUNT = 'disabled_user_account'
+    DISABLED_ACCOUNT_SENSITIVE_CONFIGURATION = 'disabled_account_sensitive_configuration'
     DISABLED_DOMAIN_ADMIN = 'disabled_domain_admin'
     DISABLED_ENTERPRISE_ADMIN = 'disabled_enterprise_admin'
     LOCKED_USER_ACCOUNT = 'locked_user_account'

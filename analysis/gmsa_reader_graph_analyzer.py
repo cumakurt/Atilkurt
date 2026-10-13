@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.ad_identity import account_has_privileged_evidence, is_privileged_group_record
+from core.ad_identity import account_has_current_privileged_membership, is_privileged_group_record
 from core.ad_security import as_list, as_text, parsed_security_descriptor, sid_text
 from core.security_descriptor_parser import directory_right_granted
 from core.constants import MITRETechniques, RiskTypes, Severity
@@ -57,7 +57,7 @@ class GMSAReaderGraphAnalyzer:
         for account in accounts:
             name = as_text(account.get("sAMAccountName") or account.get("distinguishedName")) or "gMSA"
             gmsa_id = f"gmsa:{name.casefold()}"
-            privileged_gmsa = account_has_privileged_evidence(account)
+            privileged_gmsa = account_has_current_privileged_membership(account)
             nodes[gmsa_id] = {"id": gmsa_id, "label": name, "kind": "gmsa", "privileged": privileged_gmsa}
             parsed = parsed_security_descriptor(account.get("msDS-GroupMSAMembership"))
             reader_sids = {
@@ -71,7 +71,7 @@ class GMSAReaderGraphAnalyzer:
                 label = self._name(reader) if reader else reader_sid
                 reader_id = f"principal:{reader_sid.casefold()}"
                 reader_privileged = bool(reader and (
-                    account_has_privileged_evidence(reader) or is_privileged_group_record(reader)
+                    account_has_current_privileged_membership(reader) or is_privileged_group_record(reader)
                 ))
                 nodes[reader_id] = {
                     "id": reader_id, "label": label, "kind": self._kind(reader),

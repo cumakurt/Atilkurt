@@ -89,6 +89,7 @@ def prepare_product_workspace(
                     {key: row.get(key) for key in ("finding_id", "status", actor, "reviewed_at", "expires_at")}
                     for row in review_document.get(field, [])
                 ]
+            workspace["previous_kpis"] = history.finding_kpi_snapshot(args.domain)
             workspace["history"] = history.record_scan(
                 args.domain, risks, scoring["domain_score"], scoring["scan_coverage"], context, verification
             )
