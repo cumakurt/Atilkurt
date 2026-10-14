@@ -3,6 +3,8 @@ User Risk Analysis Module
 Analyzes user data for security risks
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 from datetime import datetime, timezone

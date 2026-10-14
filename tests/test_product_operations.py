@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -541,7 +542,7 @@ def test_utility_quality_and_doctor_commands_need_no_scan_credentials(tmp_path):
     for command in ("quality", "doctor"):
         result = subprocess.run(
             [
-                str(ROOT / ".venv/bin/python"),
+                sys.executable,
                 str(ROOT / "AtilKurt.py"),
                 command,
                 "--output",

@@ -3,6 +3,8 @@ Custom Exceptions Module
 Custom exception classes for better error handling
 """
 
+from __future__ import annotations
+
 
 class AtilKurtException(Exception):
     """Base exception for AtilKurt application."""

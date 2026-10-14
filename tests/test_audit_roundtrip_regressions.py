@@ -1,6 +1,7 @@
 """Regression checks for assessment identity, publication and history boundaries."""
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -138,7 +139,7 @@ def test_outputs_cannot_replace_tls_ca_input(tmp_path, alias):
     ca.write_text("test-only CA input", encoding="utf-8")
     output = ca if alias == "same" else tmp_path / "output.pem"
     if alias == "hardlink":
-        output.hardlink_to(ca)
+        os.link(ca, output)
     elif alias == "symlink":
         output.symlink_to(ca)
     args = AtilKurt.build_parser().parse_args(

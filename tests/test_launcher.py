@@ -10,7 +10,7 @@ LAUNCHER = PROJECT_ROOT / "run.sh"
 DOCKER_ENTRYPOINT = PROJECT_ROOT / "docker-entrypoint.sh"
 
 
-def launcher_environment(environment_file):
+def launcher_environment(environment_file, prepared_python_environment):
     environment = os.environ.copy()
     for key in (
         "ATILKURT_DOMAIN",
@@ -21,17 +21,17 @@ def launcher_environment(environment_file):
     ):
         environment.pop(key, None)
     environment["ATILKURT_ENV_FILE"] = str(environment_file)
-    environment["ATILKURT_VENV_DIR"] = ".venv"
+    environment["ATILKURT_VENV_DIR"] = str(prepared_python_environment)
     return environment
 
 
-def test_launcher_skips_satisfied_dependency_installation(tmp_path):
+def test_launcher_skips_satisfied_dependency_installation(tmp_path, prepared_python_environment):
     environment_file = tmp_path / "missing.env"
 
     result = subprocess.run(
         [str(LAUNCHER), "--help"],
         cwd=PROJECT_ROOT,
-        env=launcher_environment(environment_file),
+        env=launcher_environment(environment_file, prepared_python_environment),
         capture_output=True,
         text=True,
         timeout=60,
@@ -42,7 +42,7 @@ def test_launcher_skips_satisfied_dependency_installation(tmp_path):
     assert "Python dependencies already satisfy requirements; installation skipped." in result.stdout
 
 
-def test_launcher_treats_environment_file_values_as_data(tmp_path):
+def test_launcher_treats_environment_file_values_as_data(tmp_path, prepared_python_environment):
     marker = tmp_path / "must-not-exist"
     environment_file = tmp_path / ".env"
     environment_file.write_text(
@@ -56,7 +56,7 @@ def test_launcher_treats_environment_file_values_as_data(tmp_path):
     result = subprocess.run(
         [str(LAUNCHER), "--timeout", "301"],
         cwd=PROJECT_ROOT,
-        env=launcher_environment(environment_file),
+        env=launcher_environment(environment_file, prepared_python_environment),
         capture_output=True,
         text=True,
         timeout=60,

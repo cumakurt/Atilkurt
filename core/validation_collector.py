@@ -23,7 +23,8 @@ _SCRIPT = r"""# AtilKurt local evidence collection. No directory, service, or po
 param([string]$OutputPath = '.\atilkurt-evidence.json')
 $ErrorActionPreference = 'Stop'
 $manifest = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__MANIFEST__')) | ConvertFrom-Json
-$collectedAt = [DateTime]::UtcNow.ToString('o')
+# Python 3.9 accepts microseconds; .NET's round-trip format emits seven digits.
+$collectedAt = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
 $hostName = $env:COMPUTERNAME
 $observations = @()
 $errors = @()

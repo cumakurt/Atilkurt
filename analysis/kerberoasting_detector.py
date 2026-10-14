@@ -3,6 +3,8 @@ Kerberoasting and AS-REP Roasting Detection Module
 Detects accounts vulnerable to Kerberoasting and AS-REP roasting attacks
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 from analysis.privileged_account_status import account_is_disabled

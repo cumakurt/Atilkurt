@@ -478,13 +478,13 @@ def test_offline_report_roundtrip_needs_no_username_or_ldap(tmp_path, monkeypatc
     assert (tmp_path / "report.html").is_file()
 
 
-def test_installer_reuses_environment_is_quiet_and_preserves_commands(tmp_path):
+def test_installer_reuses_environment_is_quiet_and_preserves_commands(tmp_path, prepared_python_environment):
     command_dir = tmp_path / "commands with spaces"
     command_dir.mkdir()
     environment = {
         **os.environ,
         "ATILKURT_BIN_DIR": str(command_dir),
-        "ATILKURT_VENV_DIR": str(ROOT / ".venv"),
+        "ATILKURT_VENV_DIR": str(prepared_python_environment),
         "PATH": str(command_dir) + os.pathsep + os.environ["PATH"],
     }
     result = subprocess.run(
@@ -505,10 +505,10 @@ def test_installer_reuses_environment_is_quiet_and_preserves_commands(tmp_path):
     assert result.returncode == 0 and "AtilKurt" in result.stdout
 
 
-def test_installer_does_not_overwrite_an_unrelated_existing_command(tmp_path):
+def test_installer_does_not_overwrite_an_unrelated_existing_command(tmp_path, prepared_python_environment):
     command = tmp_path / "Atilkurt"
     command.write_text("# unrelated existing command\n")
-    environment = {**os.environ, "ATILKURT_BIN_DIR": str(tmp_path), "ATILKURT_VENV_DIR": str(ROOT / ".venv")}
+    environment = {**os.environ, "ATILKURT_BIN_DIR": str(tmp_path), "ATILKURT_VENV_DIR": str(prepared_python_environment)}
     result = subprocess.run(
         ["bash", str(ROOT / "install.sh")], env=environment, capture_output=True, text=True, timeout=60
     )
@@ -517,7 +517,7 @@ def test_installer_does_not_overwrite_an_unrelated_existing_command(tmp_path):
     assert command.read_text() == "# unrelated existing command\n"
 
 
-def test_installer_configures_shell_path_once_and_preserves_existing_settings(tmp_path):
+def test_installer_configures_shell_path_once_and_preserves_existing_settings(tmp_path, prepared_python_environment):
     command_dir = tmp_path / "commands with spaces"
     profile = tmp_path / ".zshrc"
     existing = "# existing user setting\nexport EXISTING_SETTING=keep\n"
@@ -525,7 +525,7 @@ def test_installer_configures_shell_path_once_and_preserves_existing_settings(tm
     environment = {
         **os.environ,
         "ATILKURT_BIN_DIR": str(command_dir),
-        "ATILKURT_VENV_DIR": str(ROOT / ".venv"),
+        "ATILKURT_VENV_DIR": str(prepared_python_environment),
         "SHELL": "/bin/zsh",
         "ZDOTDIR": str(tmp_path),
     }
